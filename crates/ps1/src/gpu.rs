@@ -401,7 +401,9 @@ impl Gpu {
         self.completed_frame.as_ref().map(FrameReadback::get)
     }
 
-    pub(crate) fn latch_display(&mut self) {
+    /// Capture current VRAM for a manual debugger step without advancing video time.
+    /// Running frontends should use the field latched by normal GPU timing instead.
+    pub fn latch_display(&mut self) {
         self.completed_frame = Some(self.renderer.capture(self.display_settings()));
     }
 

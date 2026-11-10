@@ -1,4 +1,4 @@
-use eidoryn_psx::video_filter::{CrtFilter, OverlayKey};
+use eidoryn_host::video_filter::{CrtFilter, OverlayKey};
 
 #[test]
 fn overlay_allocation_is_bounded_and_disabled_mode_allocates_nothing() {

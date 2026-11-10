@@ -4,7 +4,9 @@ The emulator CPU, bus, software/Vulkan GPU algorithms and shaders, DMA, disc rea
 loader, CUE parser, GTE, MDEC, SIO/digital pad, memory-card protocol/persistence,
 SPU voices/ADSR/reverb, XA/CDDA decoding, timers and MIPS test programs are implemented locally. No third-party emulator
 core, emulator adapter, or vendored emulator source is used.
-The build with all default features disabled uses only the Rust standard library.
+The application now depends on local `eidoryn-ps1` (hardware) and `eidoryn-host`
+(audio, filters, themes) crates. Both build with only the Rust standard library
+when their optional features are disabled; neither introduces new external libraries.
 
 The optional `vulkan` feature uses wgpu 29.0.4 for safe Vulkan resource and compute
 submission APIs, pollster 0.4.0 for initialization, and bytemuck 1.25.2 for safe

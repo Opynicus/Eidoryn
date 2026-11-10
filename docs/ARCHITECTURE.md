@@ -1,51 +1,51 @@
 # Eidoryn 代码结构
 
-硬件核心、宿主运行控制和桌面界面分层。CPU、GPU、GTE、光驱等继续由本项目自主实现。
+Eidoryn 是应用层，当前只实现 PlayStation。GBA、PS2 等是未来扩展方向，不是已经支持的平台。本次重构将可独立构建的硬件核心、可复用的宿主服务和具体主机的应用适配明确分开；不为尚不存在的核心定义统一 CPU、存档或渲染器协议。
 
 ```text
-CLI / GPUI actions  →  media：校验并构造 Machine
-GPUI actions       →  Runner 命令通道
-Runner worker      →  Machine → CPU / Bus / 硬件设备
-GPU command parser →  有界绘图批次 → 软件/Vulkan 工作线程（独占 VRAM）
-Runner worker      →  Snapshot → GPUI 视频、运行状态和调试面板
-SPU / CD decoder   →  AudioBuffer → CPAL 设备回调
-SIO / MemoryCard   →  CardStore → 原始记忆卡文件
-主题 JSON          →  ThemeCatalog → GPUI 语义配色
+Eidoryn (CLI / GPUI)
+├── systems::ps1                 PS1 媒体、记忆卡文件、运行线程和调试快照
+│   ├── eidoryn-ps1              CPU / Bus / GPU / SPU / CD-ROM / SIO 等硬件
+│   │   └── eidoryn-jit-runtime  可选原生执行边界
+│   └── eidoryn-host::audio      有界 PCM 传输
+└── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
-| 模块 | 职责 |
+`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认仅依赖标准库。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认也仅依赖标准库。Vulkan/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用原有 `desktop`、`vulkan`、`jit` 特性转发到对应组件，默认设置与 CLI 均保持不变。
+
+| 位置 | 职责 |
 | --- | --- |
-| `app.rs` | 产品名、版本和原生窗口标识的统一入口 |
-| `main.rs` | CLI 参数校验、启动分派、无窗口执行和帧导出 |
-| `media.rs` | 有界文件读取、BIOS/EXE 校验和光盘会话构建 |
-| `cpu_engine.rs` | 解释器/JIT 选择、热块缓存、MIPS 整数指令解码 |
-| `cpu/jit.rs` | 原生执行边界的 PC、设备时钟、中断与指令失效检查 |
-| `crates/jit-runtime/` | 原创 x86-64 发射器、RW→RX 映射和隔离的原生调用边界 |
-| `runner/mod.rs` | 公共命令接口、线程创建/关闭和快照邮箱 |
-| `runner/worker.rs` | 显式会话状态、命令转换、执行预算和快照发布 |
-| `runner/snapshot.rs` | 与前端无关的显示/调试数据及帧比较 |
-| `gpu.rs` / `DisplayFrame` | GP0/GP1、传输控制、显示时序及 VBlank 开始时锁存的完成画面 |
-| `gpu/rasterizer.rs` | 原创软件光栅器、纹理、混合与 VRAM 像素操作；串行/多线程共用，也作为硬件后端的对照 |
-| `gpu/renderer.rs` | 串行/独立线程调度、有界批次、读回屏障、错误锁存和线程回收 |
-| `gpu/renderer_engine.rs` | 工作线程中的软件/Vulkan 执行接口 |
-| `gpu/vulkan/` | 原创 GP0 图元编码、依赖分批、Vulkan 管线、整数 WGSL 光栅器与读回 |
-| `memory_card.rs` | 128-byte 扇区、卡格式、串口事务/校验和/ACK；无文件访问 |
-| `card_file.rs` | 卡文件生命周期、旁路锁、批量同步和原子替换 |
-| `spu/` | 声音寄存器/RAM、声道、Gaussian 表、包络和混响 |
-| `adpcm.rs`、`xa.rs`、`cd_audio.rs` | 共用预测器、XA 解码/重采样、CD 音量矩阵与 PCM 队列 |
-| `audio.rs`、`audio/output.rs` | 有界 PCM 队列、系统采样率适配与 CPAL 输出 |
-| `audio/wav.rs` | 无声卡依赖的流式诊断录音 |
-| `desktop/mod.rs` | GPUI 生命周期、焦点和快照接收 |
-| `desktop/actions.rs` | 键盘、文件选择和控制命令 |
-| `desktop/components.rs` | 使用语义配色的 Material 通用组件 |
-| `desktop/graphics.rs` | 运行时 Vulkan/软件多线程/JIT 开关、待切换状态和设备显示 |
-| `desktop/audio_controls.rs` | 音频 UI 状态、可拖动的音量滑条及百分比 |
-| `desktop/view.rs` | 顶部栏、工作区、显示卡片与游戏视图的组合 |
-| `desktop/inspector.rs` | CPU、指令和光驱面板 |
-| `desktop/video.rs` | RGB 到 BGRA、4:3 画布、CRT 遮罩缓存和 GPUI 合成 |
-| `video_filter.rs` | 无依赖的 CRT 预设和有界扫描线/栅格/暗角遮罩 |
-| `desktop/appearance.rs` | 主题选择和插件加载交互 |
-| `theme/` | 内置调色板、主题目录、版本化插件校验 |
+| `crates/ps1/src/{cpu,bus,machine}.rs` | MIPS CPU、总线、机器状态与执行；DMA 位于 `bus/dma.rs` |
+| `crates/ps1/src/cpu_engine.rs`、`cpu/jit.rs` | 解释器/JIT 选择、缓存及逐指令异常/中断/代码失效检查 |
+| `crates/ps1/src/gpu/` | 自主软件光栅器、多线程绘图、Vulkan 管线与 WGSL；GP0/GP1 和显示时序位于 `gpu.rs` |
+| `crates/ps1/src/{gte,mdec,timers,sio,memory_card}.rs` | PS1 几何运算、解码、时钟、手柄和记忆卡协议 |
+| `crates/ps1/src/{disc,cue,cdrom}.rs` | 镜像读取与光驱控制器 |
+| `crates/ps1/src/spu/`、`{adpcm,xa,cd_audio}.rs` | PS1 合成、混响与光盘音频解码 |
+| `crates/ps1/src/demo.rs`、`error.rs` | 原创客体程序与 PS1 错误类型 |
+| `crates/jit-runtime/` | 原创 x86-64 发射器及隔离的 RW→RX/原生调用安全边界 |
+| `crates/host/src/audio.rs`、`audio/` | 与主机无关的 PCM 队列、显式源采样率、CPAL 输出和 WAV 导出 |
+| `crates/host/src/video_filter.rs`、`theme/` | CRT 遮罩、语义配色与数据型主题插件，无 GPUI 类型 |
+| `src/systems/ps1/media.rs` | BIOS/EXE 读取、校验与 PS1 会话构建 |
+| `src/systems/ps1/card_file.rs` | PS1 卡文件锁、批量同步和原子替换 |
+| `src/systems/ps1/runner/` | PS1 命令、会话线程、持久化边界、快照与调试状态 |
+| `src/desktop/` | GPUI 生命周期、窗口、Material 组件、音量、主题、CRT 合成和操作；PS1 调试面板明确放在 `ps1_inspector.rs` |
+| `src/main.rs`、`src/app.rs` | CLI 分派与共享产品标识 |
+| `src/lib.rs` | 应用模块入口和历史 `eidoryn_psx` API 兼容重导出 |
+
+## API 兼容与后续核心接入
+
+旧入口 `eidoryn_psx::machine::Machine`、`runner`、`media`、`audio` 等继续可用，类型仍是原类型，没有包装复制或动态分发。新应用代码明确使用 `eidoryn_psx::systems::ps1`；只需要硬件核心的工具可直接依赖 `eidoryn-ps1`。`Gpu::latch_display` 是给调试 Step/Slice 使用的显式快照接口，不推进视频时间；运行中仍使用正常 VBlank 锁存画面。
+
+未来增加一个核心时：
+
+1. 在独立 crate 中实现自身机器、时序、媒体与错误，不让核心反向依赖 GPUI 或应用。
+2. 在 `src/systems/<system>` 中实现加载、持久化、输入映射和调试适配；PS1 的双记忆卡、光驱、MIPS 寄存器与渲染设置不作为共同要求。
+3. 复用 `eidoryn-host` 的音频/主题/显示滤镜。用 `AudioBuffer::with_sample_rate(NonZeroU32)` 和 `WavWriter::with_sample_rate` 指定 PCM 源采样率。现有 `default()` / `create()` 仍保持 44.1 kHz；WAV 不可表示的字节率在创建文件前拒绝。
+4. 有第二个真实核心后，再根据两个实现提炼运行、输入和视频接口。当前 GPUI 的画幅、按键映射与 Inspector 仍是 PS1 适配，需要在接入新核心时扩展；本次没有假装它们已经通用。
+
+热路径保留静态调用，不引入逐指令虚调用或新的队列。依赖版本未升级，主核心和宿主 crate 共同继承工作区的 unsafe 禁止和 Clippy 规则；JIT crate 保留自己的安全边界约束。应用目录与窗口 application ID 保留原值，避免影响现有启动器和窗口管理规则。
+
+## PS1 执行与同步
 
 工作线程独占 `Machine` 和 `CardStore`，窗口通过通道发送命令，从邮箱取走最新完整快照。关闭请求先同步记忆卡，成功后发布最终快照再退出；失败则暂停并允许重试。`Runner::drop` 回收线程并尝试最终同步。媒体加载先校验，成功后再替换机器和重置基准；换媒体和重置均保留当前记忆卡。失败仍保留原会话。
 

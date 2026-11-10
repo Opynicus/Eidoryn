@@ -1,13 +1,13 @@
-//! Emulation scheduling and session transitions. No frontend dependencies.
+//! PlayStation session scheduling and transitions. No frontend dependencies.
 use super::{Command, SharedSnapshot, Snapshot};
-use crate::{
-    audio::AudioBuffer,
+use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
     gpu::RendererMode,
     machine::{INSTRUCTIONS_PER_SLICE, Machine},
     media::{load_disc, load_path},
 };
+use eidoryn_host::audio::AudioBuffer;
 use std::{
     path::PathBuf,
     sync::mpsc,

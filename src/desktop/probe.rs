@@ -1,5 +1,5 @@
 //! Opt-in diagnostics for the `play_probe` example; normal windows do not record or inject input.
-use eidoryn_psx::runner::Command;
+use eidoryn_psx::systems::ps1::runner::Command;
 use std::{
     fs::File,
     io::{BufWriter, Write},

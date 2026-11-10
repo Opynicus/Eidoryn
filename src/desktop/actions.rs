@@ -1,5 +1,5 @@
 use super::Desktop;
-use eidoryn_psx::runner::Command;
+use eidoryn_psx::systems::ps1::runner::Command;
 use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
 
 impl Desktop {

@@ -1,6 +1,6 @@
 use super::{Desktop, components::button};
 use eidoryn_psx::{
-    runner::Snapshot,
+    systems::ps1::runner::Snapshot,
     video_filter::{CrtFilter, OverlayKey},
 };
 use gpui::{

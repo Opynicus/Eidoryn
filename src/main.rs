@@ -1,5 +1,5 @@
-use eidoryn_psx::{
-    app::{BINARY_NAME, NAME, VERSION},
+use eidoryn_psx::app::{BINARY_NAME, NAME, VERSION};
+use eidoryn_psx::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
     demo,
@@ -239,7 +239,8 @@ fn run() -> Result<(), String> {
         {
             return Err("--inspect-disc is a standalone operation".into());
         }
-        let disc = eidoryn_psx::disc::DiscImage::open(&path).map_err(|e| e.to_string())?;
+        let disc =
+            eidoryn_psx::systems::ps1::disc::DiscImage::open(&path).map_err(|e| e.to_string())?;
         println!(
             "Disc: {} | tracks={} sectors={}",
             path.display(),
@@ -357,7 +358,7 @@ fn run() -> Result<(), String> {
         .gpu
         .set_renderer(renderer.unwrap_or_default())
         .map_err(|error| format!("Cannot start GPU renderer: {error}"))?;
-    if machine.bus.gpu.renderer_mode() == eidoryn_psx::gpu::RendererMode::Vulkan {
+    if machine.bus.gpu.renderer_mode() == eidoryn_psx::systems::ps1::gpu::RendererMode::Vulkan {
         eprintln!("Renderer: {}", machine.bus.gpu.renderer_device());
     }
     machine

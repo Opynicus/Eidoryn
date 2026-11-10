@@ -1,71 +1,14 @@
-//! A deliberately small, testable PlayStation emulation core.
+//! Eidoryn application services and backward-compatible PlayStation library entry points.
 #![allow(clippy::doc_markdown)]
 
-mod adpcm;
 pub mod app;
-pub mod audio;
-pub mod bus;
-pub mod card_file;
-mod cd_audio;
-pub mod cdrom;
-pub mod cpu;
-pub mod cpu_engine;
-mod cue;
-pub mod demo;
-pub mod disc;
-pub mod gpu;
-pub mod gte;
-pub mod machine;
-pub mod mdec;
-pub mod media;
-pub mod memory_card;
-pub mod runner;
-pub mod sio;
-pub mod spu;
+pub mod systems;
 #[cfg(feature = "desktop")]
-pub mod theme;
-pub mod timers;
-pub mod video_filter;
-mod xa;
+pub use eidoryn_host::theme;
+pub use eidoryn_host::{audio, video_filter};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EmuError {
-    Bus {
-        address: u32,
-        operation: &'static str,
-    },
-    UnsupportedInstruction {
-        pc: u32,
-        instruction: u32,
-    },
-    GpuCommand(u8),
-    GpuBackend(String),
-    Jit(String),
-    Dma(&'static str),
-    Spu(&'static str),
-    Mdec(&'static str),
-    InvalidImage(String),
-}
-
-impl std::fmt::Display for EmuError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Bus { address, operation } => {
-                write!(f, "Unsupported bus {operation} at 0x{address:08X}")
-            }
-            Self::UnsupportedInstruction { pc, instruction } => write!(
-                f,
-                "Unsupported instruction 0x{instruction:08X} at PC 0x{pc:08X}"
-            ),
-            Self::GpuCommand(command) => write!(f, "Unsupported GPU command 0x{command:02X}"),
-            Self::GpuBackend(message) => write!(f, "GPU renderer: {message}"),
-            Self::Jit(message) => write!(f, "Native JIT: {message}"),
-            Self::Dma(message) => write!(f, "DMA: {message}"),
-            Self::Spu(message) => write!(f, "SPU: {message}"),
-            Self::Mdec(message) => write!(f, "MDEC: {message}"),
-            Self::InvalidImage(message) => f.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for EmuError {}
+// Keep existing clients working while new code uses an explicit system namespace.
+pub use systems::ps1::{
+    EmuError, bus, card_file, cdrom, cpu, cpu_engine, demo, disc, gpu, gte, machine, mdec, media,
+    memory_card, runner, sio, spu, timers,
+};

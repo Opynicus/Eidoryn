@@ -4,8 +4,8 @@ mod appearance;
 mod audio_controls;
 mod components;
 mod graphics;
-mod inspector;
 mod probe;
+mod ps1_inspector;
 mod video;
 mod view;
 
@@ -13,9 +13,11 @@ use audio_controls::AudioControls;
 use eidoryn_psx::{
     app,
     audio::{AudioBuffer, output::AudioOutput},
-    card_file::CardStore,
-    machine::Machine,
-    runner::{Command, Runner, Snapshot},
+    systems::ps1::{
+        card_file::CardStore,
+        machine::Machine,
+        runner::{Command, Runner, Snapshot},
+    },
     theme::ThemeCatalog,
 };
 use gpui::{

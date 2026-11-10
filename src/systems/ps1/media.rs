@@ -1,5 +1,5 @@
 //! Host file loading and validation, independent of execution threads and GPUI.
-use crate::{
+use crate::systems::ps1::{
     bus::{BIOS_SIZE, RAM_SIZE},
     machine::Machine,
 };
@@ -61,7 +61,7 @@ fn read_image(path: &std::path::Path, bios: bool) -> Result<Vec<u8>, String> {
     // file was truncated after metadata(). Loading a disc needs only the bytes,
     // not a throwaway Machine with RAM, VRAM and SPU buffers.
     if bios && bytes.len() != BIOS_SIZE {
-        return Err(crate::EmuError::InvalidImage(format!(
+        return Err(crate::systems::ps1::EmuError::InvalidImage(format!(
             "BIOS must be exactly 512 KiB; got {} bytes",
             bytes.len()
         ))

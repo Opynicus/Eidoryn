@@ -1,6 +1,6 @@
 # Eidoryn
 
-用 Rust 自主实现的 PlayStation 模拟器，搭配原生 GPUI 调试界面。CPU、软件/Vulkan GPU、总线、DMA、CD-ROM 控制器、ISO 读取器和测试程序都在本项目实现；没有集成外部模拟器核心。使用 `--no-default-features` 可构建仅依赖 Rust 标准库的软件核心与命令行。
+用 Rust 自主实现的模拟器应用，搭配原生 GPUI 调试界面。当前支持范围仅为 PlayStation；代码按独立核心与公共宿主服务分层，为未来 GBA、PS2 等核心留出结构空间，尚未实现这些主机。CPU、软件/Vulkan GPU、总线、DMA、CD-ROM 控制器、ISO 读取器和测试程序都在本项目实现；没有集成外部模拟器核心。使用 `--no-default-features` 可构建仅依赖 Rust 标准库的软件核心与命令行。
 
 **Pure vibe-coded project. Use at your own risk.**
 
@@ -152,21 +152,14 @@ ISO 可生成 Mode 2 Form 1 子头和 EDC，但无法恢复原光盘的 XA 元�
 Rust 2024 edition，最低版本声明为 1.95；本次使用 Linux / Rust 1.98.1 / Wayland。桌面需要 GPUI 的 Linux 图形与字体开发库和可用图形驱动；无窗口核心不需要这些运行设施。保留 `Cargo.lock`：GPUI 0.2.2 的旧 `xattr` 依赖 `libc::ENOATTR`，当前固定 `libc = 0.2.186`。
 
 ```text
-src/{cpu,bus,gpu,machine}.rs      自主硬件核心
-src/{gte,mdec,sio}.rs            几何运算、视频解码、数字手柄串口
-src/spu/                        声道、包络、插值、混响、混音与声音 RAM
-src/{adpcm,xa,cd_audio}.rs       ADPCM/XA 解码和光驱音频队列
-src/audio/                      系统播放与 WAV 导出
-src/{memory_card,card_file}.rs   记忆卡协议与宿主持久化
-src/timers.rs                   root counters
-src/{disc,cue,cdrom}.rs          ISO/BIN/CUE 读取与光驱寄存器/命令
-src/demo.rs                     原创 MIPS 绘图与光驱测试程序
-src/app.rs                      产品名、版本、窗口标识
-src/media.rs                    BIOS/EXE/光盘加载与校验
-src/runner/                     命令通道、状态快照、执行调度
-src/desktop/                    窗口、输入、组件、视频与调试面板
-src/theme/                      语义配色、主题目录、插件解析
-src/main.rs                     命令行与帧导出
+crates/ps1/src/                 独立 PS1 硬件核心、错误与原创客体程序
+crates/host/src/audio/          系统音频与 WAV 导出，可显式指定源采样率
+crates/host/src/theme/          通用语义配色与主题插件
+crates/host/src/video_filter.rs 通用 CRT 预设与遮罩
+src/systems/ps1/                PS1 加载、卡文件、会话调度和调试快照
+src/desktop/                    GPUI 窗口、组件、显示与 PS1 调试面板
+src/{main,app}.rs               CLI 与产品标识
+src/lib.rs                      应用入口与历史库 API 兼容层
 examples/boot_trace.rs           有界启动诊断、帧导出与定时手柄输入
 examples/runner_probe.rs         执行线程吞吐量与暂停延迟测量
 examples/display_probe.rs        帧缓冲转换微基准
@@ -185,6 +178,8 @@ scripts/make_test_disc.py        原创测试光盘生成器
 cargo fmt --all --check
 cargo test --locked --no-default-features
 cargo test --locked --workspace --all-targets
+cargo test --locked -p eidoryn-ps1 --no-default-features
+cargo test --locked -p eidoryn-host --all-features
 cargo test --locked --test vulkan_gpu -- --ignored --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo build --locked

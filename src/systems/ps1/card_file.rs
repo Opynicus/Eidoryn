@@ -1,5 +1,5 @@
 //! Host-side card persistence. Serial devices never perform filesystem I/O.
-use crate::memory_card::{CARD_SIZE, Cards, MemoryCard};
+use crate::systems::ps1::memory_card::{CARD_SIZE, Cards, MemoryCard};
 use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},

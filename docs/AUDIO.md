@@ -25,3 +25,7 @@ cargo run --locked --release --no-default-features -- \
 自动测试覆盖取样数量、声道/循环/释放、中断、噪声、XA 格式和采样率、CDDA 播放及结束、静音、缓冲、重采样和 WAV 字节。
 
 仍非逐周期或逐样本精确实现：混响的 22.05/44.1 kHz 转换目前使用 box/linear 滤波，未实现实机 FIR；XA emphasis、精确 CDDA report 峰值/双速播放重采样、ReadN/ReadS 音轨数据模式、完整 SPU 寄存器锁存/取 RAM 时序尚未实现。声音尚未与实机波形对照，不能据此宣称所有游戏音频均正确。
+
+## 复用到其他主机
+
+宿主音频现位于 `eidoryn-host`，不依赖 PS1 SPU。`AudioBuffer::with_sample_rate` 与 `WavWriter::with_sample_rate` 接受非零源采样率，已测试 32/44.1/48 kHz；旧默认入口仍为 44.1 kHz。系统设备采样率由输出后端处理，与核心源采样率分开。队列容量仍按帧计数，因此不同源采样率的毫秒延迟会不同；接入新核心时需重新测量，不能照搬 PS1 的延迟结论。

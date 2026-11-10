@@ -1,5 +1,5 @@
 //! Immutable state published to frontends and diagnostic clients.
-use crate::{
+use crate::systems::ps1::{
     card_file::CardStatus,
     cpu::{Cpu, disassemble},
     cpu_engine::{CpuMode, CpuStats},

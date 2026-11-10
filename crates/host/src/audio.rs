@@ -1,15 +1,19 @@
 //! Bounded host audio transport. Device callbacks never wait for the interpreter.
-use crate::spu::{SAMPLE_RATE, StereoFrame};
 use std::{
     collections::VecDeque,
+    num::NonZeroU32,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
-#[cfg(feature = "desktop")]
+#[cfg(feature = "audio-output")]
 pub mod output;
 pub mod wav;
+
+pub type StereoFrame = [i16; 2];
+/// Compatibility default; new systems should supply their own PCM rate.
+pub const DEFAULT_SAMPLE_RATE: NonZeroU32 = NonZeroU32::new(44_100).unwrap();
 
 const CAPACITY: usize = 4096;
 const PREBUFFER: usize = 1024;
@@ -36,13 +40,23 @@ struct Queue {
 pub struct AudioBuffer(Arc<Transport>);
 
 struct Transport {
+    sample_rate: NonZeroU32,
     queue: Mutex<Queue>,
     callback_misses: AtomicU64,
 }
 
 impl Default for AudioBuffer {
     fn default() -> Self {
+        Self::with_sample_rate(DEFAULT_SAMPLE_RATE)
+    }
+}
+
+impl AudioBuffer {
+    /// Creates an independent queue for a system's interleaved stereo i16 PCM.
+    /// The source rate stays fixed for the queue's lifetime, including its clones.
+    pub fn with_sample_rate(sample_rate: NonZeroU32) -> Self {
         Self(Arc::new(Transport {
+            sample_rate,
             queue: Mutex::new(Queue {
                 frames: VecDeque::with_capacity(CAPACITY),
                 playing: false,
@@ -54,9 +68,7 @@ impl Default for AudioBuffer {
             callback_misses: AtomicU64::new(0),
         }))
     }
-}
 
-impl AudioBuffer {
     pub fn set_playing(&self, playing: bool) {
         if let Ok(mut queue) = self.0.queue.lock()
             && queue.playing != playing
@@ -132,7 +144,7 @@ impl AudioBuffer {
         // Small clock drift correction keeps a bounded queue across independent DAC/video clocks.
         let correction =
             ((queue.frames.len() as f64 - TARGET) / TARGET * 0.005).clamp(-0.005, 0.005);
-        let step = f64::from(SAMPLE_RATE) / f64::from(rate) * (1.0 + correction);
+        let step = f64::from(self.0.sample_rate.get()) / f64::from(rate) * (1.0 + correction);
         let gain = f32::from(queue.volume) / (100.0 * 32768.0);
         for frame in output.chunks_exact_mut(channels) {
             if queue.frames.len() < 2 {

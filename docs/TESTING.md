@@ -12,6 +12,18 @@ cargo test --locked --no-default-features
 cargo build --locked --release
 ```
 
+工作区检查必须包含 `--workspace`，以覆盖独立核心的单元测试和宿主组件测试。单独验证模块边界：
+
+```bash
+cargo test --locked -p eidoryn-ps1 --no-default-features
+cargo test --locked -p eidoryn-host --no-default-features
+cargo test --locked -p eidoryn-host --all-features
+cargo tree --locked -p eidoryn-ps1 --no-default-features
+cargo tree --locked -p eidoryn-host --no-default-features
+```
+
+后两项应只输出对应 crate 自身。应用层集成测试继续使用历史库入口，验证已有调用方、CLI、存档和运行行为的兼容性。
+
 测试覆盖 CPU 延迟槽/异常、解释器/JIT 对照、GTE、软件绘图、GPU 时序、DMA 边界与循环、MDEC 输出、CD-ROM/XA/CDDA、SPU、SIO、记忆卡持久化、媒体校验、线程命令与 CLI。GPU 测试默认忽略，以便无显卡环境运行常规检查。
 
 有物理 Vulkan 设备时另行运行：

@@ -2,12 +2,12 @@ use super::{
     Desktop,
     components::{button, card, label},
 };
-use eidoryn_psx::{
+use eidoryn_psx::systems::ps1::{
     cpu_engine::CpuMode,
     gpu::RendererMode,
     runner::{Command, Snapshot},
-    theme::Palette,
 };
+use eidoryn_psx::theme::Palette;
 use gpui::{Context, div, prelude::*, px, rgb};
 
 pub(super) struct GraphicsControls {

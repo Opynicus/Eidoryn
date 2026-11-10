@@ -1557,16 +1557,20 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 name = "eidoryn"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
- "cpal",
- "eidoryn-jit-runtime",
+ "eidoryn-host",
+ "eidoryn-ps1",
  "gpui",
  "image",
  "libc",
- "pollster 0.4.0",
+]
+
+[[package]]
+name = "eidoryn-host"
+version = "0.1.0"
+dependencies = [
+ "cpal",
  "serde",
  "serde_json",
- "wgpu",
 ]
 
 [[package]]
@@ -1574,6 +1578,16 @@ name = "eidoryn-jit-runtime"
 version = "0.1.0"
 dependencies = [
  "memmap2",
+]
+
+[[package]]
+name = "eidoryn-ps1"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "eidoryn-jit-runtime",
+ "pollster 0.4.0",
+ "wgpu",
 ]
 
 [[package]]

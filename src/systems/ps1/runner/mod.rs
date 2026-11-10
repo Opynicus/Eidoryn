@@ -2,12 +2,12 @@
 mod snapshot;
 mod worker;
 
-use crate::audio::AudioBuffer;
-use crate::card_file::CardStore;
-use crate::machine::Machine;
+use crate::systems::ps1::card_file::CardStore;
+use crate::systems::ps1::machine::Machine;
+use eidoryn_host::audio::AudioBuffer;
 pub use snapshot::Snapshot;
 // Preserve the existing loader entry points while keeping file I/O outside the worker.
-pub use crate::media::{load_disc, load_path};
+pub use crate::systems::ps1::media::{load_disc, load_path};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
@@ -18,8 +18,8 @@ type SharedSnapshot = Arc<Mutex<Option<Snapshot>>>;
 
 pub enum Command {
     SetButtons(u16),
-    SetRenderer(crate::gpu::RendererMode),
-    SetCpuMode(crate::cpu_engine::CpuMode),
+    SetRenderer(crate::systems::ps1::gpu::RendererMode),
+    SetCpuMode(crate::systems::ps1::cpu_engine::CpuMode),
     Toggle,
     Step,
     Slice,

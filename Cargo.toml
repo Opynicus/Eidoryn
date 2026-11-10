@@ -10,26 +10,21 @@ license = "GPL-3.0-only"
 name = "eidoryn_psx"
 
 [workspace]
-members = ["crates/jit-runtime"]
+members = ["crates/ps1", "crates/host", "crates/jit-runtime"]
 default-members = ["."]
 resolver = "3"
 
 [features]
 default = ["desktop", "vulkan", "jit"]
-desktop = ["dep:gpui", "dep:image", "dep:libc", "dep:serde", "dep:serde_json", "dep:cpal"]
-vulkan = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
-jit = ["dep:eidoryn-jit-runtime"]
+desktop = ["dep:gpui", "dep:image", "dep:libc", "eidoryn-host/audio-output", "eidoryn-host/themes"]
+vulkan = ["eidoryn-ps1/vulkan"]
+jit = ["eidoryn-ps1/jit"]
 
 [dependencies]
-eidoryn-jit-runtime = { path = "crates/jit-runtime", optional = true }
+eidoryn-ps1 = { path = "crates/ps1", default-features = false }
+eidoryn-host = { path = "crates/host", default-features = false }
 gpui = { version = "=0.2.2", optional = true }
 image = { version = "0.25", default-features = false, optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }
-cpal = { version = "=0.16.0", optional = true }
-wgpu = { version = "=29.0.4", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"], optional = true }
-pollster = { version = "=0.4.0", optional = true }
-bytemuck = { version = "=1.25.2", optional = true }
 
 # GPUI's old xattr dependency still requires the ENOATTR alias on Linux.
 libc = { version = "=0.2.186", optional = true }
@@ -40,10 +35,13 @@ debug = 0
 [profile.release]
 lto = "thin"
 
-[lints.rust]
+[lints]
+workspace = true
+
+[workspace.lints.rust]
 unsafe_code = "forbid"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 # Emulator bit patterns deliberately cross signed/unsigned and byte boundaries.

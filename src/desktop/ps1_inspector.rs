@@ -2,7 +2,7 @@ use super::{
     Desktop,
     components::{button, card, heading, label, pair},
 };
-use eidoryn_psx::{cpu::REGISTER_NAMES, runner::Command};
+use eidoryn_psx::systems::ps1::{cpu::REGISTER_NAMES, runner::Command};
 use gpui::{Context, IntoElement, div, prelude::*, px, rgb};
 
 impl Desktop {
