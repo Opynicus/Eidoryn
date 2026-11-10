@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Eidoryn
+Comment=Experimental PlayStation emulator
+Exec=eidoryn
+Icon=dev.eidoryn.PSX
+Terminal=false
+Categories=Game;Emulator;
+StartupWMClass=dev.eidoryn.PSX

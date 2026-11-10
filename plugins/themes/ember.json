@@ -1,0 +1,23 @@
+{
+  "api_version": 1,
+  "kind": "theme",
+  "id": "ember",
+  "name": "Ember",
+  "base": "midnight",
+  "colors": {
+    "background": "#211816",
+    "surface": "#302320",
+    "surface_variant": "#3B2C27",
+    "border": "#64504A",
+    "text": "#F5E0D8",
+    "muted": "#D6BDB3",
+    "primary": "#FFB595",
+    "on_primary": "#54210C",
+    "primary_hover": "#FFCBB5",
+    "primary_pressed": "#DF987A",
+    "tonal": "#5C4034",
+    "on_tonal": "#FFE0D0",
+    "tonal_hover": "#715044",
+    "tonal_pressed": "#846052"
+  }
+}

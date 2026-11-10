@@ -1,0 +1,16 @@
+[package]
+name = "eidoryn-jit-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-only"
+description = "Auditable native integer-block execution boundary for Eidoryn"
+
+[dependencies]
+memmap2 = "=0.9.12"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

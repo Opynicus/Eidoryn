@@ -1,0 +1,18 @@
+/target/
+*.bin
+*.rom
+*.exe
+*.ppm
+
+*.iso
+*.cue
+*.chd
+*.mcd
+saves/
+*.ps1state
+test-assets/
+
+# Local captures and diagnostics
+*.wav
+*.log
+*.mcd.lock
