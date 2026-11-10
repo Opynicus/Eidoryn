@@ -1,0 +1,78 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, label: linux-x86_64-desktop, mode: desktop, args: '', binary: eidoryn}
+          - {os: ubuntu-24.04, label: linux-x86_64-cli, mode: cli, args: '--no-default-features', binary: eidoryn}
+          - {os: windows-2022, label: windows-x86_64-desktop, mode: desktop, args: '--no-default-features --features desktop', binary: eidoryn.exe}
+          - {os: windows-2022, label: windows-x86_64-cli, mode: cli, args: '--no-default-features', binary: eidoryn.exe}
+          - {os: macos-14, label: macos-arm64-desktop, mode: desktop, args: '--no-default-features --features desktop', binary: eidoryn}
+          - {os: macos-14, label: macos-arm64-cli, mode: cli, args: '--no-default-features', binary: eidoryn}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        shell: bash
+        run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux' && matrix.mode == 'desktop'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xinput-dev libxcb-cursor-dev libfontconfig1-dev libfreetype6-dev libvulkan-dev
+      - name: Build
+        shell: bash
+        run: cargo build --locked --release --bin eidoryn ${{ matrix.args }}
+      - name: Original demo smoke test
+        shell: bash
+        run: ./target/release/${{ matrix.binary }} --headless --no-memory-cards --frames 1
+      - name: Package
+        shell: bash
+        run: python scripts/package_release.py --label '${{ github.ref_name }}-${{ matrix.label }}' --binary target/release/${{ matrix.binary }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish successful packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/*)
+          ((${#files[@]} > 0)) || { echo 'No successful packages; refusing empty release'; exit 1; }
+          cat > notes.md <<'NOTES'
+          Pure vibe-coded project. Use at your own risk.
+
+          Experimental, unsigned packages. Only successful builds that pass the original headless demo smoke test are attached. Desktop launches and gameplay on Windows/macOS have not been manually verified. CLI packages have no GPUI window. No BIOS, games, saves or gameplay test artifacts are distributed.
+
+          Linux desktop: Ubuntu 24.04 or compatible newer glibc, XCB/xkbcommon and ALSA runtime libraries; Vulkan requires a supported physical GPU/driver. Windows/macOS desktop builds use software rendering; JIT is Linux x86-64 only. SHA-256 sidecars accompany every archive.
+
+          See the Actions run for failed or unavailable platform builds. These packages do not imply full game compatibility.
+          NOTES
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "Eidoryn $RELEASE_TAG" --notes-file notes.md --prerelease
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
