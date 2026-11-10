@@ -319,7 +319,12 @@ impl VulkanRenderer {
         self.wait()
     }
 
-    fn readback(&mut self, buffer: usize, bytes: u64) -> Result<Vec<u32>, String> {
+    fn readback<T>(
+        &mut self,
+        buffer: usize,
+        bytes: u64,
+        convert: impl FnOnce(&[u8]) -> T,
+    ) -> Result<T, String> {
         self.check()?;
         let mut encoder = self
             .device
@@ -340,12 +345,9 @@ impl VulkanRenderer {
                 .map_err(|e| format!("Vulkan map callback: {e}"))?
                 .map_err(|e| format!("Vulkan readback: {e}"))?;
             let mapped = self.staging.slice(..bytes).get_mapped_range();
-            Ok(mapped
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|b| u32::from_le_bytes(*b))
-                .collect())
+            // Convert while mapped: callers allocate only their final output,
+            // rather than copying the complete readback through a Vec<u32>.
+            Ok(convert(&mapped))
         });
         self.staging.unmap();
         result
@@ -364,12 +366,14 @@ impl VulkanRenderer {
     fn cache_vram(&mut self) -> Result<(), String> {
         self.flush()?;
         if self.read_cache.is_none() {
-            self.read_cache = Some(
-                self.readback(0, VRAM_BYTES)?
-                    .into_iter()
-                    .map(|v| v as u16)
-                    .collect(),
-            );
+            self.read_cache = Some(self.readback(0, VRAM_BYTES, |bytes| {
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                    .collect()
+            })?);
         }
         Ok(())
     }
@@ -399,11 +403,12 @@ impl VulkanRenderer {
         self.queue
             .write_buffer(&self.buffers[5], 0, bytemuck::cast_slice(&params));
         self.dispatch(&self.scanout, (width * height).div_ceil(64) as u32);
-        let words = self.readback(4, (width * height * 4) as u64)?;
-        let mut rgb = Vec::with_capacity(width * height * 3);
-        for word in words {
-            rgb.extend_from_slice(&word.to_le_bytes()[..3]);
-        }
-        Ok(rgb)
+        self.readback(4, (width * height * 4) as u64, |bytes| {
+            let mut rgb = Vec::with_capacity(width * height * 3);
+            for pixel in bytes.as_chunks::<4>().0 {
+                rgb.extend_from_slice(&pixel[..3]);
+            }
+            rgb
+        })
     }
 }

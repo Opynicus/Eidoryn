@@ -48,7 +48,8 @@ pub struct CdRom {
     audio: CdAudio,
     muted: bool,
     read_clocks: u32,
-    sector: Option<Vec<u8>>,
+    // Retained capacity; an empty buffer means no staged data sector.
+    sector: Vec<u8>,
     data: VecDeque<u8>,
     last_header: Option<[u8; 8]>,
     trace: Option<VecDeque<String>>,
@@ -85,7 +86,7 @@ impl CdRom {
             self.reported_location,
             self.target,
             self.read_clocks,
-            self.sector.as_ref().map_or(0, Vec::len),
+            self.sector.len(),
             self.data.len(),
             self.audio.xa_active(),
             self.sectors_read,
@@ -180,10 +181,8 @@ impl CdRom {
             (0, 3) => {
                 if value & 0x80 == 0 {
                     self.data.clear();
-                } else if self.data.is_empty()
-                    && let Some(sector) = self.sector.take()
-                {
-                    self.data.extend(sector);
+                } else if self.data.is_empty() {
+                    self.data.extend(self.sector.drain(..));
                 }
             }
             (1, 2) => self.irq_enable = value & 0x1f,
@@ -210,15 +209,16 @@ impl CdRom {
             | (u8::from(self.reading) << 5)
             | (u8::from(self.playing) << 7)
     }
-    fn respond(&mut self, interrupt: u8, bytes: Vec<u8>) {
+    fn respond(&mut self, interrupt: u8, bytes: &[u8]) {
         self.trace_event(format_args!("response INT{interrupt} {bytes:02x?}"));
-        self.response = bytes.into();
+        self.response.clear();
+        self.response.extend(bytes);
         self.irq_flags = interrupt;
     }
     fn error(&mut self, code: u8) {
         self.command_errors += 1;
         self.last_error_code = Some(code);
-        self.respond(5, vec![self.status() | 1, code]);
+        self.respond(5, &[self.status() | 1, code]);
     }
     fn finish_later(&mut self, interrupt: u8, bytes: Vec<u8>) {
         self.completion = Some((COMMAND_CLOCKS * 2, Response { interrupt, bytes }));
@@ -241,9 +241,9 @@ impl CdRom {
                 self.execute(command.opcode, &command.parameters);
             } else if self.completion.as_ref().is_some_and(|(n, _)| *n == 0) {
                 let (_, response) = self.completion.take().expect("pending completion");
-                self.respond(response.interrupt, response.bytes);
+                self.respond(response.interrupt, &response.bytes);
             } else if let Some(response) = self.play_completion.take() {
-                self.respond(response.interrupt, response.bytes);
+                self.respond(response.interrupt, &response.bytes);
             }
         }
         if self.playing {
@@ -256,7 +256,7 @@ impl CdRom {
             return;
         }
         // Bounded single-sector staging. Overrun mechanics and precise seek timing are not modeled.
-        if self.read_clocks == 0 && self.irq_flags == 0 && self.sector.is_none() {
+        if self.read_clocks == 0 && self.irq_flags == 0 && self.sector.is_empty() {
             self.receive_sector();
         }
     }
@@ -285,7 +285,7 @@ impl CdRom {
             return;
         }
         match opcode {
-            1 => self.respond(3, vec![self.status()]),
+            1 => self.respond(3, &[self.status()]),
             2 => {
                 let number = |b: u8| {
                     (b & 15 < 10 && b >> 4 < 10)
@@ -298,7 +298,7 @@ impl CdRom {
                     .and_then(|((m, s), f)| (m * 4500 + s * 75 + f).checked_sub(150));
                 if let Some(lba) = position {
                     self.target = Some(lba);
-                    self.respond(3, vec![self.status()]);
+                    self.respond(3, &[self.status()]);
                 } else {
                     self.error(0x10);
                 }
@@ -336,7 +336,7 @@ impl CdRom {
                 self.playing = true;
                 self.motor = true;
                 self.read_clocks = SECTOR_CLOCKS;
-                self.respond(3, vec![self.status()]);
+                self.respond(3, &[self.status()]);
             }
             6 | 0x1b => {
                 self.last_error = None;
@@ -348,7 +348,7 @@ impl CdRom {
                     self.reported_location = target;
                 }
                 self.motor = true;
-                self.respond(3, vec![self.status()]);
+                self.respond(3, &[self.status()]);
                 self.reading = true;
                 self.read_clocks = if self.mode & 0x80 != 0 {
                     SECTOR_CLOCKS / 2
@@ -357,7 +357,7 @@ impl CdRom {
                 };
             }
             7..=0x0a | 0x15 | 0x16 | 0x1e => {
-                self.respond(3, vec![self.status()]);
+                self.respond(3, &[self.status()]);
                 self.reading = false;
                 self.playing = false;
                 self.play_completion = None;
@@ -372,7 +372,7 @@ impl CdRom {
                     self.mode = 0x20;
                     self.muted = false;
                     self.filter = [0; 2];
-                    self.sector = None;
+                    self.sector.clear();
                     self.data.clear();
                 }
                 if matches!(opcode, 0x15 | 0x16)
@@ -385,14 +385,14 @@ impl CdRom {
             }
             0x0b | 0x0c => {
                 self.muted = opcode == 0x0b;
-                self.respond(3, vec![self.status()]);
+                self.respond(3, &[self.status()]);
             }
             0x0d => {
                 if self.filter != parameters {
                     self.audio.clear();
                 }
                 self.filter.copy_from_slice(parameters);
-                self.respond(3, vec![self.status()]);
+                self.respond(3, &[self.status()]);
             }
             0x0e => {
                 self.mode = if parameters[0] & 0x10 != 0 {
@@ -400,15 +400,15 @@ impl CdRom {
                 } else {
                     parameters[0]
                 };
-                self.respond(3, vec![self.status()]);
+                self.respond(3, &[self.status()]);
             }
             0x0f => self.respond(
                 3,
-                vec![self.status(), self.mode, 0, self.filter[0], self.filter[1]],
+                &[self.status(), self.mode, 0, self.filter[0], self.filter[1]],
             ),
             0x10 => {
                 if let Some(header) = self.last_header {
-                    self.respond(3, header.to_vec());
+                    self.respond(3, &header);
                 } else {
                     self.error(0x80);
                 }
@@ -419,12 +419,14 @@ impl CdRom {
                     self.error(0x80);
                     return;
                 };
-                let mut response = vec![bcd(track.number), u8::from(position >= track.start_lba)];
-                response.extend(msf(position.abs_diff(track.start_lba)));
-                response.extend(msf(position + 150));
-                self.respond(3, response);
+                let mut response = [0; 8];
+                response[0] = bcd(track.number);
+                response[1] = u8::from(position >= track.start_lba);
+                response[2..5].copy_from_slice(&msf(position.abs_diff(track.start_lba)));
+                response[5..8].copy_from_slice(&msf(position + 150));
+                self.respond(3, &response);
             }
-            0x13 => self.respond(3, vec![self.status(), 1, bcd(self.track_count() as u8)]),
+            0x13 => self.respond(3, &[self.status(), 1, bcd(self.track_count() as u8)]),
             0x14 => {
                 let disc = self
                     .disc
@@ -442,12 +444,12 @@ impl CdRom {
                     return;
                 };
                 let time = msf(position);
-                self.respond(3, vec![self.status(), time[0], time[1]]);
+                self.respond(3, &[self.status(), time[0], time[1]]);
             }
-            0x19 if parameters == [0x20] => self.respond(3, vec![0x95, 0x05, 0x16, 0xc1]),
+            0x19 if parameters == [0x20] => self.respond(3, &[0x95, 0x05, 0x16, 0xc1]),
             0x19 => self.error(0x10),
             0x1a => {
-                self.respond(3, vec![self.status()]);
+                self.respond(3, &[self.status()]);
                 if let Some(region) = self.region {
                     self.finish_later(
                         2,
@@ -541,7 +543,7 @@ impl CdRom {
                     };
                     self.respond(
                         1,
-                        vec![
+                        &[
                             self.status(),
                             bcd(track.number),
                             1,
@@ -612,14 +614,14 @@ impl CdRom {
                     return;
                 }
                 let data = if self.mode & 0x20 != 0 {
-                    raw[12..].to_vec()
+                    &raw[12..]
                 } else {
                     let offset = if raw[15] == 2 { 24 } else { 16 };
                     // The controller can deliver Form 2 too; strict ISO file reads still reject it.
-                    raw[offset..offset + 2048].to_vec()
+                    &raw[offset..offset + 2048]
                 };
-                self.sector = Some(data);
-                self.respond(1, vec![self.status()]);
+                self.sector.extend_from_slice(data);
+                self.respond(1, &[self.status()]);
             }
             Err(error) => {
                 self.last_error = Some(error.to_string());

@@ -776,3 +776,67 @@ fn worker_disc_reset_and_failed_loads_preserve_valid_session_and_bios() {
     assert_eq!(failed.title, reset.title);
     assert_eq!(failed.bios_path, Some(bios));
 }
+
+#[test]
+fn cd_staging_reuse_preserves_fifo_backpressure_mode_changes_and_init() {
+    let fixture = Fixture::new();
+    let image = raw_mode2(&[vec![0x31; 2048], vec![0x62; 2048], vec![0x93; 2048]].concat());
+    let path = fixture.image("staging.bin", &image);
+    let mut bus = bus(&path);
+    command(&mut bus, 0x0e, &[0x20]);
+    command(&mut bus, 6, &[]);
+    bus.tick(SECTOR_CLOCKS).unwrap();
+    assert_eq!(response(&mut bus, 1), [0x22]);
+    ack(&mut bus);
+    bus.write8(0x1f80_1800, 0).unwrap();
+    bus.write8(0x1f80_1803, 0x80).unwrap();
+    assert_eq!(bus.cdrom.data_available(), 2340);
+    for &byte in &image[12..29] {
+        assert_eq!(bus.cdrom.read_data(), byte);
+    }
+
+    // Prefetch a short payload while the previous raw sector is partly unread.
+    command(&mut bus, 0x0e, &[0]);
+    bus.tick(SECTOR_CLOCKS).unwrap();
+    assert_eq!(response(&mut bus, 1), [0x22]);
+    ack(&mut bus);
+    bus.write8(0x1f80_1800, 0).unwrap();
+    bus.write8(0x1f80_1803, 0x80).unwrap();
+    assert_eq!(bus.cdrom.data_available(), 2340 - 17);
+    for &byte in &image[29..2352] {
+        assert_eq!(bus.cdrom.read_data(), byte);
+    }
+    bus.write8(0x1f80_1803, 0x80).unwrap();
+    assert_eq!(bus.cdrom.data_available(), 2048);
+    for _ in 0..2048 {
+        assert_eq!(bus.cdrom.read_data(), 0x62);
+    }
+    bus.write8(0x1f80_1803, 0x80).unwrap();
+    assert_eq!(bus.cdrom.data_available(), 0); // Staging must not be replayed.
+
+    command(&mut bus, 0x0e, &[0x20]);
+    bus.tick(SECTOR_CLOCKS).unwrap();
+    response(&mut bus, 1);
+    ack(&mut bus);
+    command(&mut bus, 0x0a, &[]); // Init must discard the prefetched raw sector.
+    bus.tick(COMMAND_CLOCKS * 2).unwrap();
+    assert_eq!(response(&mut bus, 2), [2]);
+    ack(&mut bus);
+    bus.write8(0x1f80_1800, 0).unwrap();
+    bus.write8(0x1f80_1803, 0x80).unwrap();
+    assert_eq!(bus.cdrom.data_available(), 0);
+
+    command(&mut bus, 2, &[0, 2, 0]);
+    command(&mut bus, 6, &[]);
+    bus.tick(SECTOR_CLOCKS).unwrap();
+    response(&mut bus, 1);
+    ack(&mut bus);
+    bus.write8(0x1f80_1800, 0).unwrap();
+    bus.write8(0x1f80_1803, 0x80).unwrap();
+    assert_eq!(bus.cdrom.data_available(), 2340);
+    for &byte in &image[12..2352] {
+        assert_eq!(bus.cdrom.read_data(), byte);
+    }
+    assert_eq!(bus.cdrom.read_data(), 0);
+    assert_eq!(bus.cdrom.command_errors, 0);
+}

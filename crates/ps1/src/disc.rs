@@ -389,10 +389,36 @@ pub(crate) fn msf(sector: u32) -> [u8; 3] {
     [bcd(sector / 4500), bcd(sector / 75 % 60), bcd(sector % 75)]
 }
 
+// Precompute the same eight polynomial steps for each possible input byte.
+// Cooked ISO reads synthesize this checksum for every sector; the table is
+// immutable (1 KiB), built at compile time, and needs no runtime allocation.
+const EDC_TABLE: [u32; 256] = {
+    let mut table = [0; 256];
+    let mut index = 0;
+    while index < table.len() {
+        let mut crc = index as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = (crc >> 1) ^ (0xd801_8001 & 0_u32.wrapping_sub(crc & 1));
+            bit += 1;
+        }
+        table[index] = crc;
+        index += 1;
+    }
+    table
+};
+
 fn edc(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0, |crc, &byte| {
+        (crc >> 8) ^ EDC_TABLE[usize::from(crc as u8 ^ byte)]
+    })
+}
+
+#[cfg(test)]
+fn bitwise_edc(bytes: &[u8]) -> u32 {
     let mut crc = 0_u32;
-    for byte in bytes {
-        crc ^= u32::from(*byte);
+    for &byte in bytes {
+        crc ^= u32::from(byte);
         for _ in 0..8 {
             crc = (crc >> 1) ^ (0xd801_8001 & 0_u32.wrapping_sub(crc & 1));
         }
@@ -405,5 +431,28 @@ mod tests {
     #[test]
     fn cd_edc_check_vector() {
         assert_eq!(super::edc(b"123456789"), 0x6ec2_edc4);
+    }
+
+    #[test]
+    fn edc_matches_bitwise_reference_for_varied_sectors() {
+        for byte in 0..=255 {
+            assert_eq!(super::edc(&[byte]), super::bitwise_edc(&[byte]));
+        }
+        let mut seed = 0x9e37_79b9_u32;
+        let mut sector = [0; 2352];
+        for case in 0..18 {
+            for byte in &mut sector {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *byte = match case {
+                    0 => 0,
+                    1 => 255,
+                    _ => (seed >> 24) as u8,
+                };
+            }
+            for length in [0, 1, 31, 2048, 2064, 2352] {
+                let bytes = &sector[..length];
+                assert_eq!(super::edc(bytes), super::bitwise_edc(bytes));
+            }
+        }
     }
 }
