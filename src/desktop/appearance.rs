@@ -2,6 +2,7 @@ use super::{
     Desktop,
     components::{action, label},
 };
+use eidoryn_psx::i18n::Text;
 use gpui::{Context, PathPromptOptions, SharedString, div, prelude::*, px, rgb};
 
 impl Desktop {
@@ -15,9 +16,17 @@ impl Desktop {
                 div()
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("界面主题"),
+                    .child(self.tr(Text::Language)),
             )
-            .child(label(p, "主题只改变界面配色，游戏画面保持原样。"))
+            .child(label(p, self.tr(Text::LanguageHint)))
+            .child(self.language_choices(cx))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(self.tr(Text::Theme)),
+            )
+            .child(label(p, self.tr(Text::ThemeHint)))
             .child(
                 div()
                     .flex()
@@ -27,9 +36,13 @@ impl Desktop {
                         let id = theme.id.clone();
                         let selected = id == self.themes.active().id;
                         let palette = theme.palette;
+                        let focus_color = p.primary;
                         div()
                             .id(SharedString::from(format!("theme-{id}")))
-                            .w(px(160.))
+                            .tab_index(0)
+                            .focus(move |style| style.border_color(rgb(focus_color)).border_2())
+                            .w(gpui::rems(10.))
+                            .max_w_full()
                             .p_3()
                             .flex()
                             .flex_col()
@@ -57,30 +70,51 @@ impl Desktop {
                             .child(label(
                                 p,
                                 if selected {
-                                    "当前主题"
+                                    self.tr(Text::CurrentTheme)
                                 } else {
-                                    "点击应用"
+                                    self.tr(Text::ApplyTheme)
                                 },
                             ))
                             .on_click(cx.listener(move |view, _, _, cx| {
-                                view.notice = view.themes.select(&id).err();
-                                cx.notify();
+                                view.select_theme(&id, cx);
                             }))
                     })),
             )
             .child(
-                action(p, "load-theme", "加载自定义主题文件", Some("plus"), false)
-                    .on_click(cx.listener(|_, _, _, cx| Self::open_theme(cx))),
+                action(
+                    p,
+                    "load-theme",
+                    self.tr(Text::LoadTheme),
+                    Some("plus"),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.open_theme(cx))),
             )
-            .child(label(p, "支持 JSON 主题插件；应用后无需重启游戏。"))
+            .child(label(p, self.tr(Text::ThemePluginHint)))
     }
 
-    fn open_theme(cx: &mut Context<Self>) {
+    fn language_choices(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        div().flex().gap_2().children(
+            [
+                (eidoryn_psx::i18n::Language::En, "English"),
+                (eidoryn_psx::i18n::Language::ZhCn, "简体中文"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (language, name))| {
+                super::components::button(p, ("language", index), name, self.language == language)
+                    .on_click(cx.listener(move |view, _, _, cx| view.set_language(language, cx)))
+            }),
+        )
+    }
+
+    fn open_theme(&mut self, cx: &mut Context<Self>) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("加载 Eidoryn 主题插件（.json）".into()),
+            prompt: Some(self.tr(Text::ThemePicker).into()),
         });
         cx.spawn(async move |this, cx| {
             let result = picker.await;
@@ -88,16 +122,25 @@ impl Desktop {
                 match result {
                     Ok(Ok(Some(paths))) => {
                         if let Some(path) = paths.first() {
-                            view.notice = view
-                                .themes
-                                .load_plugin(path)
-                                .and_then(|id| view.themes.select(&id))
-                                .err();
+                            match view.themes.load_plugin(path) {
+                                Ok(id) => match std::path::absolute(path) {
+                                    Ok(path) => {
+                                        view.theme_paths.insert(id.clone(), path);
+                                        view.select_theme(&id, cx);
+                                    }
+                                    Err(error) => view.notice = Some(error.to_string()),
+                                },
+                                Err(error) => view.notice = Some(error),
+                            }
                         }
                     }
                     Ok(Ok(None)) => {}
-                    Ok(Err(error)) => view.notice = Some(format!("Theme picker: {error}")),
-                    Err(error) => view.notice = Some(format!("Theme picker: {error}")),
+                    Ok(Err(error)) => {
+                        view.notice = Some(format!("{}: {error}", view.tr(Text::ThemePickerError)));
+                    }
+                    Err(error) => {
+                        view.notice = Some(format!("{}: {error}", view.tr(Text::ThemePickerError)));
+                    }
                 }
                 cx.notify();
             });

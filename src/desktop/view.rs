@@ -3,6 +3,7 @@ use super::{
     components::{action, button, icon_button, label},
     icons::icon,
 };
+use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{app, theme::Palette};
 use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px, rgb, rgba};
 
@@ -16,12 +17,25 @@ impl Render for Desktop {
         }
         let p = &self.themes.active().palette;
         let game = self.game_view || window.is_fullscreen();
-        let body = if game {
+        let body = if window.is_fullscreen() && self.clean_fullscreen {
+            div()
+                .relative()
+                .size_full()
+                .debug_selector(|| "pure-display".into())
+                .bg(rgb(p.video_background))
+                .child(self.video())
+                .children(
+                    self.notice_banner()
+                        .map(|banner| banner.absolute().top_0().left_0().right_0()),
+                )
+        } else if game {
             self.game_display(window, cx)
         } else {
             self.workspace(window, cx)
         };
         let mut root = div()
+            .id("desktop-root")
+            .tab_group()
             .relative()
             .size_full()
             .bg(rgb(p.background))
@@ -30,6 +44,11 @@ impl Render for Desktop {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
             .on_key_up(cx.listener(Self::key_up))
+            .on_click(cx.listener(|view, event, window, _| {
+                if matches!(event, gpui::ClickEvent::Mouse(_)) {
+                    window.focus(&view.focus);
+                }
+            }))
             .child(body);
         if self.graphics.open {
             root = root
@@ -43,10 +62,9 @@ impl Render for Desktop {
                         .left_0()
                         .right_0()
                         .bg(rgba(0x00000099))
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.graphics.open = false;
-                            cx.notify();
-                        })),
+                        .on_click(
+                            cx.listener(|view, _, window, cx| view.close_settings(window, cx)),
+                        ),
                 )
                 .child(self.settings_drawer(cx));
         }
@@ -57,6 +75,7 @@ impl Render for Desktop {
 impl Desktop {
     fn workspace(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let speed = self.tr(Text::Speed);
         let compact = window.viewport_size().width <= px(1250.);
         let page = match self.page {
             WorkspacePage::Console => self.console_page(window, cx),
@@ -105,13 +124,13 @@ impl Desktop {
                             .text_xs()
                             .text_color(rgb(p.muted))
                             .child(format!(
-                                "{:.1} / {:.1} FPS  ·  {:.0}% 速度  ·  {}",
+                                "{:.1} / {:.1} FPS  ·  {:.0}% {speed}  ·  {}",
                                 self.snapshot.video_fps,
                                 self.snapshot.target_fps,
                                 100. * self.snapshot.video_fps / self.snapshot.target_fps,
-                                self.snapshot.renderer.label()
+                                self.renderer_label()
                             ))
-                            .child("F6 游戏视图  ·  F7 CRT  ·  F8 图形  ·  F11 全屏"),
+                            .child(self.tr(Text::Shortcuts)),
                     ),
             )
     }
@@ -122,20 +141,27 @@ impl Desktop {
             p,
             "nav-console",
             "grid",
-            "控制台",
+            self.tr(Text::Console),
             compact,
             self.page == WorkspacePage::Console,
         )
         .on_click(
             cx.listener(|view, _, window, cx| view.show_page(WorkspacePage::Console, window, cx)),
         );
-        let game = nav_item(p, "nav-game", "screen", "游戏视图", compact, false)
-            .on_click(cx.listener(|view, _, window, cx| view.toggle_view(window, cx)));
+        let game = nav_item(
+            p,
+            "nav-game",
+            "screen",
+            self.tr(Text::GameView),
+            compact,
+            false,
+        )
+        .on_click(cx.listener(|view, _, window, cx| view.toggle_view(window, cx)));
         let debug = nav_item(
             p,
             "nav-debug",
             "code",
-            "调试器",
+            self.tr(Text::Debugger),
             compact,
             self.page == WorkspacePage::Debug,
         )
@@ -162,7 +188,7 @@ impl Desktop {
                         .py_2()
                         .text_xs()
                         .text_color(rgb(p.muted))
-                        .child("工作区"),
+                        .child(self.tr(Text::Workspace)),
                 )
             })
             .child(console)
@@ -176,26 +202,17 @@ impl Desktop {
                         .pb_2()
                         .text_xs()
                         .text_color(rgb(p.muted))
-                        .child("模拟平台"),
+                        .child(self.tr(Text::Platforms)),
                 )
             })
-            .child(platform(p, "PS", "PlayStation", "当前", compact, true))
-            .child(platform(
-                p,
-                "GB",
-                "Game Boy Advance",
-                "未支持",
-                compact,
-                false,
-            ))
-            .child(platform(p, "P2", "PlayStation 2", "未支持", compact, false))
+            .child(self.platform_list(compact))
             .child(div().flex_1())
             .child(
                 nav_item(
                     p,
                     "nav-settings",
                     "settings",
-                    "图形与外观",
+                    self.tr(Text::Settings),
                     compact,
                     self.graphics.open,
                 )
@@ -211,6 +228,37 @@ impl Desktop {
                         .child(format!("Eidoryn  ·  v{}", app::VERSION)),
                 )
             })
+    }
+
+    fn platform_list(&self, compact: bool) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        div()
+            .flex()
+            .flex_col()
+            .child(platform(
+                p,
+                "PS",
+                "PlayStation",
+                self.tr(Text::Current),
+                compact,
+                true,
+            ))
+            .child(platform(
+                p,
+                "GB",
+                "Game Boy Advance",
+                self.tr(Text::Unsupported),
+                compact,
+                false,
+            ))
+            .child(platform(
+                p,
+                "P2",
+                "PlayStation 2",
+                self.tr(Text::Unsupported),
+                compact,
+                false,
+            ))
     }
 
     fn sidebar_brand(&self, compact: bool) -> gpui::Div {
@@ -255,14 +303,14 @@ impl Desktop {
             .gap_3()
             .border_b_1()
             .border_color(rgb(p.border))
-            .child(label(p, "工作区   /"))
+            .child(label(p, self.tr(Text::WorkspaceCrumb)))
             .child(
                 div()
                     .text_sm()
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(match self.page {
-                        WorkspacePage::Console => "控制台",
-                        WorkspacePage::Debug => "调试器",
+                        WorkspacePage::Console => self.tr(Text::Console),
+                        WorkspacePage::Debug => self.tr(Text::Debugger),
                     }),
             )
             .child(div().flex_1())
@@ -271,7 +319,7 @@ impl Desktop {
                 format!(
                     "{}  ·  {}",
                     self.themes.active().name,
-                    self.snapshot.renderer.label()
+                    self.renderer_label()
                 ),
             ))
             .child(
@@ -279,9 +327,9 @@ impl Desktop {
                     p,
                     "maximize",
                     if window.is_maximized() {
-                        "还原"
+                        self.tr(Text::Restore)
                     } else {
-                        "最大化"
+                        self.tr(Text::Maximize)
                     },
                     false,
                 )
@@ -291,14 +339,16 @@ impl Desktop {
                 })),
             )
             .child(
-                icon_button(p, "top-settings", "settings")
+                icon_button(p, "top-settings", "settings", self.tr(Text::Settings))
                     .on_click(cx.listener(|view, _, _, cx| view.open_settings(false, cx))),
             )
     }
 
     fn game_display(&self, _window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let speed = self.tr(Text::Speed);
         div()
+            .debug_selector(|| "game-controls".into())
             .size_full()
             .flex()
             .flex_col()
@@ -312,11 +362,16 @@ impl Desktop {
                     .items_center()
                     .gap_4()
                     .child(
-                        action(p, "game-back", "返回控制台", Some("back"), false).on_click(
-                            cx.listener(|view, _, window, cx| {
-                                view.show_page(WorkspacePage::Console, window, cx);
-                            }),
-                        ),
+                        action(
+                            p,
+                            "game-back",
+                            self.tr(Text::BackConsole),
+                            Some("back"),
+                            false,
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.show_page(WorkspacePage::Console, window, cx);
+                        })),
                     )
                     .child(
                         div()
@@ -330,12 +385,12 @@ impl Desktop {
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .truncate()
-                                    .child(self.snapshot.title.clone()),
+                                    .child(self.display_title().to_owned()),
                             )
                             .child(label(
                                 p,
                                 format!(
-                                    "PLAYSTATION  ·  {:.1} FPS  ·  {:.0}% 速度",
+                                    "PLAYSTATION  ·  {:.1} FPS  ·  {:.0}% {speed}",
                                     self.snapshot.video_fps,
                                     100. * self.snapshot.video_fps / self.snapshot.target_fps
                                 ),
@@ -375,12 +430,14 @@ impl Desktop {
         let p = &self.themes.active().palette;
         div()
             .id("settings-drawer")
+            .track_focus(&self.settings_focus)
             .occlude()
             .absolute()
             .right_0()
             .top_0()
             .bottom_0()
-            .w(px(400.))
+            .w(gpui::rems(25.))
+            .max_w_full()
             .flex()
             .flex_col()
             .bg(rgb(p.surface))
@@ -402,17 +459,14 @@ impl Desktop {
                                 div()
                                     .text_lg()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("图形与外观"),
+                                    .child(self.tr(Text::Settings)),
                             )
-                            .child(label(p, "调整你的游玩体验")),
+                            .child(label(p, self.tr(Text::SettingsHint))),
                     )
                     .child(
-                        icon_button(p, "close-settings", "close").on_click(cx.listener(
-                            |view, _, _, cx| {
-                                view.graphics.open = false;
-                                cx.notify();
-                            },
-                        )),
+                        icon_button(p, "close-settings", "close", self.tr(Text::Close)).on_click(
+                            cx.listener(|view, _, window, cx| view.close_settings(window, cx)),
+                        ),
                     ),
             )
             .child(
@@ -424,22 +478,31 @@ impl Desktop {
                     .border_b_1()
                     .border_color(rgb(p.border))
                     .child(
-                        button(p, "tab-graphics", "图形设置", !self.appearance_open).on_click(
-                            cx.listener(|view, _, _, cx| {
-                                view.appearance_open = false;
-                                cx.notify();
-                            }),
-                        ),
+                        button(
+                            p,
+                            "tab-graphics",
+                            self.tr(Text::GraphicsSettings),
+                            !self.appearance_open,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.appearance_open = false;
+                            cx.notify();
+                        })),
                     )
                     .child(
-                        button(p, "tab-appearance", "外观主题", self.appearance_open).on_click(
-                            cx.listener(|view, _, _, cx| {
-                                view.appearance_open = true;
-                                cx.notify();
-                            }),
-                        ),
+                        button(
+                            p,
+                            "tab-appearance",
+                            self.tr(Text::Appearance),
+                            self.appearance_open,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.appearance_open = true;
+                            cx.notify();
+                        })),
                     ),
             )
+            .child(label(p, self.tr(Text::KeyboardHint)).px_5().py_2())
             .child(
                 div()
                     .id("settings-content")
@@ -472,9 +535,15 @@ fn nav_item(
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let hover = p.surface_variant;
+    let palette = *p;
     div()
         .id(id)
         .debug_selector(|| id.to_owned())
+        .tab_index(0)
+        .border_1()
+        .border_color(rgb(p.surface))
+        .focus(move |style| style.border_color(rgb(palette.primary)))
+        .tooltip(move |_, cx| super::components::tooltip(palette, text.into(), cx))
         .h(px(42.))
         .px_3()
         .flex_shrink_0()
@@ -522,16 +591,21 @@ fn platform(
                 .child(short),
         )
         .when(!compact, |element| {
-            element
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(rgb(if selected { p.text } else { p.muted }))
-                        .child(name),
-                )
-                .child(label(p, state))
+            element.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(rgb(if selected { p.text } else { p.muted }))
+                            .child(name),
+                    )
+                    .child(label(p, state)),
+            )
         })
 }

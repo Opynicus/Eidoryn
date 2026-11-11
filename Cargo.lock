@@ -1586,6 +1586,8 @@ dependencies = [
  "gpui",
  "image",
  "libc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

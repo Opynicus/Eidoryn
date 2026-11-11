@@ -2,6 +2,7 @@ use super::{
     Desktop,
     components::{button, label},
 };
+use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
     systems::ps1::{
         cpu_engine::CpuMode,
@@ -17,6 +18,7 @@ pub(super) struct GraphicsControls {
     pub open: bool,
     software: RendererMode,
     pending: Option<RendererMode>,
+    pending_revision: u64,
     pending_cpu: Option<CpuMode>,
 }
 
@@ -30,20 +32,26 @@ impl GraphicsControls {
                 RendererMode::Serial
             },
             pending: None,
+            pending_revision: 0,
             pending_cpu: None,
         }
     }
 
-    pub(super) fn receive(&mut self, snapshot: &Snapshot) {
+    pub(super) fn receive(&mut self, snapshot: &Snapshot) -> Option<RendererMode> {
+        let completed = snapshot.renderer_revision != self.pending_revision;
+        let confirmed = self
+            .pending
+            .filter(|mode| completed && *mode == snapshot.renderer && snapshot.message.is_none());
         if self.pending_cpu == Some(snapshot.cpu_mode) || snapshot.message.is_some() {
             self.pending_cpu = None;
         }
-        if self.pending == Some(snapshot.renderer) || snapshot.message.is_some() {
+        if completed {
             self.pending = None;
         }
         if snapshot.renderer != RendererMode::Vulkan {
             self.software = snapshot.renderer;
         }
+        confirmed
     }
 }
 
@@ -52,6 +60,7 @@ impl Desktop {
         match self.runner.send(Command::SetRenderer(mode)) {
             Ok(()) => {
                 self.graphics.pending = Some(mode);
+                self.graphics.pending_revision = self.snapshot.renderer_revision;
                 self.notice = None;
             }
             Err(error) => self.notice = Some(error),
@@ -69,8 +78,8 @@ impl Desktop {
         switch(
             &self.themes.active().palette,
             "jit-switch",
-            "CPU JIT · 实验性",
-            "可用性取决于平台与构建",
+            self.tr(Text::Jit),
+            self.tr(Text::PlatformHint),
             self.snapshot.cpu_mode == CpuMode::Jit,
             available,
         )
@@ -93,6 +102,18 @@ impl Desktop {
         })
     }
 
+    fn clean_fullscreen_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        switch(
+            &self.themes.active().palette,
+            "clean-fullscreen",
+            self.tr(Text::CleanFullscreen),
+            self.tr(Text::CleanFullscreenHint),
+            self.clean_fullscreen,
+            true,
+        )
+        .on_click(cx.listener(|view, _, _, cx| view.toggle_clean_fullscreen(cx)))
+    }
+
     pub(super) fn graphics_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let hardware = self.snapshot.renderer == RendererMode::Vulkan;
@@ -106,15 +127,15 @@ impl Desktop {
                 div()
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("CRT 显示效果"),
+                    .child(self.tr(Text::Crt)),
             )
-            .child(label(p, "为游戏画面选择显示滤镜。"))
+            .child(label(p, self.tr(Text::CrtHint)))
             .child(
                 div().flex().gap_2().children(
                     [
-                        (CrtFilter::Off, "关闭"),
-                        (CrtFilter::Soft, "柔和"),
-                        (CrtFilter::Classic, "经典"),
+                        (CrtFilter::Off, self.tr(Text::Off)),
+                        (CrtFilter::Soft, self.tr(Text::Soft)),
+                        (CrtFilter::Classic, self.tr(Text::Classic)),
                     ]
                     .into_iter()
                     .enumerate()
@@ -131,15 +152,15 @@ impl Desktop {
                     .mt_4()
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("渲染与性能"),
+                    .child(self.tr(Text::Performance)),
             )
-            .child(label(p, "选项是否可用取决于平台、构建和当前模式。"))
+            .child(label(p, self.tr(Text::PerformanceHint)))
             .child(
                 switch(
                     p,
                     "vulkan-switch",
-                    "Vulkan 硬件加速",
-                    "需要受支持的硬件和构建",
+                    self.tr(Text::Vulkan),
+                    self.tr(Text::VulkanHint),
                     hardware,
                     ready && cfg!(feature = "vulkan"),
                 )
@@ -158,8 +179,8 @@ impl Desktop {
                 switch(
                     p,
                     "threaded-switch",
-                    "软件多线程",
-                    "为软件渲染启用独立工作线程",
+                    self.tr(Text::Threaded),
+                    self.tr(Text::ThreadedHint),
                     software_threads,
                     ready && !hardware,
                 )
@@ -175,16 +196,21 @@ impl Desktop {
                 }),
             )
             .child(self.jit_control(ready, cx))
+            .child(self.clean_fullscreen_control(cx))
             .child(label(
                 p,
                 if !ready {
-                    "正在应用设置…".into()
+                    self.tr(Text::Applying).into()
                 } else if hardware {
-                    format!("{} · 独立 GPU 提交线程", self.snapshot.renderer_device)
+                    format!(
+                        "{} · {}",
+                        self.snapshot.renderer_device,
+                        self.tr(Text::GpuThread)
+                    )
                 } else if cfg!(feature = "vulkan") {
-                    "当前使用软件渲染。".into()
+                    self.tr(Text::SoftwareHint).into()
                 } else {
-                    "此构建不包含 Vulkan。".into()
+                    self.tr(Text::NoVulkan).into()
                 },
             ))
     }
@@ -198,6 +224,7 @@ fn switch(
     enabled: bool,
     available: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let palette = *p;
     div()
         .id(id)
         .py_3()
@@ -208,6 +235,12 @@ fn switch(
         .justify_between()
         .gap_3()
         .when(available, gpui::Styled::cursor_pointer)
+        .when(available, |element| {
+            element
+                .tab_index(0)
+                .focus(move |style| style.bg(rgb(palette.tonal)))
+        })
+        .tooltip(move |_, cx| super::components::tooltip(palette, detail.into(), cx))
         .when(!available, |element| element.opacity(0.45))
         .child(
             div()
@@ -240,4 +273,33 @@ fn switch(
                     p.text
                 }))),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eidoryn_psx::systems::ps1::machine::Machine;
+
+    #[test]
+    fn only_confirmed_renderer_changes_are_persisted() {
+        let mut controls = GraphicsControls::new(RendererMode::Serial, false);
+        controls.pending = Some(RendererMode::Threaded);
+        let mut snapshot = Snapshot::capture(&Machine::demo(), true, None, 0.0);
+        assert_eq!(controls.receive(&snapshot), None);
+        assert_eq!(controls.pending, Some(RendererMode::Threaded));
+        snapshot.message = Some("An older notification".into());
+        assert_eq!(controls.receive(&snapshot), None);
+        assert_eq!(controls.pending, Some(RendererMode::Threaded));
+        snapshot.message = None;
+        snapshot.renderer = RendererMode::Threaded;
+        snapshot.renderer_revision = 1;
+        assert_eq!(controls.receive(&snapshot), Some(RendererMode::Threaded));
+        assert_eq!(controls.receive(&snapshot), None);
+        controls.pending = Some(RendererMode::Vulkan);
+        controls.pending_revision = snapshot.renderer_revision;
+        snapshot.message = Some("Renderer unavailable".into());
+        snapshot.renderer_revision = 2;
+        assert_eq!(controls.receive(&snapshot), None);
+        assert!(controls.pending.is_none());
+    }
 }

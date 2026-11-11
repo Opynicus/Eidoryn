@@ -2,6 +2,7 @@ use super::{
     Desktop, WorkspacePage,
     components::{action, button, card, heading, label, pair},
 };
+use eidoryn_psx::i18n::Text;
 use eidoryn_psx::systems::ps1::{cpu::REGISTER_NAMES, runner::Command};
 use gpui::{Context, Window, div, prelude::*, px, rgb};
 
@@ -40,34 +41,42 @@ impl Desktop {
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_color(rgb(p.primary))
-                                    .child("PLAYSTATION / 开发工具"),
+                                    .child(self.tr(Text::DebugEyebrow)),
                             )
                             .child(
                                 div()
                                     .text_2xl()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("调试工作区"),
+                                    .child(self.tr(Text::DebugWorkspace)),
                             )
-                            .child(label(p, "将硬件状态与执行过程放在一起观察。")),
+                            .child(label(p, self.tr(Text::DebugHint))),
                     )
                     .child(
                         div()
                             .flex()
                             .gap_2()
                             .child(
-                                action(p, "debug-back", "返回控制台", Some("back"), false)
-                                    .on_click(cx.listener(|view, _, window, cx| {
+                                action(
+                                    p,
+                                    "debug-back",
+                                    self.tr(Text::BackConsole),
+                                    Some("back"),
+                                    false,
+                                )
+                                .on_click(cx.listener(
+                                    |view, _, window, cx| {
                                         view.show_page(WorkspacePage::Console, window, cx);
-                                    })),
+                                    },
+                                )),
                             )
                             .child(
                                 action(
                                     p,
                                     "debug-run",
                                     if self.snapshot.running {
-                                        "暂停"
+                                        self.tr(Text::Pause)
                                     } else {
-                                        "运行"
+                                        self.tr(Text::Run)
                                     },
                                     Some(if self.snapshot.running {
                                         "pause"
@@ -104,7 +113,7 @@ impl Desktop {
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(p, "指令流", "MIPS I"))
+            .child(heading(p, self.tr(Text::Instructions), "MIPS I"))
             .child(
                 div()
                     .flex()
@@ -113,9 +122,9 @@ impl Desktop {
                     .text_xs()
                     .text_color(rgb(p.muted))
                     .child(div().w(px(16.)))
-                    .child(div().w(px(88.)).child("地址"))
-                    .child(div().w(px(88.)).child("机器码"))
-                    .child("指令"),
+                    .child(div().w(px(88.)).child(self.tr(Text::Address)))
+                    .child(div().w(px(88.)).child(self.tr(Text::Opcode)))
+                    .child(self.tr(Text::Instruction)),
             )
             .child(
                 div()
@@ -162,17 +171,17 @@ impl Desktop {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        action(p, "debug-step", "单步执行 · F10", Some("skip"), false).on_click(
+                        action(p, "debug-step", self.tr(Text::Step), Some("skip"), false).on_click(
                             cx.listener(|view, _, _, cx| view.command(Command::Step, cx)),
                         ),
                     )
                     .child(
-                        button(p, "debug-slice", "执行切片 · F9", false).on_click(
+                        button(p, "debug-slice", self.tr(Text::Slice), false).on_click(
                             cx.listener(|view, _, _, cx| view.command(Command::Slice, cx)),
                         ),
                     )
                     .child(
-                        button(p, "debug-reset", "重置", false).on_click(
+                        button(p, "debug-reset", self.tr(Text::Reset), false).on_click(
                             cx.listener(|view, _, _, cx| view.command(Command::Reset, cx)),
                         ),
                     ),
@@ -185,13 +194,13 @@ impl Desktop {
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(p, "CPU 寄存器", "R3000A"))
+            .child(heading(p, self.tr(Text::Registers), "R3000A"))
             .child(
                 div()
                     .p_3()
                     .rounded_lg()
                     .bg(rgb(p.surface_variant))
-                    .child(label(p, "Program counter"))
+                    .child(label(p, self.tr(Text::ProgramCounter)))
                     .child(
                         div()
                             .mt_1()
@@ -247,11 +256,11 @@ impl Desktop {
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(p, "GPU 状态", "PLAYSTATION"))
-            .child(pair(p, "渲染模式", self.snapshot.renderer.label()))
+            .child(heading(p, self.tr(Text::GpuStatus), "PLAYSTATION"))
+            .child(pair(p, self.tr(Text::Renderer), self.renderer_label()))
             .child(pair(
                 p,
-                "画面分辨率",
+                self.tr(Text::Resolution),
                 format!(
                     "{} × {}",
                     self.snapshot.dimensions.0, self.snapshot.dimensions.1
@@ -259,13 +268,13 @@ impl Desktop {
             ))
             .child(pair(
                 p,
-                "GPU 状态",
+                self.tr(Text::GpuStatus),
                 format!("{:08X}", self.snapshot.gpu_status),
             ))
-            .child(pair(p, "内存 / 显存", "2 MiB / 1024 × 512"))
+            .child(pair(p, self.tr(Text::Memory), "2 MiB / 1024 × 512"))
             .child(pair(
                 p,
-                "已执行指令",
+                self.tr(Text::InstructionsExecuted),
                 self.snapshot.cpu.instructions.to_string(),
             ))
     }

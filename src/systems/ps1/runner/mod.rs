@@ -5,7 +5,7 @@ mod worker;
 use crate::systems::ps1::card_file::CardStore;
 use crate::systems::ps1::machine::Machine;
 use eidoryn_host::audio::AudioBuffer;
-pub use snapshot::Snapshot;
+pub use snapshot::{ExecutionState, Snapshot};
 // Preserve the existing loader entry points while keeping file I/O outside the worker.
 pub use crate::systems::ps1::media::{load_disc, load_path};
 use std::{

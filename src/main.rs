@@ -32,8 +32,11 @@ fn run() -> Result<(), String> {
     let mut headless = false;
     let mut fullscreen = false;
     let mut game_view = false;
-    let mut muted = false;
+    let mut muted = None;
+    let mut volume = None;
+    let mut clean_fullscreen = None;
     let mut theme = None;
+    let mut language = None;
     let mut theme_plugin = None;
     let mut crt = None;
     let mut renderer = None;
@@ -61,10 +64,14 @@ fn run() -> Result<(), String> {
                     --headless          Run without a GPUI window\n\
                     --fullscreen        Open the native window in fullscreen\n\
                     --game-view         Enlarge the display by hiding inspectors\n\
-                    --mute              Start the window with audio muted\n\
-                    --crt MODE          CRT display: off (default), soft, classic\n\
-                    --renderer MODE     GPU: serial (default), threaded, vulkan\n\
+                    --mute / --unmute   Override saved audio mute state\n\
+                    --volume N          Output volume: 0..100\n\
+                    --clean-fullscreen  Hide bars in fullscreen (F12 toggles)\n\
+                    --fullscreen-controls Show bars in fullscreen\n\
+                    --crt MODE          CRT display: off, soft, classic (overrides saved choice)\n\
+                    --renderer MODE     GPU: serial, threaded, vulkan (overrides saved choice)\n\
                     --cpu MODE          CPU: interpreter (default), jit (experimental)\n\
+                    --language LANG     Interface language: en or zh-CN\n\
                     --theme ID          Start with a built-in or discovered theme\n\
                     --theme-plugin PATH Load and select a theme JSON plugin\n\
                     --card1 PATH        Slot 1 card (default saves/card1.mcd)\n\
@@ -119,7 +126,23 @@ fn run() -> Result<(), String> {
             Some("--headless") => headless = true,
             Some("--fullscreen") => fullscreen = true,
             Some("--game-view") => game_view = true,
-            Some("--mute") => muted = true,
+            Some("--mute" | "--unmute") => muted = Some(argument == "--mute"),
+            Some("--clean-fullscreen" | "--fullscreen-controls") => {
+                clean_fullscreen = Some(argument == "--clean-fullscreen");
+            }
+            Some("--volume") => {
+                if volume.is_some() {
+                    return Err("Duplicate --volume".into());
+                }
+                volume = Some(
+                    args.next()
+                        .ok_or("Missing --volume value")?
+                        .to_str()
+                        .and_then(|s| s.parse::<u8>().ok())
+                        .filter(|v| *v <= 100)
+                        .ok_or("--volume expects 0..100")?,
+                );
+            }
             Some("--cpu") => {
                 if cpu.is_some() {
                     return Err("Duplicate --cpu".into());
@@ -164,6 +187,18 @@ fn run() -> Result<(), String> {
                 custom_cards = true;
             }
             Some("--no-memory-cards") => no_cards = true,
+            Some("--language") => {
+                if language.is_some() {
+                    return Err("Choose --language once".into());
+                }
+                let value = args.next().ok_or("Missing --language value")?;
+                language = Some(
+                    value
+                        .to_str()
+                        .ok_or("Invalid language encoding")?
+                        .parse::<eidoryn_psx::i18n::Language>()?,
+                );
+            }
             Some("--theme") => {
                 theme = Some(
                     args.next()
@@ -221,7 +256,9 @@ fn run() -> Result<(), String> {
             || crt.is_some()
             || renderer.is_some()
             || cpu.is_some()
-            || muted
+            || muted.is_some()
+            || volume.is_some()
+            || clean_fullscreen.is_some()
             || audio_dump.is_some()
             || custom_cards
             || bios_path.is_some()
@@ -230,6 +267,7 @@ fn run() -> Result<(), String> {
             || headless
             || fullscreen
             || game_view
+            || language.is_some()
             || theme.is_some()
             || theme_plugin.is_some()
             || start_running
@@ -277,7 +315,9 @@ fn run() -> Result<(), String> {
             || crt.is_some()
             || renderer.is_some()
             || cpu.is_some()
-            || muted
+            || muted.is_some()
+            || volume.is_some()
+            || clean_fullscreen.is_some()
             || audio_dump.is_some()
             || custom_cards
             || bios_path.is_some()
@@ -286,6 +326,7 @@ fn run() -> Result<(), String> {
             || headless
             || fullscreen
             || game_view
+            || language.is_some()
             || theme.is_some()
             || theme_plugin.is_some()
             || start_running
@@ -316,13 +357,14 @@ fn run() -> Result<(), String> {
             "--crt requires a desktop window; frame dumps contain the original pixels".into(),
         );
     }
-    if headless && muted {
-        return Err(
-            "--mute requires a desktop window; headless records audio without playing it".into(),
-        );
+    if headless && (muted.is_some() || volume.is_some() || clean_fullscreen.is_some()) {
+        return Err("Audio and fullscreen preferences require a desktop window".into());
     }
     if headless && (theme.is_some() || theme_plugin.is_some()) {
         return Err("--theme and --theme-plugin require a desktop window".into());
+    }
+    if headless && language.is_some() {
+        return Err("--language requires a desktop window".into());
     }
     if headless && start_running {
         return Err("--run requires a desktop window; headless already runs automatically".into());
@@ -353,11 +395,13 @@ fn run() -> Result<(), String> {
     } else {
         Machine::demo()
     };
-    machine
-        .bus
-        .gpu
-        .set_renderer(renderer.unwrap_or_default())
-        .map_err(|error| format!("Cannot start GPU renderer: {error}"))?;
+    if headless {
+        machine
+            .bus
+            .gpu
+            .set_renderer(renderer.unwrap_or_default())
+            .map_err(|error| format!("Cannot start GPU renderer: {error}"))?;
+    }
     if machine.bus.gpu.renderer_mode() == eidoryn_psx::systems::ps1::gpu::RendererMode::Vulkan {
         eprintln!("Renderer: {}", machine.bus.gpu.renderer_device());
     }
@@ -428,14 +472,18 @@ fn run() -> Result<(), String> {
             desktop::run(
                 machine,
                 desktop::Options {
+                    language,
                     muted,
+                    volume,
+                    renderer,
+                    clean_fullscreen,
                     auto_run,
                     bios: bios_path,
                     fullscreen,
                     game_view,
                     theme,
                     theme_plugin,
-                    crt: crt.unwrap_or_default(),
+                    crt,
                     graphics_open: false,
                 },
                 card_store,
@@ -443,7 +491,7 @@ fn run() -> Result<(), String> {
         }
         #[cfg(not(feature = "desktop"))]
         {
-            let _ = auto_run;
+            let _ = (auto_run, language);
             Err(
                 "Desktop support is disabled. Use --headless or build with default features."
                     .into(),

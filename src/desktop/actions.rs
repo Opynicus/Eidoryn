@@ -1,8 +1,17 @@
 use super::{Desktop, WorkspacePage};
+use eidoryn_psx::i18n::Text;
 use eidoryn_psx::systems::ps1::runner::Command;
 use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
 
 impl Desktop {
+    pub(super) fn stop_input(&mut self, cx: &mut Context<Self>) {
+        if self.audio.dragging {
+            self.persist_volume();
+        }
+        self.audio.dragging = false;
+        self.release_buttons(cx);
+    }
+
     pub(super) fn toggle_audio(&mut self, cx: &mut Context<Self>) {
         if self.audio.output.is_none() {
             match eidoryn_psx::audio::output::AudioOutput::open(self.audio.buffer.clone()) {
@@ -25,6 +34,8 @@ impl Desktop {
         } else {
             self.audio.volume
         });
+        self.preferences.muted = self.audio.muted;
+        self.save_preferences();
         cx.notify();
     }
 
@@ -65,16 +76,16 @@ impl Desktop {
             self.command(Command::SetButtons(self.pressed_buttons), cx);
         }
     }
-    pub(super) fn open(bios: bool, cx: &mut Context<Self>) {
+    pub(super) fn open(&mut self, bios: bool, cx: &mut Context<Self>) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some(
                 if bios {
-                    "选择 BIOS 固件（.bin/.rom，512 KiB）"
+                    self.tr(Text::BiosPicker)
                 } else {
-                    "打开 PS-X EXE"
+                    self.tr(Text::ExePicker)
                 }
                 .into(),
             ),
@@ -89,8 +100,12 @@ impl Desktop {
                         }
                     }
                     Ok(Ok(None)) => {}
-                    Ok(Err(error)) => view.notice = Some(format!("File picker: {error}")),
-                    Err(error) => view.notice = Some(format!("File picker: {error}")),
+                    Ok(Err(error)) => {
+                        view.notice = Some(format!("{}: {error}", view.tr(Text::FilePickerError)));
+                    }
+                    Err(error) => {
+                        view.notice = Some(format!("{}: {error}", view.tr(Text::FilePickerError)));
+                    }
                 }
                 cx.notify();
             });
@@ -99,7 +114,7 @@ impl Desktop {
     }
     pub(super) fn open_disc(&mut self, fast_boot: bool, cx: &mut Context<Self>) {
         if !fast_boot && self.bios.is_none() {
-            self.notice = Some("请先选择 512 KiB BIOS。自制程序可使用快速启动。".into());
+            self.notice = Some(self.tr(Text::BiosRequired).into());
             cx.notify();
             return;
         }
@@ -109,9 +124,9 @@ impl Desktop {
             multiple: false,
             prompt: Some(
                 if fast_boot {
-                    "自制程序 CUE/BIN 或 ISO：跳过 BIOS 初始化"
+                    self.tr(Text::FastPicker)
                 } else {
-                    "打开游戏镜像（多轨 BIN 请选择 CUE，或选择 ISO）"
+                    self.tr(Text::DiscPicker)
                 }
                 .into(),
             ),
@@ -133,8 +148,12 @@ impl Desktop {
                         }
                     }
                     Ok(Ok(None)) => {}
-                    Ok(Err(error)) => view.notice = Some(format!("File picker: {error}")),
-                    Err(error) => view.notice = Some(format!("File picker: {error}")),
+                    Ok(Err(error)) => {
+                        view.notice = Some(format!("{}: {error}", view.tr(Text::FilePickerError)));
+                    }
+                    Err(error) => {
+                        view.notice = Some(format!("{}: {error}", view.tr(Text::FilePickerError)));
+                    }
                 }
                 cx.notify();
             });
@@ -150,15 +169,50 @@ impl Desktop {
         if event.is_held {
             return;
         }
+        let key = event.keystroke.key.as_str();
+        if key == "tab" {
+            self.release_buttons(cx);
+            self.move_focus(event.keystroke.modifiers.shift, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if key == "f12" {
+            self.toggle_clean_fullscreen(cx);
+            if !self.graphics.open {
+                window.focus(&self.focus);
+            }
+            return;
+        }
         if self.graphics.open {
             match event.keystroke.key.as_str() {
                 "escape" | "f8" => {
-                    self.graphics.open = false;
-                    cx.notify();
+                    self.close_settings(window, cx);
                 }
+                "left" | "up" => self.move_focus(true, window, cx),
+                "right" | "down" => self.move_focus(false, window, cx),
                 _ => {}
             }
             return;
+        }
+        if !self.focus.is_focused(window) {
+            match key {
+                "escape" => {
+                    window.focus(&self.focus);
+                    cx.notify();
+                    return;
+                }
+                "left" | "up" => {
+                    self.move_focus(true, window, cx);
+                    return;
+                }
+                "right" | "down" => {
+                    self.move_focus(false, window, cx);
+                    return;
+                }
+                "f6" | "f7" | "f8" | "f9" | "f10" | "f11" => {}
+                "r" if event.keystroke.modifiers.control => {}
+                _ => return, // Enter/Space activate the focused control on key-up.
+            }
         }
         let modifiers = &event.keystroke.modifiers;
         if !modifiers.control
@@ -181,10 +235,12 @@ impl Desktop {
             }
             "f11" => {
                 window.toggle_fullscreen();
+                window.focus(&self.focus);
                 cx.notify();
             }
             "escape" if window.is_fullscreen() => {
                 window.toggle_fullscreen();
+                window.focus(&self.focus);
                 cx.notify();
             }
             "escape" if self.game_view => {
@@ -202,6 +258,7 @@ impl Desktop {
         } else {
             self.game_view = !self.game_view;
         }
+        window.focus(&self.focus);
         cx.notify();
     }
 
@@ -217,6 +274,7 @@ impl Desktop {
         self.game_view = false;
         self.page = page;
         self.graphics.open = false;
+        window.focus(&self.focus);
         cx.notify();
     }
 
@@ -224,6 +282,34 @@ impl Desktop {
         self.release_buttons(cx);
         self.graphics.open = true;
         self.appearance_open = appearance;
+        cx.notify();
+    }
+
+    pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.graphics.open = false;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    fn move_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // The drawer is modal: skip background tab stops, including on wraparound.
+        for _ in 0..128 {
+            if backwards {
+                window.focus_prev();
+            } else {
+                window.focus_next();
+            }
+            if !self.graphics.open || self.settings_focus.contains_focused(window, cx) {
+                break;
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_clean_fullscreen(&mut self, cx: &mut Context<Self>) {
+        self.clean_fullscreen = !self.clean_fullscreen;
+        self.preferences.clean_fullscreen = self.clean_fullscreen;
+        self.save_preferences();
         cx.notify();
     }
 }

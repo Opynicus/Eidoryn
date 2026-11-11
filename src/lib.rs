@@ -2,6 +2,9 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod app;
+pub mod i18n;
+#[cfg(feature = "desktop")]
+pub mod preferences;
 pub mod systems;
 #[cfg(feature = "desktop")]
 pub use eidoryn_host::theme;

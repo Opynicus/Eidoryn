@@ -4,6 +4,7 @@ use gpui::{TestAppContext, VisualTestContext};
 #[gpui::test]
 fn sidebar_clicks_navigate_between_workspaces(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1280.), px(900.)));
     cx.run_until_parked();
     for (selector, expected) in [
@@ -27,6 +28,12 @@ fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Deskto
     let mut themes = ThemeCatalog::default();
     themes.select("midnight").unwrap();
     Desktop {
+        language: eidoryn_psx::i18n::Language::ZhCn,
+        preferences: eidoryn_psx::preferences::Preferences::default(),
+        preferences_path: Some(test_config_path()),
+        theme_paths: std::collections::HashMap::new(),
+        clean_fullscreen: false,
+        settings_focus: cx.focus_handle(),
         runner: Runner::new(machine, false).unwrap(),
         graphics: graphics::GraphicsControls::new(snapshot.renderer, false),
         snapshot,
@@ -60,6 +67,7 @@ fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Deskto
 #[gpui::test]
 fn settings_capture_input_and_game_view_returns_to_debug(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     view.update(cx, |view, cx| {
         view.page = WorkspacePage::Debug;
         cx.notify();
@@ -89,17 +97,123 @@ fn settings_capture_input_and_game_view_returns_to_debug(cx: &mut TestAppContext
 #[gpui::test]
 fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
     let window = cx.add_window(desktop);
+    let _cleanup = TestConfig(
+        window
+            .read_with(cx, |v, _| v.preferences_path.clone().unwrap())
+            .unwrap(),
+    );
     let mut visual = VisualTestContext::from_window(*window, cx);
-    for (width, height) in [(980., 680.), (1280., 900.), (1600., 1000.)] {
+    for (width, height, rem) in [
+        (640., 480., 20.),
+        (980., 680., 16.),
+        (1280., 900., 16.),
+        (1600., 1000., 16.),
+    ] {
         visual.simulate_resize(size(px(width), px(height)));
         for theme in ["midnight", "lavender", "ocean", "forest"] {
-            window
-                .update(&mut visual, |view, _, cx| {
-                    view.themes.select(theme).unwrap();
-                    cx.notify();
-                })
-                .unwrap();
-            visual.run_until_parked();
+            for language in [
+                eidoryn_psx::i18n::Language::En,
+                eidoryn_psx::i18n::Language::ZhCn,
+            ] {
+                for (page, game, settings, appearance) in [
+                    (WorkspacePage::Console, false, false, false),
+                    (WorkspacePage::Debug, false, false, false),
+                    (WorkspacePage::Console, true, false, false),
+                    (WorkspacePage::Console, false, true, false),
+                    (WorkspacePage::Console, false, true, true),
+                ] {
+                    window
+                        .update(&mut visual, |view, window, cx| {
+                            window.set_rem_size(px(rem));
+                            view.language = language;
+                            view.themes.select(theme).unwrap();
+                            view.page = page;
+                            view.game_view = game;
+                            view.graphics.open = settings;
+                            view.appearance_open = appearance;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    visual.run_until_parked();
+                }
+            }
         }
+    }
+}
+
+#[gpui::test]
+fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let path = view.read_with(cx, |v, _| v.preferences_path.clone().unwrap());
+    let _cleanup = TestConfig(path.clone());
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    cx.run_until_parked();
+    press_keys(cx, "tab tab tab enter");
+    assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Debug);
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    press_keys(cx, "escape f8 tab tab tab enter");
+    assert!(view.read_with(cx, |v, _| v.appearance_open));
+    press_keys(cx, "tab enter");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.language),
+        eidoryn_psx::i18n::Language::En
+    );
+    assert_eq!(
+        eidoryn_psx::preferences::Preferences::load(&path)
+            .unwrap()
+            .language
+            .as_deref(),
+        Some("en")
+    );
+    for _ in 0..24 {
+        press_keys(cx, "tab");
+        view.update_in(cx, |v, window, cx| {
+            assert!(v.settings_focus.contains_focused(window, cx));
+        });
+    }
+    view.update(cx, |view, cx| view.select_theme("ocean", cx));
+    assert_eq!(
+        eidoryn_psx::preferences::Preferences::load(&path)
+            .unwrap()
+            .theme,
+        "ocean"
+    );
+    press_keys(cx, "escape f12");
+    assert!(view.read_with(cx, |v, _| v.clean_fullscreen));
+    assert!(
+        eidoryn_psx::preferences::Preferences::load(&path)
+            .unwrap()
+            .clean_fullscreen
+    );
+    press_keys(cx, "f11");
+    assert!(cx.debug_bounds("pure-display").is_some());
+    assert!(cx.debug_bounds("game-controls").is_none());
+    press_keys(cx, "f12");
+    assert!(cx.debug_bounds("game-controls").is_some());
+    assert!(cx.debug_bounds("pure-display").is_none());
+    press_keys(cx, "escape");
+}
+
+fn test_config_path() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "eidoryn-ui-{}-{}.json",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+struct TestConfig(std::path::PathBuf);
+impl Drop for TestConfig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn press_keys(cx: &mut VisualTestContext, keys: &str) {
+    for key in keys.split_whitespace() {
+        cx.simulate_keystrokes(key);
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+        });
     }
 }
