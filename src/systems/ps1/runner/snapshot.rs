@@ -8,6 +8,14 @@ use crate::systems::ps1::{
 };
 use std::{path::PathBuf, sync::Arc};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionState {
+    Running,
+    Paused,
+    Stopped,
+}
+
+#[allow(clippy::struct_excessive_bools)] // Independent media, execution, and shutdown flags.
 pub struct Snapshot {
     pub cards: [Option<CardStatus>; 2],
     pub pad_buttons: u16,
@@ -21,10 +29,14 @@ pub struct Snapshot {
     pub cpu_stats: CpuStats,
     pub title: String,
     pub running: bool,
+    /// A machine/renderer fault, independent of recoverable notifications.
+    pub halted: bool,
     pub message: Option<String>,
     pub close_ready: bool,
     pub gpu_status: u32,
     pub renderer: RendererMode,
+    /// Completed renderer-selection requests, including rejected requests.
+    pub renderer_revision: u64,
     pub renderer_device: String,
     pub gpu_commands: u64,
     pub slices: u64,
@@ -38,6 +50,15 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    pub fn execution_state(&self) -> ExecutionState {
+        if self.halted || self.close_ready {
+            ExecutionState::Stopped
+        } else if self.running {
+            ExecutionState::Running
+        } else {
+            ExecutionState::Paused
+        }
+    }
     /// Equal pixels and dimensions can share the frontend's existing GPU texture.
     pub fn has_same_frame(&self, other: &Self) -> bool {
         self.dimensions == other.dimensions
@@ -61,6 +82,8 @@ impl Snapshot {
                 )
             })
             .collect();
+        let renderer_error = gpu.renderer_error();
+        let halted = machine.halted.is_some() || renderer_error.is_some();
         Self {
             cards: std::array::from_fn(|slot| {
                 machine.bus.sio.cards[slot].as_ref().map(|card| CardStatus {
@@ -79,14 +102,15 @@ impl Snapshot {
             cpu_mode: machine.cpu_mode(),
             cpu_stats: machine.cpu_stats(),
             title: machine.title.clone(),
-            running: running && gpu.renderer_error().is_none(),
-            message: gpu
-                .renderer_error()
+            running: running && !halted,
+            halted,
+            message: renderer_error
                 .or(message)
                 .or_else(|| machine.halted.as_ref().map(ToString::to_string)),
             close_ready: false,
             gpu_status: machine.bus.gpu.status(),
             renderer: machine.bus.gpu.renderer_mode(),
+            renderer_revision: 0,
             renderer_device: machine.bus.gpu.renderer_device(),
             gpu_commands: machine.bus.gpu.commands,
             slices: machine.slices,

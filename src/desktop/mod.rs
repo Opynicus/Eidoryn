@@ -3,9 +3,14 @@ mod actions;
 mod appearance;
 mod audio_controls;
 mod components;
+mod console;
 mod graphics;
+mod icons;
 mod probe;
 mod ps1_inspector;
+mod settings;
+#[cfg(all(test, feature = "ui-tests"))]
+mod tests;
 mod video;
 mod view;
 
@@ -34,15 +39,20 @@ use std::{
 use video::{CrtState, frame_image};
 
 #[allow(clippy::struct_excessive_bools)] // Independent startup preferences.
+#[derive(Default)]
 pub struct Options {
-    pub muted: bool,
+    pub language: Option<eidoryn_psx::i18n::Language>,
+    pub muted: Option<bool>,
+    pub volume: Option<u8>,
+    pub renderer: Option<eidoryn_psx::systems::ps1::gpu::RendererMode>,
+    pub clean_fullscreen: Option<bool>,
     pub auto_run: bool,
     pub bios: Option<std::path::PathBuf>,
     pub fullscreen: bool,
     pub game_view: bool,
     pub theme: Option<String>,
     pub theme_plugin: Option<std::path::PathBuf>,
-    pub crt: eidoryn_psx::video_filter::CrtFilter,
+    pub crt: Option<eidoryn_psx::video_filter::CrtFilter>,
     pub graphics_open: bool,
 }
 
@@ -51,28 +61,19 @@ pub fn run(machine: Machine, options: Options, store: CardStore) -> Result<(), S
 }
 
 pub fn run_with_probe(
-    machine: Machine,
+    mut machine: Machine,
     options: Options,
     store: CardStore,
     probe: Option<ProbeOptions>,
 ) -> Result<(), String> {
     let probe = probe.map(probe::Probe::new).transpose()?;
-    let mut themes = ThemeCatalog::default();
-    let errors = themes.discover(std::path::Path::new("plugins/themes"));
-    if let Some(path) = &options.theme_plugin {
-        let id = themes.load_plugin(path)?;
-        themes.select(&id)?;
-    }
-    if let Some(id) = &options.theme {
-        themes.select(id)?;
-    }
-    let mut notice = (!errors.is_empty()).then(|| errors.join("\n"));
+    let mut startup = settings::load(&mut machine, &options)?;
     let audio_buffer = AudioBuffer::default();
-    audio_buffer.set_volume(if options.muted { 0 } else { 75 });
+    audio_buffer.set_volume(if startup.muted { 0 } else { startup.volume });
     let audio_output = match AudioOutput::open(audio_buffer.clone()) {
         Ok(output) => Some(output),
         Err(error) => {
-            notice = Some(error);
+            startup.notice = Some(error);
             None
         }
     };
@@ -83,112 +84,127 @@ pub fn run_with_probe(
     let audio = AudioControls {
         buffer: audio_buffer,
         output: audio_output,
-        muted: options.muted,
-        volume: 75,
+        muted: startup.muted,
+        volume: startup.volume,
         dragging: false,
     };
-    open_window(runner, snapshot, options, themes, notice, audio, probe)
+    open_window(runner, snapshot, options, startup, audio, probe)
 }
 
 fn open_window(
     runner: Runner,
     snapshot: Snapshot,
     options: Options,
-    themes: ThemeCatalog,
-    notice: Option<String>,
+    startup: settings::Startup,
     audio: AudioControls,
     probe: Option<probe::Probe>,
 ) -> Result<(), String> {
     let startup_error = Rc::new(RefCell::new(None));
     let error_slot = Rc::clone(&startup_error);
-    Application::new().run(move |cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1280.), px(900.)), cx);
-        let result = cx.open_window(
-            WindowOptions {
-                app_id: Some(app::APPLICATION_ID.into()),
-                window_bounds: Some(if options.fullscreen {
-                    WindowBounds::Fullscreen(bounds)
-                } else {
-                    WindowBounds::Windowed(bounds)
-                }),
-                window_min_size: Some(size(px(1080.), px(820.))),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some(app::NAME.into()),
+    Application::new()
+        .with_assets(icons::Icons)
+        .run(move |cx: &mut App| {
+            let bounds = Bounds::centered(None, size(px(1280.), px(900.)), cx);
+            let result = cx.open_window(
+                WindowOptions {
+                    app_id: Some(app::APPLICATION_ID.into()),
+                    window_bounds: Some(if options.fullscreen {
+                        WindowBounds::Fullscreen(bounds)
+                    } else {
+                        WindowBounds::Windowed(bounds)
+                    }),
+                    window_min_size: Some(size(px(980.), px(680.))),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some(app::NAME.into()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                window.set_window_title(app::NAME);
-                cx.new(|cx| {
-                    let focus = cx.focus_handle();
-                    window.focus(&focus);
-                    let subscriptions = vec![
-                        cx.observe_window_activation(window, |view: &mut Desktop, window, cx| {
-                            if !window.is_window_active() {
-                                view.audio.dragging = false;
-                                view.release_buttons(cx);
-                            }
-                        }),
-                        cx.on_blur(&focus, window, |view: &mut Desktop, _, cx| {
-                            view.audio.dragging = false;
-                            view.release_buttons(cx);
-                        }),
-                    ];
-                    let image = frame_image(&snapshot);
-                    let weak = cx.weak_entity();
-                    window.on_window_should_close(cx, move |_, cx| {
-                        weak.update(cx, |view: &mut Desktop, cx| {
-                            view.command(Command::RequestClose, cx);
-                        })
-                        .is_err()
-                    });
-                    Desktop::start_snapshot_updates(cx);
-                    Desktop {
-                        graphics: graphics::GraphicsControls::new(
-                            snapshot.renderer,
-                            options.graphics_open,
-                        ),
-                        runner,
-                        snapshot,
-                        image,
-                        icon: Arc::new(gpui::Image::from_bytes(
-                            gpui::ImageFormat::Png,
-                            include_bytes!("../../assets/eidoryn.png").to_vec(),
-                        )),
-                        crt: CrtState::new(options.crt),
-                        last_redraw: Instant::now(),
-                        focus,
-                        notice,
-                        audio,
-                        bios: options.bios,
-                        game_view: options.game_view,
-                        themes,
-                        appearance_open: false,
-                        pressed_buttons: 0,
-                        probe,
-                        _subscriptions: subscriptions,
-                    }
-                })
-            },
-        );
-        if let Err(error) = result {
-            *error_slot.borrow_mut() = Some(format!("Cannot open GPUI window: {error}"));
-            cx.quit();
-            return;
-        }
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
+                },
+                |window, cx| {
+                    window.set_window_title(app::NAME);
+                    cx.new(|cx| {
+                        let focus = cx.focus_handle();
+                        window.focus(&focus);
+                        let subscriptions = vec![
+                            cx.observe_window_activation(
+                                window,
+                                |view: &mut Desktop, window, cx| {
+                                    if !window.is_window_active() {
+                                        view.stop_input(cx);
+                                    }
+                                },
+                            ),
+                            cx.on_blur(&focus, window, |view: &mut Desktop, _, cx| {
+                                view.stop_input(cx);
+                            }),
+                        ];
+                        let image = frame_image(&snapshot);
+                        let weak = cx.weak_entity();
+                        window.on_window_should_close(cx, move |_, cx| {
+                            weak.update(cx, |view: &mut Desktop, cx| {
+                                view.command(Command::RequestClose, cx);
+                            })
+                            .is_err()
+                        });
+                        Desktop::start_snapshot_updates(cx);
+                        Desktop {
+                            graphics: graphics::GraphicsControls::new(
+                                snapshot.renderer,
+                                options.graphics_open,
+                            ),
+                            language: startup.language,
+                            preferences: startup.preferences,
+                            preferences_path: startup.path,
+                            theme_paths: startup.theme_paths,
+                            clean_fullscreen: startup.clean_fullscreen,
+                            settings_focus: cx.focus_handle(),
+                            runner,
+                            snapshot,
+                            image,
+                            icon: Arc::new(gpui::Image::from_bytes(
+                                gpui::ImageFormat::Png,
+                                include_bytes!("../../assets/eidoryn.png").to_vec(),
+                            )),
+                            crt: CrtState::new(startup.crt),
+                            last_redraw: Instant::now(),
+                            focus,
+                            notice: startup.notice,
+                            audio,
+                            bios: options.bios,
+                            game_view: options.game_view,
+                            page: WorkspacePage::Console,
+                            themes: startup.themes,
+                            appearance_open: false,
+                            pressed_buttons: 0,
+                            probe,
+                            _subscriptions: subscriptions,
+                        }
+                    })
+                },
+            );
+            if let Err(error) = result {
+                *error_slot.borrow_mut() = Some(format!("Cannot open GPUI window: {error}"));
                 cx.quit();
+                return;
             }
-        })
-        .detach();
-        cx.activate(true);
-    });
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            cx.activate(true);
+        });
     startup_error.borrow_mut().take().map_or(Ok(()), Err)
 }
 
 struct Desktop {
+    language: eidoryn_psx::i18n::Language,
+    preferences: eidoryn_psx::preferences::Preferences,
+    preferences_path: Option<std::path::PathBuf>,
+    theme_paths: std::collections::HashMap<String, std::path::PathBuf>,
+    clean_fullscreen: bool,
+    settings_focus: FocusHandle,
     runner: Runner,
     snapshot: Snapshot,
     image: Arc<RenderImage>,
@@ -200,12 +216,20 @@ struct Desktop {
     audio: AudioControls,
     bios: Option<std::path::PathBuf>,
     game_view: bool,
+    page: WorkspacePage,
     pressed_buttons: u16,
     probe: Option<probe::Probe>,
     themes: ThemeCatalog,
     appearance_open: bool,
     graphics: graphics::GraphicsControls,
     _subscriptions: Vec<gpui::Subscription>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum WorkspacePage {
+    #[default]
+    Console,
+    Debug,
 }
 
 impl Desktop {
@@ -248,7 +272,10 @@ impl Desktop {
             if let Some(probe) = &mut self.probe {
                 probe.record(snapshot.video_frames, "receive");
             }
-            self.graphics.receive(&snapshot);
+            if let Some(mode) = self.graphics.receive(&snapshot) {
+                self.preferences.renderer = mode.label().to_ascii_lowercase();
+                self.save_preferences();
+            }
             if snapshot.bios_path.is_some() {
                 self.bios.clone_from(&snapshot.bios_path);
             }
@@ -270,6 +297,40 @@ impl Desktop {
                 self.last_redraw = Instant::now();
                 cx.notify();
             }
+        }
+    }
+}
+
+impl Desktop {
+    fn tr(&self, key: eidoryn_psx::i18n::Text) -> &'static str {
+        self.language.text(key)
+    }
+    fn set_language(
+        &mut self,
+        language: eidoryn_psx::i18n::Language,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.language = language;
+        self.preferences.language = Some(language.id().into());
+        self.save_preferences();
+        cx.notify();
+    }
+
+    fn renderer_label(&self) -> &'static str {
+        use eidoryn_psx::i18n::Text;
+        use eidoryn_psx::systems::ps1::gpu::RendererMode;
+        self.tr(match self.snapshot.renderer {
+            RendererMode::Serial => Text::SerialRenderer,
+            RendererMode::Threaded => Text::ThreadedRenderer,
+            RendererMode::Vulkan => Text::VulkanRenderer,
+        })
+    }
+
+    fn display_title(&self) -> &str {
+        if self.snapshot.title == "Built-in MIPS demo" {
+            self.tr(eidoryn_psx::i18n::Text::BuiltinDemo)
+        } else {
+            &self.snapshot.title
         }
     }
 }

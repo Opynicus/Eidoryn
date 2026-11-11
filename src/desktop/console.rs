@@ -1,0 +1,442 @@
+use super::{
+    Desktop,
+    components::{action, button, card, heading, icon_button, label, pair},
+    icons::icon,
+};
+use eidoryn_psx::i18n::Text;
+use eidoryn_psx::systems::ps1::runner::{Command, ExecutionState};
+use gpui::{Context, Window, div, prelude::*, px, rgb};
+
+impl Desktop {
+    pub(super) fn console_page(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let stacked = window.viewport_size().width < px(1400.);
+        let height = (f32::from(window.viewport_size().height) - 440.).clamp(240., 390.);
+        let display = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .gap_3()
+            .child(self.display_card(height))
+            .child(self.transport(false, cx))
+            .child(self.shortcuts());
+        let details = if stacked {
+            div()
+                .flex()
+                .gap_4()
+                .child(self.session_card(cx).flex_1().min_w_0())
+                .child(self.memory_card(cx).flex_1().min_w_0())
+        } else {
+            div()
+                .w(px(292.))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(self.session_card(cx))
+                .child(self.memory_card(cx))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(rgb(p.primary))
+                                    .child(self.tr(Text::ConsoleEyebrow)),
+                            )
+                            .child(
+                                div()
+                                    .text_2xl()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(self.tr(Text::Welcome)),
+                            )
+                            .child(label(p, self.tr(Text::WelcomeHint))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_shrink_0()
+                            .gap_2()
+                            .child(
+                                action(
+                                    p,
+                                    "open-bios",
+                                    self.tr(Text::ChooseBios),
+                                    Some("plus"),
+                                    false,
+                                )
+                                .on_click(cx.listener(|view, _, _, cx| view.open(true, cx))),
+                            )
+                            .child(
+                                action(p, "open-disc", self.tr(Text::OpenDisc), Some("disc"), true)
+                                    .on_click(
+                                        cx.listener(|view, _, _, cx| view.open_disc(false, cx)),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(if stacked {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(display)
+                    .child(details)
+            } else {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_4()
+                    .child(display)
+                    .child(details)
+            })
+    }
+
+    fn display_card(&self, height: f32) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let s = &self.snapshot;
+        let speed = self.tr(Text::Speed);
+        let (status, background, text) = match s.execution_state() {
+            ExecutionState::Stopped => (self.tr(Text::Stopped), p.error, p.on_error),
+            ExecutionState::Running => (self.tr(Text::Running), p.success, p.on_success),
+            ExecutionState::Paused => (self.tr(Text::Paused), p.tonal, p.on_tonal),
+        };
+        card(p)
+            .overflow_hidden()
+            .child(
+                div()
+                    .h(px(52.))
+                    .px_4()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icon("screen", p.muted))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(self.tr(Text::Display)),
+                    )
+                    .child(label(p, "DISPLAY"))
+                    .child(div().flex_1())
+                    .child(label(
+                        p,
+                        format!("{} × {}   ·   4:3", s.dimensions.0, s.dimensions.1),
+                    )),
+            )
+            .child(
+                div()
+                    .mx_3()
+                    .p_3()
+                    .h(px(height))
+                    .rounded_lg()
+                    .bg(rgb(p.video_background))
+                    .child(self.video()),
+            )
+            .child(
+                div()
+                    .p_4()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(self.display_title().to_owned()),
+                            )
+                            .child(label(
+                                p,
+                                format!(
+                                    "PlayStation  ·  {:.1} FPS  ·  {:.0}% {speed}",
+                                    s.video_fps,
+                                    100. * s.video_fps / s.target_fps
+                                ),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .rounded_full()
+                            .bg(rgb(background))
+                            .text_color(rgb(text))
+                            .text_xs()
+                            .child(format!("●  {status}")),
+                    ),
+            )
+    }
+
+    pub(super) fn transport(&self, game: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let running = self.snapshot.running;
+        card(p)
+            .p_3()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(
+                action(
+                    p,
+                    "transport-run",
+                    if running {
+                        self.tr(Text::Pause)
+                    } else {
+                        self.tr(Text::Run)
+                    },
+                    Some(if running { "pause" } else { "play" }),
+                    true,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.command(Command::Toggle, cx))),
+            )
+            .child(
+                icon_button(p, "transport-reset", "reset", self.tr(Text::Reset))
+                    .on_click(cx.listener(|view, _, _, cx| view.command(Command::Reset, cx))),
+            )
+            .child(self.crt_control(cx))
+            .children(game.then(|| {
+                action(
+                    p,
+                    "transport-graphics",
+                    self.tr(Text::Graphics),
+                    Some("settings"),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.open_settings(false, cx)))
+            }))
+            .child(div().flex_1().min_w_0())
+            .child(self.audio_controls(cx))
+            .child(if game {
+                action(
+                    p,
+                    "transport-fullscreen",
+                    self.tr(Text::Fullscreen),
+                    Some("expand"),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, window, cx| {
+                    window.toggle_fullscreen();
+                    window.focus(&view.focus);
+                    cx.notify();
+                }))
+            } else {
+                action(
+                    p,
+                    "transport-game",
+                    self.tr(Text::GameView),
+                    Some("expand"),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, window, cx| view.toggle_view(window, cx)))
+            })
+    }
+
+    fn shortcuts(&self) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_4()
+            .text_xs()
+            .text_color(rgb(p.muted))
+            .children(
+                [
+                    ("Space", self.tr(Text::RunPause)),
+                    ("F6", self.tr(Text::GameView)),
+                    ("F7", "CRT"),
+                    ("F8", self.tr(Text::Graphics)),
+                ]
+                .into_iter()
+                .map(|(key, description)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .bg(rgb(p.surface_variant))
+                                .child(key),
+                        )
+                        .child(description)
+                }),
+            )
+    }
+
+    fn session_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let bios = self
+            .bios
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map_or_else(
+                || self.tr(Text::NotSelected).into(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+        card(p)
+            .p_4()
+            .gap_3()
+            .child(heading(p, self.tr(Text::Session), "PLAYSTATION"))
+            .child(
+                div()
+                    .p_3()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .rounded_lg()
+                    .bg(rgb(p.surface_variant))
+                    .child(
+                        div()
+                            .size(px(38.))
+                            .rounded_lg()
+                            .bg(rgb(p.tonal))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("disc", p.primary)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(self.display_title().to_owned()),
+                            )
+                            .child(label(
+                                p,
+                                if self.snapshot.disc_mounted {
+                                    self.tr(Text::DiscSession)
+                                } else {
+                                    self.tr(Text::LocalSession)
+                                },
+                            )),
+                    ),
+            )
+            .child(pair(p, "BIOS", bios))
+            .child(pair(p, self.tr(Text::Renderer), self.renderer_label()))
+            .child(pair(
+                p,
+                self.tr(Text::SectorsRead),
+                self.snapshot.cdrom_reads.to_string(),
+            ))
+            .child(
+                action(p, "open-exe", self.tr(Text::OpenExe), Some("plus"), false)
+                    .on_click(cx.listener(|view, _, _, cx| view.open(false, cx))),
+            )
+            .child(
+                button(p, "fast-boot", self.tr(Text::FastBoot), false)
+                    .on_click(cx.listener(|view, _, _, cx| view.open_disc(true, cx))),
+            )
+            .child(
+                button(p, "demo", self.tr(Text::Demo), false)
+                    .on_click(cx.listener(|view, _, _, cx| view.command(Command::Demo, cx))),
+            )
+    }
+
+    fn memory_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        card(p)
+            .p_4()
+            .gap_3()
+            .child(heading(p, self.tr(Text::MemoryCards), "MEMORY CARD"))
+            .children(self.snapshot.cards.iter().enumerate().map(|(slot, card)| {
+                let (name, state) = card.as_ref().map_or_else(
+                    || {
+                        (
+                            self.tr(Text::Disconnected).to_owned(),
+                            self.tr(Text::Disconnected),
+                        )
+                    },
+                    |card| {
+                        let name = card
+                            .path
+                            .as_ref()
+                            .and_then(|path| path.file_name())
+                            .map_or_else(
+                                || self.tr(Text::TemporaryCard).into(),
+                                |name| name.to_string_lossy().into_owned(),
+                            );
+                        (
+                            name,
+                            if card.pending {
+                                self.tr(Text::Saving)
+                            } else {
+                                self.tr(Text::Synced)
+                            },
+                        )
+                    },
+                );
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(rgb(p.border))
+                    .child(
+                        div()
+                            .size(px(28.))
+                            .rounded_md()
+                            .bg(rgb(p.surface_variant))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .child(format!("{:02}", slot + 1)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().text_sm().child(format!(
+                                "{} {}",
+                                self.tr(Text::Slot),
+                                slot + 1
+                            )))
+                            .child(label(p, name).truncate()),
+                    )
+                    .child(label(p, state))
+            }))
+            .child(
+                button(p, "flush-cards", self.tr(Text::SyncCards), false)
+                    .on_click(cx.listener(|view, _, _, cx| view.command(Command::FlushCards, cx))),
+            )
+            .child(label(p, self.tr(Text::SaveHint)))
+    }
+}

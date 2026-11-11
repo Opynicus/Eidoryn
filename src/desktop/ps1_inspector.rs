@@ -1,45 +1,130 @@
 use super::{
-    Desktop,
-    components::{button, card, heading, label, pair},
+    Desktop, WorkspacePage,
+    components::{action, button, card, heading, label, pair},
 };
+use eidoryn_psx::i18n::Text;
 use eidoryn_psx::systems::ps1::{cpu::REGISTER_NAMES, runner::Command};
-use gpui::{Context, IntoElement, div, prelude::*, px, rgb};
+use gpui::{Context, Window, div, prelude::*, px, rgb};
 
 impl Desktop {
-    pub(super) fn registers(&self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn debug_page(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let cpu = &self.snapshot.cpu;
-        card(p)
-            .id("cpu-inspector")
-            .w(px(318.))
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex_shrink_0()
-            .p_5()
-            .gap_3()
-            .child(heading(
-                p,
-                "CPU inspector",
-                if compact {
-                    "R3000A · Scroll"
-                } else {
-                    "R3000A"
-                },
-            ))
+        let stacked = window.viewport_size().width < px(1120.);
+        let instructions = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(self.disassembly(cx))
+            .child(self.gpu_details());
+        let registers = self
+            .registers()
+            .when(!stacked, |element| element.w(px(310.)).flex_shrink_0());
+        div()
+            .flex()
+            .flex_col()
+            .gap_5()
             .child(
                 div()
-                    .p_4()
-                    .rounded_xl()
-                    .bg(rgb(p.tonal))
-                    .child(label(p, "Program counter"))
+                    .flex()
+                    .items_end()
+                    .justify_between()
+                    .gap_4()
                     .child(
                         div()
-                            .mt_1()
-                            .text_2xl()
-                            .font_family("monospace")
-                            .text_color(rgb(p.on_tonal))
-                            .child(format!("{:08X}", cpu.pc)),
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(rgb(p.primary))
+                                    .child(self.tr(Text::DebugEyebrow)),
+                            )
+                            .child(
+                                div()
+                                    .text_2xl()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(self.tr(Text::DebugWorkspace)),
+                            )
+                            .child(label(p, self.tr(Text::DebugHint))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                action(
+                                    p,
+                                    "debug-back",
+                                    self.tr(Text::BackConsole),
+                                    Some("back"),
+                                    false,
+                                )
+                                .on_click(cx.listener(
+                                    |view, _, window, cx| {
+                                        view.show_page(WorkspacePage::Console, window, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                action(
+                                    p,
+                                    "debug-run",
+                                    if self.snapshot.running {
+                                        self.tr(Text::Pause)
+                                    } else {
+                                        self.tr(Text::Run)
+                                    },
+                                    Some(if self.snapshot.running {
+                                        "pause"
+                                    } else {
+                                        "play"
+                                    }),
+                                    true,
+                                )
+                                .on_click(
+                                    cx.listener(|view, _, _, cx| view.command(Command::Toggle, cx)),
+                                ),
+                            ),
                     ),
+            )
+            .child(if stacked {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(instructions)
+                    .child(registers)
+            } else {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_4()
+                    .child(instructions)
+                    .child(registers)
+            })
+    }
+
+    fn disassembly(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        card(p)
+            .p_4()
+            .gap_3()
+            .child(heading(p, self.tr(Text::Instructions), "MIPS I"))
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .px_3()
+                    .text_xs()
+                    .text_color(rgb(p.muted))
+                    .child(div().w(px(16.)))
+                    .child(div().w(px(88.)).child(self.tr(Text::Address)))
+                    .child(div().w(px(88.)).child(self.tr(Text::Opcode)))
+                    .child(self.tr(Text::Instruction)),
             )
             .child(
                 div()
@@ -47,18 +132,108 @@ impl Desktop {
                     .flex_col()
                     .gap_1()
                     .font_family("monospace")
+                    .children(self.snapshot.disassembly.iter().enumerate().map(
+                        |(index, (address, word, instruction))| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .text_xs()
+                                .bg(rgb(if index == 0 { p.tonal } else { p.surface }))
+                                .text_color(rgb(if index == 0 { p.on_tonal } else { p.muted }))
+                                .child(
+                                    div()
+                                        .w(px(16.))
+                                        .text_color(rgb(p.primary))
+                                        .child(if index == 0 { "›" } else { " " }),
+                                )
+                                .child(div().w(px(88.)).child(format!("{address:08X}")))
+                                .child(div().w(px(88.)).child(word.map_or_else(
+                                    || "--------".into(),
+                                    |word| format!("{word:08X}"),
+                                )))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(instruction.clone()),
+                                )
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        action(p, "debug-step", self.tr(Text::Step), Some("skip"), false).on_click(
+                            cx.listener(|view, _, _, cx| view.command(Command::Step, cx)),
+                        ),
+                    )
+                    .child(
+                        button(p, "debug-slice", self.tr(Text::Slice), false).on_click(
+                            cx.listener(|view, _, _, cx| view.command(Command::Slice, cx)),
+                        ),
+                    )
+                    .child(
+                        button(p, "debug-reset", self.tr(Text::Reset), false).on_click(
+                            cx.listener(|view, _, _, cx| view.command(Command::Reset, cx)),
+                        ),
+                    ),
+            )
+    }
+
+    fn registers(&self) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let cpu = &self.snapshot.cpu;
+        card(p)
+            .p_4()
+            .gap_3()
+            .child(heading(p, self.tr(Text::Registers), "R3000A"))
+            .child(
+                div()
+                    .p_3()
+                    .rounded_lg()
+                    .bg(rgb(p.surface_variant))
+                    .child(label(p, self.tr(Text::ProgramCounter)))
+                    .child(
+                        div()
+                            .mt_1()
+                            .text_xl()
+                            .font_family("monospace")
+                            .text_color(rgb(p.primary))
+                            .child(format!("{:08X}", cpu.pc)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .font_family("monospace")
                     .children((0..16).map(|row| {
                         div()
                             .flex()
-                            .justify_between()
-                            .children([row, row + 16].map(|r| {
+                            .gap_3()
+                            .children([row, row + 16].map(|register| {
                                 div()
+                                    .flex_1()
+                                    .min_w_0()
                                     .flex()
-                                    .w(px(128.))
                                     .justify_between()
+                                    .gap_2()
+                                    .py_1()
                                     .text_xs()
-                                    .child(div().text_color(rgb(p.muted)).child(REGISTER_NAMES[r]))
-                                    .child(format!("{:08X}", cpu.registers[r]))
+                                    .child(
+                                        div()
+                                            .text_color(rgb(p.muted))
+                                            .child(REGISTER_NAMES[register]),
+                                    )
+                                    .child(format!("{:08X}", cpu.registers[register]))
                             }))
                     })),
             )
@@ -74,171 +249,33 @@ impl Desktop {
                 "Cause / EPC",
                 format!("{:08X} / {:08X}", cpu.cop0[13], cpu.cop0[14]),
             ))
-            .child(div().flex_1())
-            .child(self.memory_cards(cx))
-            .child(
-                div()
-                    .p_3()
-                    .rounded_xl()
-                    .bg(rgb(p.surface_variant))
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(pair(p, "Main RAM", "2 MiB"))
-                    .child(pair(p, "Video RAM", "1024 × 512"))
-                    .child(pair(
-                        p,
-                        "GPU status",
-                        format!("{:08X}", self.snapshot.gpu_status),
-                    )),
-            )
     }
 
-    fn memory_cards(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded_xl()
-            .bg(rgb(p.surface_variant))
-            .child(heading(p, "Memory cards", "128 KiB"))
-            .children(self.snapshot.cards.iter().enumerate().map(|(slot, card)| {
-                let status = card.as_ref().map_or_else(
-                    || "Disconnected".into(),
-                    |card| {
-                        let name = card
-                            .path
-                            .as_ref()
-                            .and_then(|path| path.file_name())
-                            .map_or_else(|| "Temporary".into(), |name| name.to_string_lossy());
-                        format!(
-                            "{name} · {}",
-                            if card.pending { "Saving…" } else { "Saved" }
-                        )
-                    },
-                );
-                div()
-                    .text_xs()
-                    .text_color(rgb(p.muted))
-                    .truncate()
-                    .child(format!("{}: {status}", slot + 1))
-            }))
-            .child(
-                button(p, "flush-cards", "Flush saves", false)
-                    .on_click(cx.listener(|view, _, _, cx| view.command(Command::FlushCards, cx))),
-            )
-    }
-    pub(super) fn disassembly(&self, compact: bool) -> gpui::Div {
+    fn gpu_details(&self) -> gpui::Div {
         let p = &self.themes.active().palette;
         card(p)
             .p_4()
             .gap_3()
-            .flex_shrink_0()
-            .child(heading(p, "Instruction stream", "MIPS I"))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .font_family("monospace")
-                    .children(
-                        self.snapshot
-                            .disassembly
-                            .iter()
-                            .take(if compact { 3 } else { 5 })
-                            .enumerate()
-                            .map(|(index, (address, word, instruction))| {
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_4()
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_xs()
-                                    .bg(rgb(if index == 0 { p.tonal } else { p.surface }))
-                                    .text_color(rgb(if index == 0 { p.on_tonal } else { p.muted }))
-                                    .child(div().w(px(10.)).child(if index == 0 {
-                                        ">"
-                                    } else {
-                                        " "
-                                    }))
-                                    .child(format!("{address:08X}"))
-                                    .child(word.map_or_else(
-                                        || "--------".into(),
-                                        |word| format!("{word:08X}"),
-                                    ))
-                                    .child(instruction.clone())
-                            }),
-                    ),
-            )
-    }
-    pub(super) fn media(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
-        let bios = self.bios.as_ref().map_or_else(
-            || "No BIOS selected".into(),
-            |path| {
+            .child(heading(p, self.tr(Text::GpuStatus), "PLAYSTATION"))
+            .child(pair(p, self.tr(Text::Renderer), self.renderer_label()))
+            .child(pair(
+                p,
+                self.tr(Text::Resolution),
                 format!(
-                    "BIOS: {}",
-                    path.file_name()
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy()
-                )
-            },
-        );
-        card(p)
-            .p_4()
-            .gap_2()
-            .flex_shrink_0()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .child("Optical drive"),
-                            )
-                            .child(label(
-                                p,
-                                format!(
-                                    "{}  ·  Sectors read: {}",
-                                    if self.snapshot.disc_mounted {
-                                        "Disc mounted"
-                                    } else {
-                                        "No disc"
-                                    },
-                                    self.snapshot.cdrom_reads
-                                ),
-                            )),
-                    )
-                    .child(
-                        button(p, "disc", "Open Disc", true)
-                            .on_click(cx.listener(|view, _, _, cx| view.open_disc(false, cx))),
-                    )
-                    .child(
-                        button(p, "fast-disc", "Fast boot", false)
-                            .on_click(cx.listener(|view, _, _, cx| view.open_disc(true, cx))),
-                    ),
-            )
-            .child(label(p, bios))
-            .child(label(
-                p,
-                "CUE + BIN tracks / ISO  ·  Fast boot skips BIOS; homebrew only",
+                    "{} × {}",
+                    self.snapshot.dimensions.0, self.snapshot.dimensions.1
+                ),
             ))
-            .child(label(
+            .child(pair(
                 p,
-                "Pad 1: arrows · X/Z/S/D · Enter/Backspace · Q/E: L1/R1 · A/F: L2/R2",
+                self.tr(Text::GpuStatus),
+                format!("{:08X}", self.snapshot.gpu_status),
+            ))
+            .child(pair(p, self.tr(Text::Memory), "2 MiB / 1024 × 512"))
+            .child(pair(
+                p,
+                self.tr(Text::InstructionsExecuted),
+                self.snapshot.cpu.instructions.to_string(),
             ))
     }
 }

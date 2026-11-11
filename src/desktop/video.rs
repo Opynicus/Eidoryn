@@ -1,4 +1,5 @@
 use super::{Desktop, components::button};
+use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
     systems::ps1::runner::Snapshot,
     video_filter::{CrtFilter, OverlayKey},
@@ -42,7 +43,17 @@ pub(super) fn frame_image(snapshot: &Snapshot) -> Arc<RenderImage> {
 
 impl Desktop {
     pub(super) fn toggle_crt(&mut self, cx: &mut Context<Self>) {
-        self.crt.filter = self.crt.filter.next();
+        self.set_crt_filter(self.crt.filter.next(), cx);
+    }
+
+    pub(super) fn crt_filter(&self) -> CrtFilter {
+        self.crt.filter
+    }
+
+    pub(super) fn set_crt_filter(&mut self, filter: CrtFilter, cx: &mut Context<Self>) {
+        self.crt.filter = filter;
+        self.preferences.crt = filter.label().to_ascii_lowercase();
+        self.save_preferences();
         cx.notify();
     }
 
@@ -50,7 +61,7 @@ impl Desktop {
         button(
             &self.themes.active().palette,
             "crt-filter",
-            format!("CRT · {}", self.crt.filter.label()),
+            format!("CRT  {}", crt_label(self.language, self.crt.filter)),
             self.crt.filter != CrtFilter::Off,
         )
         .on_click(cx.listener(|view, _, _, cx| view.toggle_crt(cx)))
@@ -114,5 +125,13 @@ impl Desktop {
             },
         )
         .size_full()
+    }
+}
+
+pub(super) fn crt_label(language: eidoryn_psx::i18n::Language, filter: CrtFilter) -> &'static str {
+    match filter {
+        CrtFilter::Off => language.text(Text::Off),
+        CrtFilter::Soft => language.text(Text::Soft),
+        CrtFilter::Classic => language.text(Text::Classic),
     }
 }

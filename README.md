@@ -19,16 +19,23 @@ Eidoryn is an experimental emulator written in Rust with a native GPUI interface
 The architecture leaves room for additional systems, but **GBA and PS2 are not currently supported**. No game images, BIOS files, or saves are included.
 
 <p align="center">
-  <img src="docs/images/eidoryn-demo.png" alt="Eidoryn desktop interface showing its original built-in graphics demo" width="900">
+  <img src="docs/images/eidoryn-console-en.png" alt="Eidoryn console in English, showing the built-in demo, session details, and memory-card panel" width="1000">
   <br>
-  <sub>The GPUI interface and original demo; no BIOS or game image is required.</sub>
+  <sub>The native GPUI console in the Midnight theme, running the original built-in demo. No BIOS or game image is required.</sub>
 </p>
+
+<details>
+<summary>Simplified Chinese interface</summary>
+
+![Eidoryn console in Simplified Chinese](docs/images/eidoryn-console-zh-CN.png)
+
+</details>
 
 ## Features
 
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
 - **Graphics and performance options:** serial and multithreaded software rendering, optional Vulkan acceleration, enlarged and fullscreen views, and a CRT display filter.
-- **Desktop experience:** a Material-inspired interface, four built-in themes, JSON theme plugins, a volume slider, and system audio output.
+- **Desktop experience:** English and Simplified Chinese, keyboard navigation, four built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
 - **Media and saves:** ISO, BIN, and multi-track CUE/BIN images; two memory-card slots with automatic persistence.
 - **Debugging tools:** CPU registers, disassembly, single stepping, and execution slices; an optional experimental JIT and a headless CLI.
 
@@ -38,7 +45,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 | --- | --- |
 | Emulated systems | PlayStation (PS1) is in development; other systems are not implemented. |
 | Host platforms | Linux x86-64 has been used for development and testing. Windows and macOS headless CLI builds have passed CI smoke tests; their desktop interfaces still need hands-on runtime validation. |
-| Rendering | Serial software rendering is the default. Multithreaded software rendering and Vulkan can be selected in **Graphics / F8** when included in the build. |
+| Rendering | Serial software rendering is the default. Multithreaded software rendering and Vulkan can be selected in **Settings → Graphics / F8** when included in the build. |
 | CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
 | Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
@@ -65,10 +72,18 @@ cargo run --locked --release
 
 Without media, Eidoryn opens its original built-in demo without requiring a BIOS. After building, the executable is at `target/release/eidoryn` on Linux and macOS, or `target/release/eidoryn.exe` on Windows. `--locked` fixes dependency versions; `--release` enables optimizations.
 
+### Interface language
+
+Choose **Settings → Appearance → Language** to switch between **English** and **简体中文** immediately. The choice is saved for the next launch. On first launch, a Chinese locale selects Simplified Chinese; other locales use English.
+
+Use `--language en` or `--language zh-CN` to override the language for one session. See [interface language settings](docs/UI.md#界面语言) for configuration paths and translation scope.
+
+Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are also saved. CLI options override saved preferences for the current session; for example, `--theme ocean --volume 60 --crt soft`. Enable **Settings → Graphics → Clean fullscreen** to hide controls while fullscreen, or use `--fullscreen --clean-fullscreen`.
+
 ### Load a game
 
-1. Select **Open BIOS** and load your own 512 KiB BIOS file.
-2. Select **Open Disc** and load an ISO or CUE file. For a multi-track BIN image, select the `.cue` that references all tracks.
+1. Select **Choose BIOS** and load your own 512 KiB BIOS file.
+2. Select **Open disc image** and load an ISO or CUE file. For a multi-track BIN image, select the `.cue` that references all tracks.
 3. Select **Run**. Press **F11** to enter or leave fullscreen.
 
 You can also start from the command line:
@@ -107,8 +122,11 @@ With default features disabled, the core and CLI use only the Rust standard libr
 | `Space` | Run / pause |
 | `F6` / `F7` / `F8` | Toggle game view / CRT filter / graphics settings |
 | `F11` / `Esc` | Toggle fullscreen / exit fullscreen |
+| `F12` | Show or hide fullscreen controls |
 | `F9` / `F10` | Run one slice / step one instruction |
 | `Ctrl+R` | Reset the current session |
+
+Use **Tab / Shift+Tab** to navigate controls and **Enter / Space** to activate them. Arrow keys adjust a focused volume slider; **Esc** closes settings or returns keyboard input to the game. Icon buttons show descriptions on hover.
 
 ## Architecture
 
@@ -131,6 +149,7 @@ Most detailed hardware documents are currently in Chinese.
 | Document | Contents |
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
+| [Desktop workspaces](docs/UI.md) | Console, debugger, game view, and settings |
 | [Timing](docs/TIMING.md) · [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/device cycles, graphics backends, and CPU execution |
 | [Audio](docs/AUDIO.md) · [Memory cards](docs/SAVES.md) | Output, persistence, and limitations |
 | [Theme plugins](docs/THEMES.md) | Built-in themes and the custom JSON format |

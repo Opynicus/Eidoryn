@@ -80,6 +80,7 @@ struct Worker {
     machine: Machine,
     initial: Machine,
     renderer: RendererMode,
+    renderer_revision: u64,
     cpu_mode: CpuMode,
     running: bool,
     message: Option<String>,
@@ -111,6 +112,7 @@ impl Worker {
         Self {
             initial: machine.clone(),
             renderer: machine.bus.gpu.renderer_mode(),
+            renderer_revision: 0,
             cpu_mode: machine.cpu_mode(),
             machine,
             running,
@@ -178,6 +180,10 @@ impl Worker {
 
     /// Returns true when the frontend should close after receiving the final snapshot.
     fn apply(&mut self, command: Command) -> bool {
+        if matches!(command, Command::SetRenderer(_)) {
+            // Also acknowledge a request rejected by the card-flush guard below.
+            self.renderer_revision = self.renderer_revision.wrapping_add(1);
+        }
         if !matches!(command, Command::SetButtons(_)) && !self.flush_cards(true) {
             return false;
         }
@@ -356,6 +362,7 @@ impl Worker {
             if self.running { self.rate } else { 0.0 },
         );
         snapshot.bios_path.clone_from(&self.bios_path);
+        snapshot.renderer_revision = self.renderer_revision;
         snapshot.cards = self.store.status(&self.machine.bus.sio.cards);
         snapshot.video_fps = if self.running { self.video_fps } else { 0.0 };
         snapshot.close_ready = close_ready;

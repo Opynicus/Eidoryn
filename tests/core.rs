@@ -528,6 +528,44 @@ fn worker_acknowledges_close_after_publishing_final_snapshot() {
 }
 
 #[test]
+fn notifications_do_not_determine_execution_state() {
+    use eidoryn_psx::runner::ExecutionState;
+    let mut machine = Machine::demo();
+    for (running, expected) in [
+        (true, ExecutionState::Running),
+        (false, ExecutionState::Paused),
+    ] {
+        let snapshot = Snapshot::capture(
+            &machine,
+            running,
+            Some("Renderer selection failed".into()),
+            0.,
+        );
+        assert_eq!(snapshot.execution_state(), expected);
+        assert!(snapshot.message.is_some());
+    }
+    machine.bus.write32(machine.cpu.pc, 0xffff_ffff).unwrap();
+    assert!(machine.step().is_err());
+    let snapshot = Snapshot::capture(&machine, true, None, 0.);
+    assert_eq!(snapshot.execution_state(), ExecutionState::Stopped);
+    assert!(!snapshot.running);
+}
+
+#[test]
+fn renderer_selection_publishes_a_completion_revision() {
+    let runner = Runner::new(Machine::demo(), false).unwrap();
+    assert_eq!(wait_snapshot(&runner).renderer_revision, 0);
+    for expected in 1..=2 {
+        runner
+            .send(Command::SetRenderer(eidoryn_psx::gpu::RendererMode::Serial))
+            .unwrap();
+        let snapshot = wait_snapshot(&runner);
+        assert_eq!(snapshot.renderer_revision, expected);
+        assert!(snapshot.message.is_none());
+    }
+}
+
+#[test]
 fn worker_steps_and_resets_while_paused() {
     let runner = Runner::new(Machine::demo(), false).unwrap();
     assert_eq!(wait_snapshot(&runner).cpu.instructions, 0);

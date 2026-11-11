@@ -1,6 +1,10 @@
 //! Material volume control shared by the inspector and game views.
-use super::{Desktop, components::button};
+use super::{
+    Desktop,
+    components::{button, icon_button},
+};
 use eidoryn_psx::audio::{AudioBuffer, output::AudioOutput};
+use eidoryn_psx::i18n::Text;
 use gpui::{
     Bounds, Context, CursorStyle, HitboxBehavior, IntoElement, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, canvas, div, fill, point, prelude::*, px, rgb, size,
@@ -17,27 +21,58 @@ pub(super) struct AudioControls {
 impl Desktop {
     pub(super) fn audio_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let sound = if self.audio.output.is_none() {
+            button(p, "mute", self.tr(Text::EnableSound), false)
+        } else {
+            icon_button(
+                p,
+                "mute",
+                if self.audio.muted { "mute" } else { "volume" },
+                self.tr(Text::Mute),
+            )
+        };
         div()
             .flex()
             .flex_shrink_0()
             .gap_2()
             .items_center()
+            .child(sound.on_click(cx.listener(|view, _, _, cx| view.toggle_audio(cx))))
             .child(
-                button(
-                    p,
-                    "mute",
-                    if self.audio.output.is_none() {
-                        "Enable sound"
-                    } else if self.audio.muted {
-                        "Unmute"
-                    } else {
-                        "Mute"
-                    },
-                    false,
-                )
-                .on_click(cx.listener(|view, _, _, cx| view.toggle_audio(cx))),
+                div()
+                    .id("volume-slider")
+                    .debug_selector(|| "volume-slider".into())
+                    .tab_index(0)
+                    .border_1()
+                    .border_color(rgb(p.surface))
+                    .focus({
+                        let color = p.primary;
+                        move |style| style.border_color(rgb(color))
+                    })
+                    .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| {
+                        let volume = match event.keystroke.key.as_str() {
+                            "left" | "down" => view.audio.volume.saturating_sub(5),
+                            "right" | "up" => (view.audio.volume + 5).min(100),
+                            "home" => 0,
+                            "end" => 100,
+                            _ => return,
+                        };
+                        view.audio.volume = volume;
+                        view.audio.muted = false;
+                        view.audio.buffer.set_volume(volume);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
+                    .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+                        if matches!(
+                            event.keystroke.key.as_str(),
+                            "left" | "right" | "up" | "down" | "home" | "end"
+                        ) {
+                            view.persist_volume();
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(self.volume_slider(cx)),
             )
-            .child(self.volume_slider(cx))
             .child(
                 div()
                     .w(px(36.))
@@ -105,6 +140,7 @@ impl Desktop {
                                 if view.audio.dragging {
                                     view.set_volume_at(event.position.x, track, cx);
                                 } else {
+                                    view.persist_volume();
                                     cx.notify();
                                 }
                             }
@@ -117,6 +153,7 @@ impl Desktop {
                             if view.audio.dragging {
                                 view.set_volume_at(event.position.x, track, cx);
                                 view.audio.dragging = false;
+                                view.persist_volume();
                                 cx.notify();
                             }
                         });
@@ -124,7 +161,7 @@ impl Desktop {
                 });
             },
         )
-        .w(px(136.))
+        .w(px(104.))
         .h(px(40.))
     }
 
