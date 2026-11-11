@@ -66,7 +66,7 @@ jobs:
           files=(dist/*)
           ((${#files[@]} > 0)) || { echo 'No successful packages; refusing empty release'; exit 1; }
           cat > notes.md <<'NOTES'
-          Pure vibe-coded project. Use at your own risk.
+          Experimental project developed with extensive AI assistance. Hardware accuracy and game compatibility are still under active development.
 
           Experimental, unsigned packages. Only successful builds that pass the original headless demo smoke test are attached. Desktop launches and gameplay on Windows/macOS have not been manually verified. CLI packages have no GPUI window. No BIOS, games, saves or gameplay test artifacts are distributed.
 

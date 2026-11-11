@@ -6,56 +6,56 @@
 [![Status: Experimental](https://img.shields.io/badge/Status-Experimental-E9A23B?style=flat-square)](#current-status)
 [![License: GPL--3.0](https://img.shields.io/badge/License-GPL--3.0--only-4C8B64?style=flat-square)](LICENSE)
 
-**Pure vibe-coded project. Use at your own risk.**
-
 Experimental project developed with extensive AI assistance. Hardware accuracy and game compatibility are still under active development.
+
+**English** | [简体中文](README.zh-CN.md)
 
 [Project Overview](#project-overview) · [Features](#features) · [Current Status](#current-status) · [Getting Started](#getting-started) · [Controls](#controls) · [Architecture](#architecture) · [Documentation](#documentation) · [Roadmap](#roadmap) · [License & Acknowledgments](#license--acknowledgments)
 
 ## Project Overview
 
-Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界面。目前实现了 PlayStation（PS1）核心，提供游戏运行、图形设置和硬件调试功能。项目自主实现了 CPU、GPU、音频、光驱等模拟组件，没有集成其他模拟器核心。
+Eidoryn is an experimental emulator written in Rust with a native GPUI interface. Its current PlayStation (PS1) core provides game execution, graphics settings, and hardware debugging. The CPU, GPU, audio, disc drive, and other emulated components are implemented in this project; no third-party emulator core is integrated.
 
-架构为未来增加其他主机预留了空间；**目前不支持 GBA 或 PS2**。项目不包含游戏镜像、BIOS 或存档。
+The architecture leaves room for additional systems, but **GBA and PS2 are not currently supported**. No game images, BIOS files, or saves are included.
 
 <p align="center">
-  <img src="docs/images/eidoryn-demo.png" alt="Eidoryn 桌面界面与内置原创绘图演示" width="900">
+  <img src="docs/images/eidoryn-demo.png" alt="Eidoryn desktop interface showing its original built-in graphics demo" width="900">
   <br>
-  <sub>GPUI 界面与内置原创演示；无需 BIOS 或游戏镜像。</sub>
+  <sub>The GPUI interface and original demo; no BIOS or game image is required.</sub>
 </p>
 
 ## Features
 
-- **PS1 模拟**：MIPS CPU、GTE、GPU、MDEC、SPU、光驱、DMA、计时器和数字手柄。
-- **画面与性能选项**：串行软件绘图、多线程软件绘图和可选 Vulkan 加速；支持放大、全屏与 CRT 显示滤镜。
-- **桌面体验**：Material 风格界面、四套内置主题、JSON 主题插件、音量滑条与系统音频输出。
-- **游戏媒体与存档**：读取 ISO、BIN 和多轨 CUE/BIN；支持双槽记忆卡及自动保存。
-- **调试工具**：CPU 寄存器、反汇编、单步和执行切片；可选实验性 JIT 与无窗口命令行模式。
+- **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, and a digital controller.
+- **Graphics and performance options:** serial and multithreaded software rendering, optional Vulkan acceleration, enlarged and fullscreen views, and a CRT display filter.
+- **Desktop experience:** a Material-inspired interface, four built-in themes, JSON theme plugins, a volume slider, and system audio output.
+- **Media and saves:** ISO, BIN, and multi-track CUE/BIN images; two memory-card slots with automatic persistence.
+- **Debugging tools:** CPU registers, disassembly, single stepping, and execution slices; an optional experimental JIT and a headless CLI.
 
 ## Current Status
 
-| 项目 | 状态 |
+| Area | Status |
 | --- | --- |
-| 模拟主机 | PlayStation（PS1）进行中；其他主机尚未实现 |
-| 宿主平台 | Linux x86-64 已用于开发和测试；Windows、macOS 无窗口 CLI 已通过 CI 冒烟测试，桌面版仍需实际运行验证 |
-| 渲染 | 默认串行软件绘图；多线程软件和 Vulkan 可在 **Graphics / F8** 中切换 |
-| CPU JIT | 实验性功能，默认关闭，仅支持 Linux x86-64 的部分整数指令 |
-| 精度与兼容性 | 设备时序、图形和音频并非周期精确；游戏兼容性和性能因场景与设备而异 |
+| Emulated systems | PlayStation (PS1) is in development; other systems are not implemented. |
+| Host platforms | Linux x86-64 has been used for development and testing. Windows and macOS headless CLI builds have passed CI smoke tests; their desktop interfaces still need hands-on runtime validation. |
+| Rendering | Serial software rendering is the default. Multithreaded software rendering and Vulkan can be selected in **Graphics / F8** when included in the build. |
+| CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
+| Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
-目前不支持即时存档、CHD 或运行中换盘。记忆卡存档需要在游戏自身的存档点或菜单中完成。具体范围和测量结果见[验证说明](docs/TESTING.md)与[性能报告](docs/PERFORMANCE.md)。
+Save states, CHD images, and disc swapping are not supported. Memory-card saves must be made at a save point or through the game's own menu. See [testing](docs/TESTING.md) and [performance](docs/PERFORMANCE.md) for coverage and measurement details.
 
 ## Getting Started
 
-### 环境要求
+### Requirements
 
-- Rust **1.95 或更新版本**及 Cargo；建议使用 release 构建运行游戏。
-- 桌面版需要 GPUI 所需的系统图形、字体与音频开发库，以及可用图形驱动。Linux 构建依赖示例见[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)；[桌面集成说明](packaging/README.md)介绍了可选的启动器安装方式。
-- Vulkan 模式需要支持 Vulkan 的物理显卡和驱动；默认软件模式不要求 Vulkan 硬件。
-- 启动游戏需要自行准备相应 BIOS 和镜像。项目不提供这些文件。
+- Rust **1.95 or newer** and Cargo. A release build is recommended for running games.
+- The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for Linux build dependencies and the [desktop integration guide](packaging/README.md) for optional launcher installation.
+- Vulkan rendering requires a physical Vulkan-capable GPU and driver. The default software renderer does not require Vulkan hardware.
+- Bring your own BIOS and game images; they are not supplied by this project.
 
-可在 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) 查看已发布的构建；请根据附件名称区分桌面版和无窗口 CLI 版，并留意各平台的验证状态。
+See [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) for available builds. Check each asset's name for its platform and whether it is a desktop or headless CLI build. Windows and macOS release builds use software rendering.
 
-### 构建与启动
+### Build and launch
 
 ```bash
 git clone https://github.com/Opynicus/Eidoryn.git
@@ -63,87 +63,89 @@ cd Eidoryn
 cargo run --locked --release
 ```
 
-未指定媒体时会打开内置原创演示，无需 BIOS。构建后也可直接运行 `./target/release/eidoryn`。`--locked` 固定依赖版本，`--release` 才会启用优化。
+Without media, Eidoryn opens its original built-in demo without requiring a BIOS. After building, the executable is at `target/release/eidoryn` on Linux and macOS, or `target/release/eidoryn.exe` on Windows. `--locked` fixes dependency versions; `--release` enables optimizations.
 
-### 加载游戏
+### Load a game
 
-1. 在界面中选择 **Open BIOS**，加载自己的 512 KiB BIOS。
-2. 选择 **Open Disc**，加载 ISO 或 CUE；多轨 BIN 镜像请选择关联所有轨道的 `.cue` 文件。
-3. 点击 **Run** 开始运行。使用 **F11** 进入或退出全屏。
+1. Select **Open BIOS** and load your own 512 KiB BIOS file.
+2. Select **Open Disc** and load an ISO or CUE file. For a multi-track BIN image, select the `.cue` that references all tracks.
+3. Select **Run**. Press **F11** to enter or leave fullscreen.
 
-也可以从命令行启动：
+You can also start from the command line:
 
 ```bash
 cargo run --locked --release -- \
   --bios /path/to/bios.bin --disc /path/to/game.cue --run
 ```
 
-记忆卡默认位于当前工作目录的 `saves/card1.mcd` 和 `saves/card2.mcd`；可用 `--card1 PATH`、`--card2 PATH` 指定其他文件。`--fast-boot` 会跳过 BIOS 初始化，仅适用于不依赖 BIOS 服务的自制程序。更多选项可运行 `eidoryn --help` 查看。
+Memory cards default to `saves/card1.mcd` and `saves/card2.mcd` relative to the current working directory. Use `--card1 PATH` and `--card2 PATH` to choose other files. `--fast-boot` skips BIOS initialization and is intended only for homebrew that does not rely on BIOS services. Run `cargo run --locked --release -- --help` for more options.
 
 <details>
-<summary>无窗口构建与测试</summary>
+<summary>Headless build and tests</summary>
 
 ```bash
 cargo run --locked --release --no-default-features -- --headless --no-memory-cards --frames 120
 cargo test --locked --workspace
 ```
 
-无默认特性的核心与命令行仅使用 Rust 标准库。`--frames` 表示执行切片数，而不是视频帧数。
+With default features disabled, the core and CLI use only the Rust standard library. `--frames` counts execution slices, not video frames.
 
 </details>
 
 ## Controls
 
-| 键盘 | PS1 手柄 |
+| Keyboard | PS1 controller |
 | --- | --- |
-| 方向键 | 方向键 |
+| Arrow keys | D-pad |
 | `X` / `Z` / `S` / `D` | Cross / Square / Triangle / Circle |
 | `Enter` / `Backspace` | Start / Select |
 | `Q` / `E` | L1 / R1 |
 | `A` / `F` | L2 / R2 |
 
-| 快捷键 | 操作 |
+| Shortcut | Action |
 | --- | --- |
-| `Space` | 运行 / 暂停 |
-| `F6` / `F7` / `F8` | 切换游戏视图 / CRT 滤镜 / 图形设置 |
-| `F11` / `Esc` | 切换全屏 / 退出全屏 |
-| `F9` / `F10` | 执行一个切片 / 单条指令 |
-| `Ctrl+R` | 重置当前会话 |
+| `Space` | Run / pause |
+| `F6` / `F7` / `F8` | Toggle game view / CRT filter / graphics settings |
+| `F11` / `Esc` | Toggle fullscreen / exit fullscreen |
+| `F9` / `F10` | Run one slice / step one instruction |
+| `Ctrl+R` | Reset the current session |
 
 ## Architecture
 
 ```text
 CLI / GPUI
     │
-    ├── systems::ps1 ──→ eidoryn-ps1 ──→ 可选 JIT runtime
-    │     媒体、存档、运行线程       PS1 硬件核心
-    │
+    ├── systems::ps1 ──→ eidoryn-ps1 ──→ optional JIT runtime
+    │     media, cards,      PS1 hardware core
+    │     and worker
     └── eidoryn-host
-          音频、CRT 滤镜与主题
+          audio, CRT filters, and themes
 ```
 
-PS1 机器状态由运行线程持有；界面通过命令和快照与其交互。`crates/ps1` 是独立硬件核心，`crates/host` 提供可复用宿主功能，`src/systems/ps1` 负责 PS1 会话适配。设计边界与数据流见[架构文档](docs/ARCHITECTURE.md)。
+The emulation worker owns the PS1 machine; the interface communicates through commands and snapshots. `crates/ps1` contains the independent hardware core, `crates/host` provides reusable host services, and `src/systems/ps1` adapts PS1 sessions to the application. See [architecture](docs/ARCHITECTURE.md) for boundaries and data flow.
 
 ## Documentation
 
-| 文档 | 内容 |
+Most detailed hardware documents are currently in Chinese.
+
+| Document | Contents |
 | --- | --- |
-| [架构](docs/ARCHITECTURE.md) | 模块边界、线程与数据流 |
-| [渲染后端](docs/RENDERING.md) · [JIT](docs/JIT.md) | 图形加速、软件多线程和 CPU 执行 |
-| [音频](docs/AUDIO.md) · [记忆卡](docs/SAVES.md) | 输出、保存与已知限制 |
-| [主题插件](docs/THEMES.md) | 内置主题与自定义 JSON 格式 |
-| [测试](docs/TESTING.md) · [性能](docs/PERFORMANCE.md) | 验证方法、基准结果及适用范围 |
-| [Linux 桌面集成](packaging/README.md) · [第三方资料](THIRD_PARTY.md) | 启动器安装、依赖与硬件参考 |
+| [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
+| [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | Graphics backends and CPU execution |
+| [Audio](docs/AUDIO.md) · [Memory cards](docs/SAVES.md) | Output, persistence, and limitations |
+| [Theme plugins](docs/THEMES.md) | Built-in themes and the custom JSON format |
+| [Testing](docs/TESTING.md) · [Performance](docs/PERFORMANCE.md) | Validation, benchmarks, and their scope |
+| [Linux desktop integration](packaging/README.md) · [Third-party information](THIRD_PARTY.md) | Launcher installation, dependencies, and hardware references |
 
 ## Roadmap
 
-- 提升 PS1 设备时序、音频精度和游戏兼容性，扩大回归测试范围。
-- 继续测量帧时间、音频延迟和 Vulkan 读回开销，按证据优化性能。
-- 验证并完善 Windows、macOS 的构建、运行及发布流程。
-- 在已有模块边界的基础上探索其他主机核心；GBA 和 PS2 尚无实现承诺或时间表。
+- Improve PS1 device timing, audio accuracy, and game compatibility; expand regression coverage.
+- Continue measuring frame time, audio latency, and Vulkan readback costs before optimizing further.
+- Validate and improve Windows and macOS desktop execution and release workflows.
+- Explore additional system cores within the existing module boundaries; there is no implementation commitment or timeline for GBA or PS2.
 
 ## License & Acknowledgments
 
-项目采用 [GPL-3.0-only](LICENSE)；[LICENSE-MIT](LICENSE-MIT) 保留原始自研原型的许可声明。第三方依赖及其说明见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+The project is licensed under [GPL-3.0-only](LICENSE). [LICENSE-MIT](LICENSE-MIT) preserves the license notice for the original prototype. See [THIRD_PARTY.md](THIRD_PARTY.md) for dependencies and hardware references.
 
-硬件行为参考 [PSX-SPX](https://psx-spx.consoledev.net/)；桌面界面使用 [GPUI](https://www.gpui.rs/)。本项目在开发过程中广泛使用 AI 辅助，硬件实现和兼容性仍在持续验证。
+Hardware behavior is informed by [PSX-SPX](https://psx-spx.consoledev.net/); the desktop interface uses [GPUI](https://www.gpui.rs/). Development makes extensive use of AI assistance, and hardware behavior and compatibility remain under active validation.

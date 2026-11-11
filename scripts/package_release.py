@@ -19,12 +19,14 @@ with tempfile.TemporaryDirectory() as temporary:
     stage = pathlib.Path(temporary) / name
     stage.mkdir()
     shutil.copy2(args.binary, stage / args.binary.name)
-    for filename in ['README.md', 'LICENSE', 'LICENSE-MIT', 'THIRD_PARTY.md']:
+    for filename in ['README.md', 'README.zh-CN.md', 'LICENSE', 'LICENSE-MIT', 'THIRD_PARTY.md']:
         shutil.copy2(root / filename, stage / filename)
     for directory in ['assets', 'plugins', 'packaging', 'docs']:
         shutil.copytree(root / directory, stage / directory)
     (stage / 'BUILD.txt').write_text(
-        f'Eidoryn {args.label}\nPure vibe-coded project. Use at your own risk.\n'
+        f'Eidoryn {args.label}\n'
+        'Experimental project developed with extensive AI assistance. '
+        'Hardware accuracy and game compatibility are still under active development.\n'
         'No BIOS, games or saves included. CLI packages have no desktop UI.\n'
         'Desktop packages are experimental and unsigned. JIT supports Linux x86-64 only.\n'
         'Launch from this directory to discover bundled themes.\n', encoding='utf-8')
