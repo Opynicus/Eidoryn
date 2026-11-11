@@ -5,11 +5,12 @@ use crate::{
     cd_audio::CdAudio,
     disc::{DiscImage, DiscRegion, TrackKind, invalid, msf},
     spu::StereoFrame,
+    timing::CPU_CLOCK_HZ,
 };
 use std::collections::VecDeque;
 
 pub const COMMAND_CLOCKS: u32 = 2000;
-pub const SECTOR_CLOCKS: u32 = 33_868_800 / 75;
+pub const SECTOR_CLOCKS: u32 = CPU_CLOCK_HZ / 75;
 
 #[derive(Clone)]
 struct Command {

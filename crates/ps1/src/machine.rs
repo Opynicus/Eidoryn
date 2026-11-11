@@ -137,14 +137,27 @@ impl Machine {
     }
 
     pub fn step(&mut self) -> Result<(), EmuError> {
+        self.step_cycles().map(|_| ())
+    }
+
+    /// Execute one guest step and advance devices by its CPU-cycle cost.
+    /// An exception entry is a step even when no instruction was retired.
+    pub fn step_cycles(&mut self) -> Result<u32, EmuError> {
         if let Some(error) = &self.halted {
             return Err(error.clone());
         }
-        if let Err(error) = self.cpu.step(&mut self.bus).and_then(|()| self.bus.tick(1)) {
-            self.halted = Some(error.clone());
-            return Err(error);
+        match self.cpu.step_timed(&mut self.bus) {
+            Ok(cycles) => Ok(cycles),
+            Err(error) => {
+                self.halted = Some(error.clone());
+                Err(error)
+            }
         }
-        Ok(())
+    }
+
+    /// Total CPU-clock cycles started since this machine's bus was created.
+    pub fn elapsed_cycles(&self) -> u64 {
+        self.bus.elapsed_cycles()
     }
 
     pub fn cpu_mode(&self) -> CpuMode {

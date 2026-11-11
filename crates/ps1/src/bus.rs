@@ -40,6 +40,8 @@ pub struct Bus {
     dma: [DmaChannel; 7],
     dma_control: u32,
     dma_interrupt: u32,
+    // Shared CPU-clock timeline for every device, including explicit ticks.
+    elapsed_cycles: u64,
     // Scratch storage only: cleared before each list, bounded by the existing
     // 4096-node limit. Retain capacity across frames instead of reallocating.
     dma_visited: HashSet<u32>,
@@ -67,6 +69,7 @@ impl Default for Bus {
             dma: [DmaChannel::default(); 7],
             dma_control: 0x0765_4321,
             dma_interrupt: 0,
+            elapsed_cycles: 0,
             dma_visited: HashSet::new(),
         }
     }
@@ -81,17 +84,34 @@ pub fn physical(address: u32) -> u32 {
 }
 
 impl Bus {
-    /// Approximate device clock: the interpreter currently advances one clock per step.
+    /// CPU-clock cycles started on this bus, wrapping after `u64::MAX`.
+    /// Cloning a bus preserves the timeline. A failed device tick still consumes
+    /// the cycle in which the error occurred; subsequent cycles are not run.
+    pub fn elapsed_cycles(&self) -> u64 {
+        self.elapsed_cycles
+    }
+
+    /// Advance every device in CPU-clock order. Splitting a long advance at
+    /// each cycle preserves CD/audio/DMA/IRQ boundaries and never drops a
+    /// device event merely because an instruction spent multiple cycles.
     #[inline]
     pub fn tick(&mut self, clocks: u32) -> Result<(), EmuError> {
-        self.cdrom.tick(clocks);
-        self.sio.tick(clocks);
+        for _ in 0..clocks {
+            self.tick_one()?;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn tick_one(&mut self) -> Result<(), EmuError> {
+        self.elapsed_cycles = self.elapsed_cycles.wrapping_add(1);
+        self.cdrom.tick(1);
+        self.sio.tick(1);
         if self.sio.take_irq_edge() {
             self.irq_status |= 1 << 7;
         }
-        self.irq_status |= self.gpu.tick(clocks, &mut self.timers);
-        self.spu
-            .tick_with_cd(clocks, || self.cdrom.audio_sample())?;
+        self.irq_status |= self.gpu.tick(1, &mut self.timers);
+        self.spu.tick_with_cd(1, || self.cdrom.audio_sample())?;
         for index in 0..2 {
             if self.dma[index].control & (1 << 24) != 0 {
                 self.run_dma(index)?;

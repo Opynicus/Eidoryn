@@ -21,4 +21,5 @@ pub mod memory_card;
 pub mod sio;
 pub mod spu;
 pub mod timers;
+pub mod timing;
 mod xa;

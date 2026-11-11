@@ -17,7 +17,7 @@ pub type StereoFrame = [i16; 2];
 const RAM_SIZE: usize = 512 * 1024;
 const CONTROL: usize = 0x1aa / 2;
 const RAM_CONTROL: usize = 0x1ac / 2;
-/// Approximate control latch delay. CPU steps are not yet hardware cycles.
+/// Approximate control latch delay, expressed in CPU-clock cycles.
 pub const CONTROL_CLOCKS: u32 = 768;
 
 #[derive(Clone)]
