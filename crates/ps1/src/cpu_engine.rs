@@ -201,8 +201,7 @@ mod native {
                 // fetches its real opcode, so code writes/IRQs need no guard.
                 let count = entry.interpreted_steps.min(limit);
                 for _ in 0..count {
-                    cpu.step(bus)?;
-                    bus.tick(1)?;
+                    cpu.step_timed(bus)?;
                 }
                 return Ok(count);
             }

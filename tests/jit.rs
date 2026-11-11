@@ -56,6 +56,7 @@ mod native {
         // Debug includes private branch/load delay state and all GTE state.
         assert_eq!(format!("{:?}", left.cpu), format!("{:?}", right.cpu));
         assert_eq!(left.halted, right.halted);
+        assert_eq!(left.bus.elapsed_cycles(), right.bus.elapsed_cycles());
         assert_eq!(left.bus.ram, right.bus.ram);
         assert_eq!(left.bus.gpu.status(), right.bus.gpu.status());
         assert_eq!(left.bus.gpu.frames, right.bus.gpu.frames);
@@ -89,6 +90,26 @@ mod native {
                     b.read(0x1100 + timer * 16 + register)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn timed_memory_and_muldiv_waits_match_interpreter() {
+        let mut words = vec![
+            0x8c05_1000, // lw r5, 0x1000(zero): seven CPU cycles.
+            0x0022_001a, // div r1, r2: runs while following instructions execute.
+        ];
+        words.extend(std::iter::repeat_n(0x24c6_0001, 20)); // JIT-able ALU block.
+        words.push(0x0000_1812); // mflo r3 waits for remaining cycles.
+        let mut checkpoint = warm(&words);
+        checkpoint.cpu.registers[1] = 0x800;
+        checkpoint.cpu.registers[2] = 3;
+        checkpoint.bus.write32(0x1000, 0x1234_5678).unwrap();
+        for budget in 1..=64 {
+            let [mut reference, mut native] = pair(checkpoint.clone());
+            reference.run_steps(budget).unwrap();
+            native.run_steps(budget).unwrap();
+            equal(&mut reference, &mut native);
         }
     }
 

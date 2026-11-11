@@ -25,6 +25,7 @@ impl Cpu {
             instruction_pc,
             in_delay_slot,
             instructions,
+            last_step_cycles,
             cop0,
             ..
         } = self;
@@ -39,6 +40,7 @@ impl Cpu {
                 *next_pc = next_pc.wrapping_add(4);
                 *in_delay_slot = false;
                 *instructions += 1;
+                *last_step_cycles = 1;
                 if let Err(error) = bus.tick(1) {
                     failure = Some(error);
                     return false;

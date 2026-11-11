@@ -26,7 +26,7 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 
 ## 功能
 
-- **PS1 模拟**：MIPS CPU、GTE、GPU、MDEC、SPU、光驱、DMA、计时器和数字手柄。
+- **PS1 模拟**：MIPS CPU、GTE、GPU、MDEC、SPU、光驱、DMA、计时器、统一 CPU/设备周期时间线和数字手柄。
 - **画面与性能选项**：串行软件绘图、多线程软件绘图和可选 Vulkan 加速；支持放大、全屏与 CRT 显示滤镜。
 - **桌面体验**：Material 风格界面、四套内置主题、JSON 主题插件、音量滑条与系统音频输出。
 - **游戏媒体与存档**：读取 ISO、BIN 和多轨 CUE/BIN；支持双槽记忆卡及自动保存。
@@ -129,11 +129,12 @@ PS1 机器状态由运行线程持有；界面通过命令和快照与其交互�
 | 文档 | 内容 |
 | --- | --- |
 | [架构](docs/ARCHITECTURE.md) | 模块边界、线程与数据流 |
-| [渲染后端](docs/RENDERING.md) · [JIT](docs/JIT.md) | 图形加速、软件多线程和 CPU 执行 |
+| [周期模型](docs/TIMING.md) · [渲染后端](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/设备周期、图形加速和 CPU 执行 |
 | [音频](docs/AUDIO.md) · [记忆卡](docs/SAVES.md) | 输出、保存与已知限制 |
 | [主题插件](docs/THEMES.md) | 内置主题与自定义 JSON 格式 |
 | [测试](docs/TESTING.md) · [性能](docs/PERFORMANCE.md) | 验证方法、基准结果及适用范围 |
 | [Linux 桌面集成](packaging/README.md) · [第三方资料](THIRD_PARTY.md) | 启动器安装、依赖与硬件参考 |
+| [贡献指南](docs/CONTRIBUTING.md) | 特性分支、提交规范与验证 |
 
 ## 路线图
 

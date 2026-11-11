@@ -26,7 +26,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 
 ## Features
 
-- **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, and a digital controller.
+- **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
 - **Graphics and performance options:** serial and multithreaded software rendering, optional Vulkan acceleration, enlarged and fullscreen views, and a CRT display filter.
 - **Desktop experience:** a Material-inspired interface, four built-in themes, JSON theme plugins, a volume slider, and system audio output.
 - **Media and saves:** ISO, BIN, and multi-track CUE/BIN images; two memory-card slots with automatic persistence.
@@ -131,11 +131,12 @@ Most detailed hardware documents are currently in Chinese.
 | Document | Contents |
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
-| [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | Graphics backends and CPU execution |
+| [Timing](docs/TIMING.md) · [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/device cycles, graphics backends, and CPU execution |
 | [Audio](docs/AUDIO.md) · [Memory cards](docs/SAVES.md) | Output, persistence, and limitations |
 | [Theme plugins](docs/THEMES.md) | Built-in themes and the custom JSON format |
 | [Testing](docs/TESTING.md) · [Performance](docs/PERFORMANCE.md) | Validation, benchmarks, and their scope |
 | [Linux desktop integration](packaging/README.md) · [Third-party information](THIRD_PARTY.md) | Launcher installation, dependencies, and hardware references |
+| [Contributing](docs/CONTRIBUTING.md) | Feature branches, commits, and validation |
 
 ## Roadmap
 

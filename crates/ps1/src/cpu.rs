@@ -1,6 +1,7 @@
-//! MIPS I interpreter. Memory timings and the instruction cache are not modeled.
+//! MIPS I interpreter with approximate CPU-clock instruction and device timing.
 #[cfg(feature = "jit")]
 mod jit;
+mod timing;
 
 use crate::{EmuError, bus::Bus, gte::Gte};
 
@@ -25,6 +26,8 @@ pub struct Cpu {
     branch_pending: bool,
     in_delay_slot: bool,
     load: Option<(usize, u32)>,
+    last_step_cycles: u32,
+    muldiv_ready: Option<u64>,
 }
 
 impl Cpu {
@@ -46,11 +49,28 @@ impl Cpu {
             branch_pending: false,
             in_delay_slot: false,
             load: None,
+            last_step_cycles: 0,
+            muldiv_ready: None,
         }
     }
 
     pub fn instruction_address(&self) -> u32 {
         self.instruction_pc
+    }
+
+    /// Estimated cost of the last successful CPU step, in CPU cycles. A device
+    /// error may stop the bus before the full cost has elapsed. Direct
+    /// `Cpu::step` does not advance the bus; `Machine::step` does.
+    pub fn last_step_cycles(&self) -> u32 {
+        self.last_step_cycles
+    }
+
+    #[inline]
+    pub(crate) fn step_timed(&mut self, bus: &mut Bus) -> Result<u32, EmuError> {
+        self.step(bus)?;
+        let cycles = self.last_step_cycles;
+        bus.tick(cycles)?;
+        Ok(cycles)
     }
 
     fn exception(&mut self, code: u32, bad_address: Option<u32>) {
@@ -83,6 +103,7 @@ impl Cpu {
     }
 
     pub fn step(&mut self, bus: &mut Bus) -> Result<(), EmuError> {
+        self.last_step_cycles = 0;
         self.instruction_pc = self.pc;
         self.in_delay_slot = self.branch_pending;
         self.branch_pending = false;
@@ -100,6 +121,7 @@ impl Cpu {
             } else {
                 self.exception(0, None);
             }
+            self.last_step_cycles = 1;
             return Ok(());
         }
         let instruction = bus.fetch_instruction(self.pc)?;
@@ -119,6 +141,7 @@ impl Cpu {
             self.registers[r] = value;
         }
         self.registers[0] = 0;
+        let exceptions = self.exceptions;
         let result = self.execute(instruction, s, t, merge, bus);
         // Back-to-back loads to the same register cancel the first writeback.
         if self
@@ -128,6 +151,13 @@ impl Cpu {
             self.registers[rt] = t;
         }
         self.registers[0] = 0;
+        if result.is_ok() {
+            self.last_step_cycles = if self.exceptions == exceptions {
+                self.instruction_cycles(instruction, s, bus.elapsed_cycles())
+            } else {
+                1
+            };
+        }
         result
     }
 

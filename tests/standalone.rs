@@ -840,3 +840,42 @@ fn cd_staging_reuse_preserves_fifo_backpressure_mode_changes_and_init() {
     assert_eq!(bus.cdrom.read_data(), 0);
     assert_eq!(bus.cdrom.command_errors, 0);
 }
+
+#[test]
+fn batched_bus_clocks_keep_cdda_and_spu_in_cycle_order() {
+    let fixture = Fixture::new();
+    let frame = [1000_i16, -2000].map(i16::to_le_bytes).concat();
+    fixture.image("original-audio.bin", &frame.repeat(588 * 3));
+    let path = fixture.image(
+        "original-audio.cue",
+        b"FILE original-audio.bin BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n",
+    );
+    let mut batched = bus(&path);
+    assert_eq!(command(&mut batched, 3, &[]), [0x82]);
+    let mut single = batched.clone();
+    let clocks = SECTOR_CLOCKS * 2;
+    batched.tick(clocks).unwrap();
+    for _ in 0..clocks {
+        single.tick(1).unwrap();
+    }
+    assert_eq!(batched.elapsed_cycles(), u64::from(COMMAND_CLOCKS + clocks));
+    assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
+    assert_eq!(batched.cdrom.cdda_sectors, 2);
+    assert_eq!(batched.cdrom.cdda_sectors, single.cdrom.cdda_sectors);
+    assert_eq!(batched.cdrom.debug_state(), single.cdrom.debug_state());
+    assert_eq!(batched.spu.generated_samples, single.spu.generated_samples);
+    assert_eq!(
+        batched.spu.drain_audio().collect::<Vec<_>>(),
+        single.spu.drain_audio().collect::<Vec<_>>()
+    );
+    for _ in 0..588 {
+        assert_eq!(batched.cdrom.audio_sample(), single.cdrom.audio_sample());
+    }
+    for timer in 0..3 {
+        for register in [0, 4, 8] {
+            let address = 0x1100 + timer * 16 + register;
+            assert_eq!(batched.timers.read(address), single.timers.read(address));
+        }
+    }
+    assert_eq!(batched.irq_pending(), single.irq_pending());
+}
