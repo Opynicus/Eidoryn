@@ -225,6 +225,29 @@ impl CdRom {
         self.completion = Some((COMMAND_CLOCKS * 2, Response { interrupt, bytes }));
     }
 
+    /// CPU clocks until a command, completion, or sector may have an effect.
+    /// A pending IRQ blocks command/completion delivery and data-sector staging,
+    /// but does not stop CDDA sector delivery. Zero-valued timers are due on
+    /// the next tick, never at the instant this method is called.
+    pub(crate) fn clocks_until_event(&self) -> u32 {
+        let mut next = u32::MAX;
+        if self.irq_flags == 0 {
+            if let Some(command) = &self.command {
+                next = next.min(command.clocks.max(1));
+            }
+            if let Some((clocks, _)) = &self.completion {
+                next = next.min((*clocks).max(1));
+            }
+            if self.play_completion.is_some() {
+                return 1;
+            }
+        }
+        if self.playing || (self.reading && self.irq_flags == 0 && self.sector.is_empty()) {
+            next = next.min(self.read_clocks.max(1));
+        }
+        next
+    }
+
     #[inline]
     pub fn tick(&mut self, clocks: u32) {
         if self.reading || self.playing {

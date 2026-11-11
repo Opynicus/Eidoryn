@@ -142,6 +142,21 @@ impl Spu {
         self.registers[offset / 2] = value;
         Ok(())
     }
+    /// CPU clocks until the next sample, control latch, or manual-transfer
+    /// check. Manual transfers stay single-cycle because they can fail or
+    /// modify sound RAM/IRQ before the next sample.
+    pub(crate) fn clocks_until_event(&self) -> u32 {
+        if self.applied & 0x30 == 0x10 && !self.fifo.is_empty() {
+            return 1;
+        }
+        let sample = SAMPLE_CLOCKS - self.sample_clock;
+        if self.control_delay == 0 {
+            sample
+        } else {
+            sample.min(self.control_delay)
+        }
+    }
+
     #[inline]
     pub fn tick(&mut self, clocks: u32) -> Result<(), EmuError> {
         self.tick_with_cd(clocks, || [0; 2])

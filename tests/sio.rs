@@ -26,6 +26,41 @@ fn exchange(sio: &mut Sio, byte: u8) -> u8 {
 }
 
 #[test]
+fn batched_bus_ticks_match_each_serial_transfer_and_ack_edge() {
+    let mut batched = Bus::default();
+    batched.write16(MODE, 0x0d).unwrap();
+    batched.write16(BAUD, 0x88).unwrap();
+    batched.write16(CTRL, 0x1003).unwrap();
+    batched.write32(0x1f80_1074, 1 << 7).unwrap();
+    batched.sio.set_buttons(1 << 14);
+    let mut single = batched.clone();
+
+    for (byte, reply) in [(1, 0xff), (0x42, 0x41), (0, 0x5a), (0, 0xff), (0, 0xbf)] {
+        for bus in [&mut batched, &mut single] {
+            bus.write8(DATA, byte).unwrap();
+        }
+        for clocks in [7, BYTE_CLOCKS - 8, 1, ACK_DELAY - 1, 1, ACK_PULSE] {
+            batched.tick(clocks).unwrap();
+            for _ in 0..clocks {
+                single.tick(1).unwrap();
+            }
+            assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
+            assert_eq!(batched.sio.status(), single.sio.status());
+            assert_eq!(batched.sio.transfers, single.sio.transfers);
+            assert_eq!(batched.sio.polls, single.sio.polls);
+            assert_eq!(batched.read32(0x1f80_1070), single.read32(0x1f80_1070));
+            assert_eq!(batched.read16(0x1f80_1100), single.read16(0x1f80_1100));
+        }
+        assert_eq!(batched.read8(DATA).unwrap(), reply);
+        assert_eq!(single.read8(DATA).unwrap(), reply);
+        for bus in [&mut batched, &mut single] {
+            bus.write16(CTRL, 0x1013).unwrap();
+            bus.write32(0x1f80_1070, !(1 << 7)).unwrap();
+        }
+    }
+}
+
+#[test]
 fn pad_poll_is_active_low_and_samples_buttons_once_per_command() {
     let mut sio = pad();
     sio.set_buttons((1 << 3) | (1 << 4) | (1 << 14) | 6);

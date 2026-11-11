@@ -49,6 +49,25 @@ fn spu_dma4_round_trip_wraps_sound_ram_and_latches_irq9() {
     bus.write32(0x1f80_10c0, 0x1000).unwrap();
     bus.write32(0x1f80_10c4, 0x0001_0003).unwrap();
     bus.write32(0x1f80_10c8, 0x0100_0201).unwrap();
+    let mut batched = bus.clone();
+    let mut single = bus.clone();
+    batched.tick(CONTROL_CLOCKS + 1).unwrap();
+    for _ in 0..=CONTROL_CLOCKS {
+        single.tick(1).unwrap();
+    }
+    assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
+    assert_eq!(
+        batched.spu.transferred_halfwords,
+        single.spu.transferred_halfwords
+    );
+    assert_eq!(batched.spu.status(), single.spu.status());
+    assert_eq!(batched.read32(0x1f80_10c8), single.read32(0x1f80_10c8));
+    assert_eq!(batched.read32(0x1f80_10f4), single.read32(0x1f80_10f4));
+    assert_eq!(batched.read32(0x1f80_1070), single.read32(0x1f80_1070));
+    assert_eq!(
+        batched.spu.drain_audio().collect::<Vec<_>>(),
+        single.spu.drain_audio().collect::<Vec<_>>()
+    );
     bus.tick(CONTROL_CLOCKS - 1).unwrap();
     assert_eq!(bus.spu.transferred_halfwords, 0);
     bus.tick(1).unwrap();
@@ -72,6 +91,35 @@ fn spu_dma4_round_trip_wraps_sound_ram_and_latches_irq9() {
     for (n, word) in words.iter().enumerate() {
         let expected = if n == 2 { word & 0xffff } else { *word };
         assert_eq!(bus.read32(0x2000 + n as u32 * 4).unwrap(), expected);
+    }
+}
+
+#[test]
+fn batched_manual_spu_transfers_match_single_cycles() {
+    let mut batched = Bus::default();
+    batched.write16(0x1f80_1dac, 4).unwrap();
+    batched.write16(0x1f80_1da6, 0x20).unwrap();
+    batched.write16(0x1f80_1da8, 0x1234).unwrap();
+    batched.write16(0x1f80_1da8, 0xabcd).unwrap();
+    batched.write16(0x1f80_1daa, 0x8010).unwrap();
+    let mut single = batched.clone();
+    for clocks in [CONTROL_CLOCKS - 1, 1, 15, 1, 16, 64] {
+        batched.tick(clocks).unwrap();
+        for _ in 0..clocks {
+            single.tick(1).unwrap();
+        }
+        assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
+        assert_eq!(batched.spu.status(), single.spu.status());
+        assert_eq!(
+            batched.spu.transferred_halfwords,
+            single.spu.transferred_halfwords
+        );
+        assert_eq!(batched.spu.generated_samples, single.spu.generated_samples);
+    }
+    assert_eq!(batched.spu.transferred_halfwords, 2);
+    for bus in [&mut batched, &mut single] {
+        bus.write16(0x1f80_1da6, 0x20).unwrap();
+        assert_eq!(bus.spu.dma_read().unwrap(), 0xabcd_1234);
     }
 }
 
@@ -102,6 +150,105 @@ fn spu_fifo_and_unsupported_ram_mode_fail_boundedly() {
     assert!(spu.write(0x1f80_1da8, 32).is_err());
     spu.write(0x1f80_1daa, 0x8010).unwrap();
     assert!(spu.tick(CONTROL_CLOCKS + 16).is_err());
+}
+
+#[test]
+fn batched_spu_error_preserves_partial_cycles_and_preexisting_cd_irq() {
+    let mut single = Bus::default();
+    // Set a CD level directly so only subsequent bus ticks latch it in I_STAT.
+    single.cdrom.write(0, 1);
+    single.cdrom.write(2, 0x1f);
+    single.cdrom.write(0, 0);
+    single.cdrom.write(1, 1);
+    single.cdrom.tick(2_000);
+    assert!(single.cdrom.irq_pending());
+    single.write16(0x1f80_1da8, 0x1234).unwrap();
+    single.write16(0x1f80_1daa, 0x8010).unwrap();
+    let mut batched = single.clone();
+
+    let batch_error = batched.tick(CONTROL_CLOCKS + 100).unwrap_err();
+    let single_error = loop {
+        if let Err(error) = single.tick(1) {
+            break error;
+        }
+    };
+    assert_eq!(batch_error, single_error);
+    assert_eq!(single.elapsed_cycles(), u64::from(CONTROL_CLOCKS));
+    assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
+    assert_eq!(batched.spu.status(), single.spu.status());
+    assert_eq!(batched.spu.generated_samples, single.spu.generated_samples);
+    assert_eq!(batched.gpu.status(), single.gpu.status());
+    for bus in [&mut batched, &mut single] {
+        bus.cdrom.write(0, 1);
+        bus.cdrom.write(3, 0x1f);
+        assert_eq!(bus.read32(0x1f80_1070).unwrap() & 4, 4);
+    }
+}
+
+#[test]
+fn batched_waiting_dma_reports_error_on_the_same_cycle() {
+    let mut batched = Bus::default();
+    batched.write32(0x1000, 0x1234_5678).unwrap();
+    // Leave sound RAM in an unsupported configuration; the DMA only becomes
+    // ready once the SPU control latch changes at CONTROL_CLOCKS.
+    batched.write16(0x1f80_1daa, 0x8060).unwrap();
+    batched.write32(0x1f80_10f0, 8 << 16).unwrap();
+    batched.write32(0x1f80_10c0, 0x1000).unwrap();
+    batched.write32(0x1f80_10c4, 0x0001_0001).unwrap();
+    batched.write32(0x1f80_10c8, 0x0100_0201).unwrap();
+    let mut single = batched.clone();
+
+    let batch_error = batched.tick(CONTROL_CLOCKS + 100).unwrap_err();
+    let single_error = loop {
+        if let Err(error) = single.tick(1) {
+            break error;
+        }
+    };
+    assert_eq!(batch_error, single_error);
+    assert_eq!(single.elapsed_cycles(), u64::from(CONTROL_CLOCKS));
+    assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
+    assert_eq!(batched.spu.generated_samples, 1);
+    assert_eq!(batched.spu.generated_samples, single.spu.generated_samples);
+    assert_eq!(batched.gpu.status(), single.gpu.status());
+    assert_eq!(batched.read32(0x1f80_10c8), single.read32(0x1f80_10c8));
+    assert_eq!(batched.read32(0x1f80_1070), single.read32(0x1f80_1070));
+}
+
+#[test]
+fn batched_quiet_spans_match_gpu_timers_and_audio_across_frames() {
+    for mode in [0, 8] {
+        // NTSC and PAL scanout.
+        let mut batched = Bus::default();
+        batched.write32(0x1f80_1814, 0x0800_0000 | mode).unwrap();
+        batched.write16(0x1f80_1108, 17).unwrap();
+        batched.write16(0x1f80_1104, 0x58).unwrap();
+        batched.write16(0x1f80_1118, 4).unwrap();
+        batched.write16(0x1f80_1114, 0x158).unwrap();
+        batched.write16(0x1f80_1124, 0x220).unwrap();
+        let mut single = batched.clone();
+        for clocks in [0, 1, 2, 7, 37, 767, 768, 769, 750_000] {
+            batched.tick(clocks).unwrap();
+            for _ in 0..clocks {
+                single.tick(1).unwrap();
+            }
+            assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
+            assert_eq!(batched.gpu.status(), single.gpu.status());
+            assert_eq!(batched.gpu.frames, single.gpu.frames);
+            assert_eq!(batched.read32(0x1f80_1070), single.read32(0x1f80_1070));
+            for timer in 0..3 {
+                for offset in [0, 4, 8] {
+                    let address = 0x1f80_1100 + timer * 16 + offset;
+                    assert_eq!(batched.read16(address), single.read16(address));
+                }
+            }
+            assert_eq!(batched.spu.generated_samples, single.spu.generated_samples);
+            assert_eq!(
+                batched.spu.drain_audio().collect::<Vec<_>>(),
+                single.spu.drain_audio().collect::<Vec<_>>()
+            );
+        }
+        assert!(batched.gpu.frames > 0);
+    }
 }
 
 #[test]

@@ -17,9 +17,9 @@ Eidoryn 使用单一的 CPU 时钟域作为 CPU、GPU 时序、root counter、CD
 
 RAM 和片内寄存器的数值基于已发表的字读取测量；目前也作为字节/半字读取的近似。第二次乘除会取代之前的等待；MTHI/MTLO 会取消等待。乘除结果在当前实现中仍在启动时计算，而只有 MFHI/MFLO 会等待；取消运算时硬件 HI/LO 的中间值尚未模拟。
 
-每个已执行的 CPU 步骤先完成解释器状态更新，再逐周期推进设备。每个周期按 CD-ROM、SIO、GPU/计时器、SPU 和 DMA/中断的既定顺序执行；中断在下一条 CPU 指令边界处理。设备错误会中止剩余周期并使机器停机；总周期数包含出错的那个周期。JIT 只对支持的整数指令执行原生代码，每条仍推进一个 CPU 周期；其他指令回退到相同的解释器时钟路径。
+每个已执行的 CPU 步骤先完成解释器状态更新，再按 CPU 周期推进设备。每个事件边界按 CD-ROM、SIO、GPU/计时器、SPU 和 DMA/中断的既定顺序处理；中断在下一条 CPU 指令边界处理。设备错误会中止剩余周期并使机器停机；总周期数包含出错的那个周期。JIT 只对支持的整数指令执行原生代码，每条仍推进一个 CPU 周期；其他指令回退到相同的解释器时钟路径。
 
-这一顺序修复了大块时钟推进跨过多个 CD 音频扇区时只处理一个事件的问题，也确保乘除等待期间设备继续工作。
+总线计算距离下一个 CD 命令、延迟完成或扇区事件，以及 SPU 采样或控制变化的周期数。没有这些事件的区间可以批量推进，事件发生的周期仍逐周期执行，保证同周期 CD 音频先于 SPU 采样。GPU 和计时器在批量区间内部仍逐周期推进；SIO 活跃、SPU 手动传输或任意 DMA 通道启动时，保守使用逐周期路径。这样不会因为光驱单次调用只处理一个完成事件而漏掉中间事件，也确保乘除等待期间设备继续工作。
 
 ## 查询与控制
 
@@ -27,7 +27,7 @@ RAM 和片内寄存器的数值基于已发表的字读取测量；目前也作�
 - `Machine::elapsed_cycles()` 和 `Bus::elapsed_cycles()` 返回该总线已经开始的累计周期，达到 `u64::MAX` 后回绕。克隆保留当前时钟；从初始机器重置时也恢复其时钟。
 - `Machine::run_steps()` 的预算仍为 CPU 步数，而不是周期数；异常入口可能消耗一步但不退休一条指令。
 - 直接调用 `Cpu::step()` 只执行 CPU 步骤，不推进设备；调用者可通过 `Cpu::last_step_cycles()` 读取该步骤的估算值，再调用 `Bus::tick()`。应用层应优先使用 `Machine` 接口。
-- `Bus::tick(n)` 按顺序执行 `n` 个单周期；`tick(0)` 不推进或触发设备事件。它不是跳过 CPU 的实时等待函数。
+- `Bus::tick(n)` 保持与 `n` 次单周期推进相同的事件顺序和出错边界；`tick(0)` 不推进或触发设备事件。它不是跳过 CPU 的实时等待函数。
 
 ## 目前的近似和边界
 
@@ -46,6 +46,7 @@ cargo test --locked --test cpu_timing
 cargo test --locked --test jit
 cargo test --locked --test standalone batched_bus_clocks_keep_cdda_and_spu_in_cycle_order
 cargo test --locked --workspace
+cargo run --locked --release --no-default-features --example event_boundary_bench
 ```
 
-测试覆盖 RAM 镜像、片内寄存器、异常、load delay、乘除边界与重叠、等待期间定时器 IRQ、CD 命令与 SPU 采样、解释器/JIT 比较，以及跨 CDDA 扇区的批量/逐周期一致性。下一步应与专门的实机时序测试比对，再完善缓存、load shadow 与总线/DMA 争用。
+测试覆盖 RAM 镜像、片内寄存器、异常、load delay、乘除边界与重叠、等待期间定时器 IRQ、CD 命令与 SPU 采样、解释器/JIT 比较，以及 CDDA、连续命令、GPU/计时器、SIO、SPU 和 DMA 的批量/逐周期一致性。基准使用固定周期和指令数的原创合成负载，不代表游戏 FPS。下一步应与专门的实机时序测试比对，再完善缓存、load shadow 与总线/DMA 争用。

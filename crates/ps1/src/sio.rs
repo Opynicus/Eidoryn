@@ -119,16 +119,20 @@ impl Sio {
         (reply, acknowledge.then_some(ACK_DELAY))
     }
 
+    /// Active transfers and ACK edges remain on the per-cycle bus path.
+    pub(crate) fn needs_single_cycle(&self) -> bool {
+        self.holding.is_some()
+            || self.transmitting.is_some()
+            || self.ack_delay != 0
+            || self.ack_pulse != 0
+    }
+
     /// Baud-derived byte timing; ACK delay/pulse are approximate device timings.
     #[inline]
     pub fn tick(&mut self, clocks: u32) {
         // All interrupt-producing changes are handled by register writes or
         // transfer/ACK edges. An idle controller has nothing to advance.
-        if self.holding.is_none()
-            && self.transmitting.is_none()
-            && self.ack_delay == 0
-            && self.ack_pulse == 0
-        {
+        if !self.needs_single_cycle() {
             return;
         }
         self.tick_active(clocks);

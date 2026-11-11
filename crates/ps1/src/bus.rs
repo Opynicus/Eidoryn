@@ -91,13 +91,69 @@ impl Bus {
         self.elapsed_cycles
     }
 
-    /// Advance every device in CPU-clock order. Splitting a long advance at
-    /// each cycle preserves CD/audio/DMA/IRQ boundaries and never drops a
-    /// device event merely because an instruction spent multiple cycles.
+    /// Advance devices in CPU-clock order. Quiet spans end before the next
+    /// observable CD/SPU event; that boundary is processed one cycle at a
+    /// time. Active DMA and SIO also retain the single-cycle path.
     #[inline]
     pub fn tick(&mut self, clocks: u32) -> Result<(), EmuError> {
-        for _ in 0..clocks {
+        match clocks {
+            0 => Ok(()),
+            1 => self.tick_one(),
+            _ => self.tick_many(clocks),
+        }
+    }
+
+    fn tick_many(&mut self, mut clocks: u32) -> Result<(), EmuError> {
+        while clocks > 1 {
+            if self
+                .dma
+                .iter()
+                .any(|channel| channel.control & (1 << 24) != 0)
+                || self.sio.needs_single_cycle()
+            {
+                self.tick_one()?;
+                clocks -= 1;
+                continue;
+            }
+            let next = self
+                .cdrom
+                .clocks_until_event()
+                .min(self.spu.clocks_until_event());
+            // Process the event itself via tick_one, preserving the exact
+            // device order and partial progress if a device reports an error.
+            let quiet = clocks.min(next - 1);
+            if quiet == 0 {
+                self.tick_one()?;
+                clocks -= 1;
+            } else {
+                self.tick_quiet(quiet)?;
+                clocks -= quiet;
+            }
+        }
+        if clocks != 0 {
             self.tick_one()?;
+        }
+        Ok(())
+    }
+
+    /// No CD or SPU boundary occurs during this span, and DMA/SIO are idle.
+    /// GPU/timers still advance one CPU clock at a time inside `Gpu::tick`.
+    #[inline]
+    fn tick_quiet(&mut self, clocks: u32) -> Result<(), EmuError> {
+        self.elapsed_cycles = self.elapsed_cycles.wrapping_add(u64::from(clocks));
+        self.cdrom.tick(clocks);
+        self.sio.tick(clocks);
+        if self.sio.take_irq_edge() {
+            self.irq_status |= 1 << 7;
+        }
+        self.irq_status |= self.gpu.tick(clocks, &mut self.timers);
+        self.spu
+            .tick_with_cd(clocks, || self.cdrom.audio_sample())?;
+        if self.spu.irq_pending() {
+            self.irq_status |= 1 << 9;
+        }
+        if self.cdrom.irq_pending() {
+            self.irq_status |= 1 << 2;
         }
         Ok(())
     }

@@ -844,30 +844,48 @@ fn cd_staging_reuse_preserves_fifo_backpressure_mode_changes_and_init() {
 #[test]
 fn batched_bus_clocks_keep_cdda_and_spu_in_cycle_order() {
     let fixture = Fixture::new();
-    let frame = [1000_i16, -2000].map(i16::to_le_bytes).concat();
-    fixture.image("original-audio.bin", &frame.repeat(588 * 3));
+    let audio: Vec<u8> = [[1000_i16, -2000], [2000, -4000], [-3000, 6000]]
+        .into_iter()
+        .flat_map(|frame| frame.map(i16::to_le_bytes).concat().repeat(588))
+        .collect();
+    fixture.image("original-audio.bin", &audio);
     let path = fixture.image(
         "original-audio.cue",
         b"FILE original-audio.bin BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n",
     );
     let mut batched = bus(&path);
+    for (address, value) in [
+        (0x1f80_1d80, 0x3fff), // Main volume, left and right.
+        (0x1f80_1d82, 0x3fff),
+        (0x1f80_1db0, 0x7fff), // CD volume, left and right.
+        (0x1f80_1db2, 0x7fff),
+        (0x1f80_1daa, 0x8001), // Enable SPU and CD audio.
+    ] {
+        batched.write16(address, value).unwrap();
+    }
+    // Align the first CDDA sector and an SPU sample to the same CPU cycle.
+    batched.tick(304).unwrap();
     assert_eq!(command(&mut batched, 3, &[]), [0x82]);
+    let _ = batched.spu.drain_audio().count();
     let mut single = batched.clone();
-    let clocks = SECTOR_CLOCKS * 2;
+    let clocks = SECTOR_CLOCKS * 3;
     batched.tick(clocks).unwrap();
     for _ in 0..clocks {
         single.tick(1).unwrap();
     }
-    assert_eq!(batched.elapsed_cycles(), u64::from(COMMAND_CLOCKS + clocks));
+    assert_eq!(
+        batched.elapsed_cycles(),
+        u64::from(304 + COMMAND_CLOCKS + clocks)
+    );
     assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
-    assert_eq!(batched.cdrom.cdda_sectors, 2);
+    assert_eq!(batched.cdrom.cdda_sectors, 3);
     assert_eq!(batched.cdrom.cdda_sectors, single.cdrom.cdda_sectors);
     assert_eq!(batched.cdrom.debug_state(), single.cdrom.debug_state());
     assert_eq!(batched.spu.generated_samples, single.spu.generated_samples);
-    assert_eq!(
-        batched.spu.drain_audio().collect::<Vec<_>>(),
-        single.spu.drain_audio().collect::<Vec<_>>()
-    );
+    let batched_audio = batched.spu.drain_audio().collect::<Vec<_>>();
+    let single_audio = single.spu.drain_audio().collect::<Vec<_>>();
+    assert_eq!(batched_audio, single_audio);
+    assert!(batched_audio.iter().any(|sample| *sample != [0, 0]));
     for _ in 0..588 {
         assert_eq!(batched.cdrom.audio_sample(), single.cdrom.audio_sample());
     }
@@ -878,4 +896,44 @@ fn batched_bus_clocks_keep_cdda_and_spu_in_cycle_order() {
         }
     }
     assert_eq!(batched.irq_pending(), single.irq_pending());
+}
+
+#[test]
+fn batched_cd_commands_preserve_blocked_completion_priority() {
+    fn advance(batched: &mut Bus, single: &mut Bus, clocks: u32) {
+        batched.tick(clocks).unwrap();
+        for _ in 0..clocks {
+            single.tick(1).unwrap();
+        }
+        assert_eq!(batched.elapsed_cycles(), single.elapsed_cycles());
+        assert_eq!(batched.cdrom.debug_state(), single.cdrom.debug_state());
+        assert_eq!(batched.spu.generated_samples, single.spu.generated_samples);
+        assert_eq!(batched.read32(0x1f80_1070), single.read32(0x1f80_1070));
+    }
+
+    let mut batched = Bus::default();
+    batched.write8(0x1f80_1800, 1).unwrap();
+    batched.write8(0x1f80_1802, 0x1f).unwrap();
+    let mut single = batched.clone();
+    for bus in [&mut batched, &mut single] {
+        issue(bus, 0x0a, &[]); // Init responds now and schedules completion.
+    }
+    advance(&mut batched, &mut single, COMMAND_CLOCKS);
+    for bus in [&mut batched, &mut single] {
+        assert_eq!(response(bus, 3), [0x10]);
+        issue(bus, 1, &[]); // Getstat and Init completion both become due.
+    }
+    advance(&mut batched, &mut single, COMMAND_CLOCKS * 3);
+    for bus in [&mut batched, &mut single] {
+        ack(bus);
+    }
+    advance(&mut batched, &mut single, 17);
+    for bus in [&mut batched, &mut single] {
+        assert_eq!(response(bus, 3), [0x10]); // Command wins first.
+        ack(bus);
+    }
+    advance(&mut batched, &mut single, 17);
+    for bus in [&mut batched, &mut single] {
+        assert_eq!(response(bus, 2), [0x10]); // Completion remains pending.
+    }
 }

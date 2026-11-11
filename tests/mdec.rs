@@ -125,8 +125,20 @@ fn dma0_pauses_at_full_fifo_and_dma1_reorders_four_quadrants_then_signals_irq() 
     bus.write32(0x1f80_1090, 0x4000).unwrap();
     bus.write32(0x1f80_1094, (48 << 16) | 32).unwrap();
     bus.write32(0x1f80_1098, 0x0100_0200).unwrap();
+    let mut batched = bus.clone();
+    batched.tick(100).unwrap();
     for _ in 0..100 {
         bus.tick(1).unwrap();
+    }
+    assert_eq!(batched.elapsed_cycles(), bus.elapsed_cycles());
+    assert_eq!(batched.mdec.status(), bus.mdec.status());
+    assert_eq!(batched.mdec.blocks_decoded, bus.mdec.blocks_decoded);
+    assert_eq!(batched.ram, bus.ram);
+    for address in [0x1f80_1088, 0x1f80_1098, 0x1f80_10f4, 0x1f80_1070] {
+        assert_eq!(
+            batched.read32(address).unwrap(),
+            bus.read32(address).unwrap()
+        );
     }
     assert_eq!(bus.read32(0x1f80_1088).unwrap() & (1 << 24), 0);
     assert_eq!(bus.read32(0x1f80_1098).unwrap() & (1 << 24), 0);
