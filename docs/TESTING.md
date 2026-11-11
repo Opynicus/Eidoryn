@@ -54,6 +54,7 @@ cargo run --locked --no-default-features -- \
 ```bash
 cargo run --locked --release --no-default-features --example device_bench
 cargo run --locked --release --no-default-features --example cd_bench
+cargo run --locked --release --no-default-features --example event_boundary_bench
 cargo run --locked --release --example gpu_bench -- 120
 cargo run --locked --release --example cpu_bench
 ```
@@ -61,6 +62,8 @@ cargo run --locked --release --example cpu_bench
 `cd_bench` 分别测量命令响应、raw 扇区 FIFO 和 cooked ISO / EDC 路径，打印校验和，共五轮。它只创建原创临时媒体，正常退出自动清理。
 
 `device_bench` 分别测量 10,000 条 1,024 节点 DMA 链和 20,000 个 MDEC 宏块，共五轮，打印命令计数与输出校验和。`gpu_bench` 使用原创多层精灵，包含扫描输出/读回并比较完整显存。`cpu_bench` 使用原创整数循环。微基准不等于整机加速比。
+
+`event_boundary_bench` 比较固定总线周期和固定 CPU 指令数的合成负载，校验设备状态并分别测量不同的推进长度；它不代表实际游戏帧率。
 
 请用 release 构建，在同一设备、电源模式与驱动下重复运行；避免编译、后台模拟器或其他重负载干扰。详细结果和局限见 [PERFORMANCE.md](PERFORMANCE.md)。
 
