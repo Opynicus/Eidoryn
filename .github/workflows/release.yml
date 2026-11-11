@@ -15,8 +15,8 @@ jobs:
           - {os: ubuntu-24.04, label: linux-x86_64-cli, mode: cli, args: '--no-default-features', binary: eidoryn}
           - {os: windows-2022, label: windows-x86_64-desktop, mode: desktop, args: '--no-default-features --features desktop', binary: eidoryn.exe}
           - {os: windows-2022, label: windows-x86_64-cli, mode: cli, args: '--no-default-features', binary: eidoryn.exe}
-          - {os: macos-14, label: macos-arm64-desktop, mode: desktop, args: '--no-default-features --features desktop', binary: eidoryn}
-          - {os: macos-14, label: macos-arm64-cli, mode: cli, args: '--no-default-features', binary: eidoryn}
+          - {os: macos-15, label: macos-arm64-desktop, mode: desktop, args: '--no-default-features --features desktop', binary: eidoryn}
+          - {os: macos-15, label: macos-arm64-cli, mode: cli, args: '--no-default-features', binary: eidoryn}
     runs-on: ${{ matrix.os }}
     continue-on-error: true
     steps:
