@@ -1,4 +1,4 @@
-use super::Desktop;
+use super::{Desktop, WorkspacePage};
 use eidoryn_psx::systems::ps1::runner::Command;
 use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
 
@@ -72,9 +72,9 @@ impl Desktop {
             multiple: false,
             prompt: Some(
                 if bios {
-                    "Select BIOS firmware (.bin/.rom, exactly 512 KiB)"
+                    "选择 BIOS 固件（.bin/.rom，512 KiB）"
                 } else {
-                    "Load PS-X EXE"
+                    "打开 PS-X EXE"
                 }
                 .into(),
             ),
@@ -99,7 +99,7 @@ impl Desktop {
     }
     pub(super) fn open_disc(&mut self, fast_boot: bool, cx: &mut Context<Self>) {
         if !fast_boot && self.bios.is_none() {
-            self.notice = Some("Select a 512 KiB firmware file with Open BIOS first. Homebrew can use Fast boot without BIOS.".into());
+            self.notice = Some("请先选择 512 KiB BIOS。自制程序可使用快速启动。".into());
             cx.notify();
             return;
         }
@@ -109,9 +109,9 @@ impl Desktop {
             multiple: false,
             prompt: Some(
                 if fast_boot {
-                    "Homebrew CUE/BIN or ISO: extract EXE and skip BIOS initialization"
+                    "自制程序 CUE/BIN 或 ISO：跳过 BIOS 初始化"
                 } else {
-                    "Open game disc (CUE for multiple BIN tracks, or ISO)"
+                    "打开游戏镜像（多轨 BIN 请选择 CUE，或选择 ISO）"
                 }
                 .into(),
             ),
@@ -150,6 +150,16 @@ impl Desktop {
         if event.is_held {
             return;
         }
+        if self.graphics.open {
+            match event.keystroke.key.as_str() {
+                "escape" | "f8" => {
+                    self.graphics.open = false;
+                    cx.notify();
+                }
+                _ => {}
+            }
+            return;
+        }
         let modifiers = &event.keystroke.modifiers;
         if !modifiers.control
             && !modifiers.alt
@@ -167,9 +177,7 @@ impl Desktop {
             "f6" => self.toggle_view(window, cx),
             "f7" => self.toggle_crt(cx),
             "f8" => {
-                self.graphics.open = !self.graphics.open;
-                self.appearance_open = false;
-                cx.notify();
+                self.open_settings(false, cx);
             }
             "f11" => {
                 window.toggle_fullscreen();
@@ -177,6 +185,10 @@ impl Desktop {
             }
             "escape" if window.is_fullscreen() => {
                 window.toggle_fullscreen();
+                cx.notify();
+            }
+            "escape" if self.game_view => {
+                self.game_view = false;
                 cx.notify();
             }
             "r" if event.keystroke.modifiers.control => self.command(Command::Reset, cx),
@@ -190,6 +202,28 @@ impl Desktop {
         } else {
             self.game_view = !self.game_view;
         }
+        cx.notify();
+    }
+
+    pub(super) fn show_page(
+        &mut self,
+        page: WorkspacePage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.is_fullscreen() {
+            window.toggle_fullscreen();
+        }
+        self.game_view = false;
+        self.page = page;
+        self.graphics.open = false;
+        cx.notify();
+    }
+
+    pub(super) fn open_settings(&mut self, appearance: bool, cx: &mut Context<Self>) {
+        self.release_buttons(cx);
+        self.graphics.open = true;
+        self.appearance_open = appearance;
         cx.notify();
     }
 }

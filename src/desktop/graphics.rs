@@ -1,13 +1,16 @@
 use super::{
     Desktop,
-    components::{button, card, label},
+    components::{button, label},
 };
-use eidoryn_psx::systems::ps1::{
-    cpu_engine::CpuMode,
-    gpu::RendererMode,
-    runner::{Command, Snapshot},
+use eidoryn_psx::{
+    systems::ps1::{
+        cpu_engine::CpuMode,
+        gpu::RendererMode,
+        runner::{Command, Snapshot},
+    },
+    theme::Palette,
+    video_filter::CrtFilter,
 };
-use eidoryn_psx::theme::Palette;
 use gpui::{Context, div, prelude::*, px, rgb};
 
 pub(super) struct GraphicsControls {
@@ -45,20 +48,6 @@ impl GraphicsControls {
 }
 
 impl Desktop {
-    pub(super) fn graphics_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        button(
-            &self.themes.active().palette,
-            "graphics",
-            "Graphics",
-            self.graphics.open,
-        )
-        .on_click(cx.listener(|view, _, _, cx| {
-            view.graphics.open = !view.graphics.open;
-            view.appearance_open = false;
-            cx.notify();
-        }))
-    }
-
     fn select_renderer(&mut self, mode: RendererMode, cx: &mut Context<Self>) {
         match self.runner.send(Command::SetRenderer(mode)) {
             Ok(()) => {
@@ -80,7 +69,8 @@ impl Desktop {
         switch(
             &self.themes.active().palette,
             "jit-switch",
-            "CPU JIT · experimental",
+            "CPU JIT · 实验性",
+            "可用性取决于平台与构建",
             self.snapshot.cpu_mode == CpuMode::Jit,
             available,
         )
@@ -108,86 +98,93 @@ impl Desktop {
         let hardware = self.snapshot.renderer == RendererMode::Vulkan;
         let ready = self.graphics.pending.is_none() && self.graphics.pending_cpu.is_none();
         let software_threads = self.graphics.software == RendererMode::Threaded;
-        card(p)
-            .p_4()
+        div()
+            .flex()
+            .flex_col()
             .gap_3()
-            .flex_shrink_0()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(div().text_sm().child("Graphics"))
-                    .child(
-                        button(p, "close-graphics", "Done", false).on_click(cx.listener(
-                            |view, _, _, cx| {
-                                view.graphics.open = false;
-                                cx.notify();
-                            },
-                        )),
-                    ),
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("CRT 显示效果"),
+            )
+            .child(label(p, "为游戏画面选择显示滤镜。"))
+            .child(
+                div().flex().gap_2().children(
+                    [
+                        (CrtFilter::Off, "关闭"),
+                        (CrtFilter::Soft, "柔和"),
+                        (CrtFilter::Classic, "经典"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (filter, name))| {
+                        button(p, ("crt-choice", index), name, self.crt_filter() == filter)
+                            .on_click(
+                                cx.listener(move |view, _, _, cx| view.set_crt_filter(filter, cx)),
+                            )
+                    }),
+                ),
             )
             .child(
                 div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_6()
-                    .child(
-                        switch(
-                            p,
-                            "vulkan-switch",
-                            "Vulkan acceleration",
-                            hardware,
-                            ready && cfg!(feature = "vulkan"),
-                        )
-                        .when(
-                            ready && cfg!(feature = "vulkan"),
-                            |element| {
-                                element.on_click(cx.listener(|view, _, _, cx| {
-                                    let mode = if view.snapshot.renderer == RendererMode::Vulkan {
-                                        view.graphics.software
-                                    } else {
-                                        RendererMode::Vulkan
-                                    };
-                                    view.select_renderer(mode, cx);
-                                }))
-                            },
-                        ),
-                    )
-                    .child(
-                        switch(
-                            p,
-                            "threaded-switch",
-                            "Software multithreading",
-                            software_threads,
-                            ready && !hardware,
-                        )
-                        .when(ready && !hardware, |element| {
-                            element.on_click(cx.listener(|view, _, _, cx| {
-                                let mode = if view.snapshot.renderer == RendererMode::Threaded {
-                                    RendererMode::Serial
-                                } else {
-                                    RendererMode::Threaded
-                                };
-                                view.select_renderer(mode, cx);
-                            }))
-                        }),
-                    ),
+                    .mt_4()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("渲染与性能"),
+            )
+            .child(label(p, "选项是否可用取决于平台、构建和当前模式。"))
+            .child(
+                switch(
+                    p,
+                    "vulkan-switch",
+                    "Vulkan 硬件加速",
+                    "需要受支持的硬件和构建",
+                    hardware,
+                    ready && cfg!(feature = "vulkan"),
+                )
+                .when(ready && cfg!(feature = "vulkan"), |element| {
+                    element.on_click(cx.listener(|view, _, _, cx| {
+                        let mode = if view.snapshot.renderer == RendererMode::Vulkan {
+                            view.graphics.software
+                        } else {
+                            RendererMode::Vulkan
+                        };
+                        view.select_renderer(mode, cx);
+                    }))
+                }),
+            )
+            .child(
+                switch(
+                    p,
+                    "threaded-switch",
+                    "软件多线程",
+                    "为软件渲染启用独立工作线程",
+                    software_threads,
+                    ready && !hardware,
+                )
+                .when(ready && !hardware, |element| {
+                    element.on_click(cx.listener(|view, _, _, cx| {
+                        let mode = if view.graphics.software == RendererMode::Threaded {
+                            RendererMode::Serial
+                        } else {
+                            RendererMode::Threaded
+                        };
+                        view.select_renderer(mode, cx);
+                    }))
+                }),
             )
             .child(self.jit_control(ready, cx))
             .child(label(
                 p,
                 if !ready {
-                    "Applying settings…".into()
+                    "正在应用设置…".into()
                 } else if hardware {
-                    format!(
-                        "{} · dedicated GPU submission thread",
-                        self.snapshot.renderer_device
-                    )
+                    format!("{} · 独立 GPU 提交线程", self.snapshot.renderer_device)
                 } else if cfg!(feature = "vulkan") {
-                    "Software rendering · multithreading moves drawing to a separate worker".into()
+                    "当前使用软件渲染。".into()
                 } else {
-                    "Vulkan is unavailable in this build · enable the vulkan Cargo feature".into()
+                    "此构建不包含 Vulkan。".into()
                 },
             ))
     }
@@ -197,33 +194,50 @@ fn switch(
     p: &Palette,
     id: &'static str,
     title: &'static str,
+    detail: &'static str,
     enabled: bool,
     available: bool,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .py_3()
+        .border_t_1()
+        .border_color(rgb(p.border))
         .flex()
         .items_center()
+        .justify_between()
         .gap_3()
-        .text_sm()
         .when(available, gpui::Styled::cursor_pointer)
         .when(!available, |element| element.opacity(0.45))
         .child(
             div()
-                .w(px(44.))
-                .h(px(24.))
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .child(title),
+                )
+                .child(label(p, detail)),
+        )
+        .child(
+            div()
+                .w(px(36.))
+                .h(px(20.))
                 .px(px(3.))
                 .flex()
                 .items_center()
                 .rounded_full()
                 .bg(rgb(if enabled { p.primary } else { p.border }))
                 .when(enabled, gpui::Styled::justify_end)
-                .child(div().size(px(18.)).rounded_full().bg(rgb(if enabled {
+                .child(div().size(px(14.)).rounded_full().bg(rgb(if enabled {
                     p.on_primary
                 } else {
-                    p.surface
+                    p.text
                 }))),
         )
-        .child(title)
-        .child(label(p, if enabled { "On" } else { "Off" }))
 }

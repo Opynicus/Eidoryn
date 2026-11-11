@@ -1,5 +1,8 @@
 //! Material volume control shared by the inspector and game views.
-use super::{Desktop, components::button};
+use super::{
+    Desktop,
+    components::{button, icon_button},
+};
 use eidoryn_psx::audio::{AudioBuffer, output::AudioOutput};
 use gpui::{
     Bounds, Context, CursorStyle, HitboxBehavior, IntoElement, MouseButton, MouseDownEvent,
@@ -17,26 +20,17 @@ pub(super) struct AudioControls {
 impl Desktop {
     pub(super) fn audio_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let sound = if self.audio.output.is_none() {
+            button(p, "mute", "启用声音", false)
+        } else {
+            icon_button(p, "mute", if self.audio.muted { "mute" } else { "volume" })
+        };
         div()
             .flex()
             .flex_shrink_0()
             .gap_2()
             .items_center()
-            .child(
-                button(
-                    p,
-                    "mute",
-                    if self.audio.output.is_none() {
-                        "Enable sound"
-                    } else if self.audio.muted {
-                        "Unmute"
-                    } else {
-                        "Mute"
-                    },
-                    false,
-                )
-                .on_click(cx.listener(|view, _, _, cx| view.toggle_audio(cx))),
-            )
+            .child(sound.on_click(cx.listener(|view, _, _, cx| view.toggle_audio(cx))))
             .child(self.volume_slider(cx))
             .child(
                 div()
@@ -124,7 +118,7 @@ impl Desktop {
                 });
             },
         )
-        .w(px(136.))
+        .w(px(104.))
         .h(px(40.))
     }
 

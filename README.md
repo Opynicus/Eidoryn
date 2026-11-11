@@ -38,7 +38,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 | --- | --- |
 | Emulated systems | PlayStation (PS1) is in development; other systems are not implemented. |
 | Host platforms | Linux x86-64 has been used for development and testing. Windows and macOS headless CLI builds have passed CI smoke tests; their desktop interfaces still need hands-on runtime validation. |
-| Rendering | Serial software rendering is the default. Multithreaded software rendering and Vulkan can be selected in **Graphics / F8** when included in the build. |
+| Rendering | Serial software rendering is the default. Multithreaded software rendering and Vulkan can be selected in **图形与外观 / F8** when included in the build. |
 | CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
 | Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
@@ -67,9 +67,9 @@ Without media, Eidoryn opens its original built-in demo without requiring a BIOS
 
 ### Load a game
 
-1. Select **Open BIOS** and load your own 512 KiB BIOS file.
-2. Select **Open Disc** and load an ISO or CUE file. For a multi-track BIN image, select the `.cue` that references all tracks.
-3. Select **Run**. Press **F11** to enter or leave fullscreen.
+1. Select **选择 BIOS** and load your own 512 KiB BIOS file.
+2. Select **打开光盘镜像** and load an ISO or CUE file. For a multi-track BIN image, select the `.cue` that references all tracks.
+3. Select **运行**. Press **F11** to enter or leave fullscreen.
 
 You can also start from the command line:
 
@@ -131,6 +131,7 @@ Most detailed hardware documents are currently in Chinese.
 | Document | Contents |
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
+| [Desktop workspaces](docs/UI.md) | Console, debugger, game view, and settings |
 | [Timing](docs/TIMING.md) · [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/device cycles, graphics backends, and CPU execution |
 | [Audio](docs/AUDIO.md) · [Memory cards](docs/SAVES.md) | Output, persistence, and limitations |
 | [Theme plugins](docs/THEMES.md) | Built-in themes and the custom JSON format |

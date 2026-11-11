@@ -46,11 +46,20 @@ impl Desktop {
         cx.notify();
     }
 
+    pub(super) fn crt_filter(&self) -> CrtFilter {
+        self.crt.filter
+    }
+
+    pub(super) fn set_crt_filter(&mut self, filter: CrtFilter, cx: &mut Context<Self>) {
+        self.crt.filter = filter;
+        cx.notify();
+    }
+
     pub(super) fn crt_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
         button(
             &self.themes.active().palette,
             "crt-filter",
-            format!("CRT · {}", self.crt.filter.label()),
+            format!("CRT  {}", crt_label(self.crt.filter)),
             self.crt.filter != CrtFilter::Off,
         )
         .on_click(cx.listener(|view, _, _, cx| view.toggle_crt(cx)))
@@ -114,5 +123,13 @@ impl Desktop {
             },
         )
         .size_full()
+    }
+}
+
+pub(super) fn crt_label(filter: CrtFilter) -> &'static str {
+    match filter {
+        CrtFilter::Off => "关闭",
+        CrtFilter::Soft => "柔和",
+        CrtFilter::Classic => "经典",
     }
 }

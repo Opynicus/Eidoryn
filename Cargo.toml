@@ -19,6 +19,8 @@ default = ["desktop", "vulkan", "jit"]
 desktop = ["dep:gpui", "dep:image", "dep:libc", "eidoryn-host/audio-output", "eidoryn-host/themes"]
 vulkan = ["eidoryn-ps1/vulkan"]
 jit = ["eidoryn-ps1/jit"]
+# Opt-in GPUI interaction tests; headless builds keep their minimal dependencies.
+ui-tests = ["desktop", "gpui/test-support"]
 
 [dependencies]
 eidoryn-ps1 = { path = "crates/ps1", default-features = false }
