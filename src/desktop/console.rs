@@ -9,7 +9,6 @@ use gpui::{Context, Window, div, prelude::*, px, rgb};
 
 impl Desktop {
     pub(super) fn console_page(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
         let stacked = window.viewport_size().width < px(1400.);
         let height = (f32::from(window.viewport_size().height) - 440.).clamp(240., 390.);
         let display = div()
@@ -41,55 +40,7 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_5()
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .justify_between()
-                    .gap_4()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(p.primary))
-                                    .child(self.tr(Text::ConsoleEyebrow)),
-                            )
-                            .child(
-                                div()
-                                    .text_2xl()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(self.tr(Text::Welcome)),
-                            )
-                            .child(label(p, self.tr(Text::WelcomeHint))),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_shrink_0()
-                            .gap_2()
-                            .child(
-                                action(
-                                    p,
-                                    "open-bios",
-                                    self.tr(Text::ChooseBios),
-                                    Some("plus"),
-                                    false,
-                                )
-                                .on_click(cx.listener(|view, _, _, cx| view.open(true, cx))),
-                            )
-                            .child(
-                                action(p, "open-disc", self.tr(Text::OpenDisc), Some("disc"), true)
-                                    .on_click(
-                                        cx.listener(|view, _, _, cx| view.open_disc(false, cx)),
-                                    ),
-                            ),
-                    ),
-            )
+            .child(self.console_header(cx))
             .child(if stacked {
                 div()
                     .flex()
@@ -105,6 +56,64 @@ impl Desktop {
                     .child(display)
                     .child(details)
             })
+    }
+
+    fn console_header(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let fonts = &self.fonts;
+        div()
+            .flex()
+            .items_end()
+            .justify_between()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font(self.fonts.bold())
+                            .text_color(rgb(p.primary))
+                            .child(self.tr(Text::ConsoleEyebrow)),
+                    )
+                    .child(
+                        div()
+                            .text_2xl()
+                            .font(self.fonts.semibold())
+                            .child(self.tr(Text::Welcome)),
+                    )
+                    .child(label(p, self.tr(Text::WelcomeHint))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .gap_2()
+                    .child(
+                        action(
+                            fonts,
+                            p,
+                            "open-bios",
+                            self.tr(Text::ChooseBios),
+                            Some("plus"),
+                            false,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.open(true, cx))),
+                    )
+                    .child(
+                        action(
+                            fonts,
+                            p,
+                            "open-disc",
+                            self.tr(Text::OpenDisc),
+                            Some("disc"),
+                            true,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.open_disc(false, cx))),
+                    ),
+            )
     }
 
     fn display_card(&self, height: f32) -> gpui::Div {
@@ -129,7 +138,7 @@ impl Desktop {
                     .child(
                         div()
                             .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .font(self.fonts.semibold())
                             .child(self.tr(Text::Display)),
                     )
                     .child(label(p, "DISPLAY"))
@@ -164,7 +173,7 @@ impl Desktop {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font(self.fonts.medium())
                                     .truncate()
                                     .child(self.display_title().to_owned()),
                             )
@@ -200,6 +209,7 @@ impl Desktop {
             .gap_2()
             .child(
                 action(
+                    &self.fonts,
                     p,
                     "transport-run",
                     if running {
@@ -219,6 +229,7 @@ impl Desktop {
             .child(self.crt_control(cx))
             .children(game.then(|| {
                 action(
+                    &self.fonts,
                     p,
                     "transport-graphics",
                     self.tr(Text::Graphics),
@@ -231,6 +242,7 @@ impl Desktop {
             .child(self.audio_controls(cx))
             .child(if game {
                 action(
+                    &self.fonts,
                     p,
                     "transport-fullscreen",
                     self.tr(Text::Fullscreen),
@@ -244,6 +256,7 @@ impl Desktop {
                 }))
             } else {
                 action(
+                    &self.fonts,
                     p,
                     "transport-game",
                     self.tr(Text::GameView),
@@ -302,7 +315,12 @@ impl Desktop {
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(p, self.tr(Text::Session), "PLAYSTATION"))
+            .child(heading(
+                &self.fonts,
+                p,
+                self.tr(Text::Session),
+                "PLAYSTATION",
+            ))
             .child(
                 div()
                     .p_3()
@@ -331,7 +349,7 @@ impl Desktop {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font(self.fonts.medium())
                                     .truncate()
                                     .child(self.display_title().to_owned()),
                             )
@@ -353,15 +371,22 @@ impl Desktop {
                 self.snapshot.cdrom_reads.to_string(),
             ))
             .child(
-                action(p, "open-exe", self.tr(Text::OpenExe), Some("plus"), false)
-                    .on_click(cx.listener(|view, _, _, cx| view.open(false, cx))),
+                action(
+                    &self.fonts,
+                    p,
+                    "open-exe",
+                    self.tr(Text::OpenExe),
+                    Some("plus"),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.open(false, cx))),
             )
             .child(
-                button(p, "fast-boot", self.tr(Text::FastBoot), false)
+                button(&self.fonts, p, "fast-boot", self.tr(Text::FastBoot), false)
                     .on_click(cx.listener(|view, _, _, cx| view.open_disc(true, cx))),
             )
             .child(
-                button(p, "demo", self.tr(Text::Demo), false)
+                button(&self.fonts, p, "demo", self.tr(Text::Demo), false)
                     .on_click(cx.listener(|view, _, _, cx| view.command(Command::Demo, cx))),
             )
     }
@@ -371,7 +396,12 @@ impl Desktop {
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(p, self.tr(Text::MemoryCards), "MEMORY CARD"))
+            .child(heading(
+                &self.fonts,
+                p,
+                self.tr(Text::MemoryCards),
+                "MEMORY CARD",
+            ))
             .children(self.snapshot.cards.iter().enumerate().map(|(slot, card)| {
                 let (name, state) = card.as_ref().map_or_else(
                     || {
@@ -434,8 +464,14 @@ impl Desktop {
                     .child(label(p, state))
             }))
             .child(
-                button(p, "flush-cards", self.tr(Text::SyncCards), false)
-                    .on_click(cx.listener(|view, _, _, cx| view.command(Command::FlushCards, cx))),
+                button(
+                    &self.fonts,
+                    p,
+                    "flush-cards",
+                    self.tr(Text::SyncCards),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.command(Command::FlushCards, cx))),
             )
             .child(label(p, self.tr(Text::SaveHint)))
     }

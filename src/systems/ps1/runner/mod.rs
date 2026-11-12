@@ -5,7 +5,7 @@ mod worker;
 use crate::systems::ps1::card_file::CardStore;
 use crate::systems::ps1::machine::Machine;
 use eidoryn_host::audio::AudioBuffer;
-pub use snapshot::{ExecutionState, Snapshot};
+pub use snapshot::{ExecutionState, Snapshot, SnapshotMode};
 // Preserve the existing loader entry points while keeping file I/O outside the worker.
 pub use crate::systems::ps1::media::{load_disc, load_path};
 use std::{
@@ -17,6 +17,7 @@ use std::{
 type SharedSnapshot = Arc<Mutex<Option<Snapshot>>>;
 
 pub enum Command {
+    SetSnapshotMode(SnapshotMode),
     SetButtons(u16),
     SetRenderer(crate::systems::ps1::gpu::RendererMode),
     SetCpuMode(crate::systems::ps1::cpu_engine::CpuMode),
@@ -64,14 +65,28 @@ impl Runner {
         store: CardStore,
         audio: Option<AudioBuffer>,
     ) -> std::io::Result<Self> {
+        Self::with_snapshot_mode(machine, auto_run, store, audio, SnapshotMode::Debug)
+    }
+
+    /// Select initial snapshot detail without constructing unused disassembly.
+    /// Existing constructors retain full snapshots for diagnostic clients.
+    pub fn with_snapshot_mode(
+        machine: Machine,
+        auto_run: bool,
+        store: CardStore,
+        audio: Option<AudioBuffer>,
+        mode: SnapshotMode,
+    ) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::channel();
-        let mut snapshot = Snapshot::capture(&machine, auto_run, None, 0.0);
+        let mut snapshot = Snapshot::capture_with_mode(&machine, auto_run, None, 0.0, mode);
         snapshot.cards = store.status(&machine.bus.sio.cards);
         let latest = Arc::new(Mutex::new(Some(snapshot)));
         let output = Arc::clone(&latest);
         let thread = thread::Builder::new()
             .name("eidoryn-emulation".into())
-            .spawn(move || worker::run(machine, auto_run, &receiver, &output, store, audio))?;
+            .spawn(move || {
+                worker::run(machine, auto_run, &receiver, &output, store, audio, mode);
+            })?;
         Ok(Self {
             sender,
             latest,

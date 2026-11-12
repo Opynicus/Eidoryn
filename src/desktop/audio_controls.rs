@@ -22,7 +22,7 @@ impl Desktop {
     pub(super) fn audio_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let sound = if self.audio.output.is_none() {
-            button(p, "mute", self.tr(Text::EnableSound), false)
+            button(&self.fonts, p, "mute", self.tr(Text::EnableSound), false)
         } else {
             icon_button(
                 p,

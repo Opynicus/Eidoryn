@@ -580,6 +580,44 @@ fn worker_steps_and_resets_while_paused() {
 }
 
 #[test]
+fn debugger_snapshots_can_be_enabled_and_released_without_stepping() {
+    use eidoryn_psx::{card_file::CardStore, runner::SnapshotMode};
+    let runner = Runner::with_snapshot_mode(
+        Machine::demo(),
+        false,
+        CardStore::default(),
+        None,
+        SnapshotMode::Display,
+    )
+    .unwrap();
+    let initial = wait_snapshot(&runner);
+    assert_eq!(initial.mode, SnapshotMode::Display);
+    assert_eq!(initial.disassembly.capacity(), 0);
+    for mode in [
+        SnapshotMode::Debug,
+        SnapshotMode::Display,
+        SnapshotMode::Debug,
+    ] {
+        runner.send(Command::SetSnapshotMode(mode)).unwrap();
+        let snapshot = wait_snapshot(&runner);
+        assert_eq!(snapshot.mode, mode);
+        assert_eq!(
+            snapshot.disassembly.len(),
+            if mode == SnapshotMode::Debug { 9 } else { 0 }
+        );
+        if mode == SnapshotMode::Display {
+            assert_eq!(snapshot.disassembly.capacity(), 0);
+        }
+        assert_eq!(snapshot.cpu.pc, initial.cpu.pc);
+        assert_eq!(snapshot.cpu.instructions, initial.cpu.instructions);
+        assert!(snapshot.has_same_frame(&initial));
+        assert!(!snapshot.running);
+    }
+    runner.send(Command::Step).unwrap();
+    assert_eq!(wait_snapshot(&runner).cpu.instructions, 1);
+}
+
+#[test]
 fn worker_keeps_machine_after_failed_load_and_clears_notice_on_step() {
     let runner = Runner::new(Machine::demo(), false).unwrap();
     let original = wait_snapshot(&runner);

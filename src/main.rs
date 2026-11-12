@@ -32,6 +32,7 @@ fn run() -> Result<(), String> {
     let mut headless = false;
     let mut fullscreen = false;
     let mut game_view = false;
+    let mut debugger = false;
     let mut muted = None;
     let mut volume = None;
     let mut clean_fullscreen = None;
@@ -64,6 +65,7 @@ fn run() -> Result<(), String> {
                     --headless          Run without a GPUI window\n\
                     --fullscreen        Open the native window in fullscreen\n\
                     --game-view         Enlarge the display by hiding inspectors\n\
+                    --debugger          Enable and open the optional debugger\n\
                     --mute / --unmute   Override saved audio mute state\n\
                     --volume N          Output volume: 0..100\n\
                     --clean-fullscreen  Hide bars in fullscreen (F12 toggles)\n\
@@ -126,6 +128,7 @@ fn run() -> Result<(), String> {
             Some("--headless") => headless = true,
             Some("--fullscreen") => fullscreen = true,
             Some("--game-view") => game_view = true,
+            Some("--debugger") => debugger = true,
             Some("--mute" | "--unmute") => muted = Some(argument == "--mute"),
             Some("--clean-fullscreen" | "--fullscreen-controls") => {
                 clean_fullscreen = Some(argument == "--clean-fullscreen");
@@ -267,6 +270,7 @@ fn run() -> Result<(), String> {
             || headless
             || fullscreen
             || game_view
+            || debugger
             || language.is_some()
             || theme.is_some()
             || theme_plugin.is_some()
@@ -326,6 +330,7 @@ fn run() -> Result<(), String> {
             || headless
             || fullscreen
             || game_view
+            || debugger
             || language.is_some()
             || theme.is_some()
             || theme_plugin.is_some()
@@ -351,6 +356,9 @@ fn run() -> Result<(), String> {
     }
     if headless && (fullscreen || game_view) {
         return Err("--fullscreen and --game-view require a desktop window".into());
+    }
+    if debugger && (headless || fullscreen || game_view) {
+        return Err("--debugger requires a desktop workspace, without --headless, --fullscreen or --game-view".into());
     }
     if headless && crt.is_some() {
         return Err(
@@ -472,6 +480,7 @@ fn run() -> Result<(), String> {
             desktop::run(
                 machine,
                 desktop::Options {
+                    debugger,
                     language,
                     muted,
                     volume,

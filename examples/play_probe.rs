@@ -352,6 +352,7 @@ impl Session {
                 desktop::run_with_probe(
                     self.clone_machine()?,
                     desktop::Options {
+                        debugger: false,
                         language: None,
                         muted: Some(false),
                         volume: None,
@@ -385,6 +386,7 @@ impl Session {
                 desktop::run(
                     self.clone_machine()?,
                     desktop::Options {
+                        debugger: false,
                         language: None,
                         muted: Some(false),
                         volume: None,

@@ -15,9 +15,12 @@ impl Render for Desktop {
         if self.snapshot.close_ready {
             window.remove_window();
         }
-        let p = &self.themes.active().palette;
+        let p = self.themes.active().palette;
         let game = self.game_view || window.is_fullscreen();
-        let body = if window.is_fullscreen() && self.clean_fullscreen {
+        self.sync_snapshot_mode(!game && self.page == WorkspacePage::Debug);
+        self.sync_video(game || self.page == WorkspacePage::Console, window);
+        let pure_video = window.is_fullscreen() && self.clean_fullscreen;
+        let body = if pure_video {
             div()
                 .relative()
                 .size_full()
@@ -40,7 +43,13 @@ impl Render for Desktop {
             .size_full()
             .bg(rgb(p.background))
             .text_color(rgb(p.text))
-            .font_family("sans-serif")
+            .when(
+                !pure_video
+                    || self.graphics.open
+                    || self.notice.is_some()
+                    || self.snapshot.message.is_some(),
+                |root| root.font(self.fonts.normal()),
+            )
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
             .on_key_up(cx.listener(Self::key_up))
@@ -73,8 +82,8 @@ impl Render for Desktop {
 }
 
 impl Desktop {
-    fn workspace(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
+    fn workspace(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let p = self.themes.active().palette;
         let speed = self.tr(Text::Speed);
         let compact = window.viewport_size().width <= px(1250.);
         let page = match self.page {
@@ -84,7 +93,7 @@ impl Desktop {
         div()
             .size_full()
             .flex()
-            .child(self.sidebar(compact, cx))
+            .child(self.cached_sidebar(compact, cx))
             .child(
                 div()
                     .flex_1()
@@ -135,7 +144,7 @@ impl Desktop {
             )
     }
 
-    fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Div {
+    pub(super) fn sidebar_content(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let console = nav_item(
             p,
@@ -236,6 +245,7 @@ impl Desktop {
             .flex()
             .flex_col()
             .child(platform(
+                &self.fonts,
                 p,
                 "PS",
                 "PlayStation",
@@ -244,6 +254,7 @@ impl Desktop {
                 true,
             ))
             .child(platform(
+                &self.fonts,
                 p,
                 "GB",
                 "Game Boy Advance",
@@ -252,6 +263,7 @@ impl Desktop {
                 false,
             ))
             .child(platform(
+                &self.fonts,
                 p,
                 "P2",
                 "PlayStation 2",
@@ -270,10 +282,21 @@ impl Desktop {
             .px_1()
             .mb_6()
             .when(compact, gpui::Styled::justify_center)
-            .child(
-                gpui::img(std::sync::Arc::clone(&self.icon))
-                    .size(px(38.))
-                    .rounded_lg(),
+            .children(
+                self.icon
+                    .get_or_init(|| match super::icons::app_icon() {
+                        Ok(icon) => Some(icon),
+                        Err(error) => {
+                            eprintln!("Eidoryn sidebar icon: {error}");
+                            None
+                        }
+                    })
+                    .as_ref()
+                    .map(|icon| {
+                        gpui::img(std::sync::Arc::clone(icon))
+                            .size(px(38.))
+                            .rounded_lg()
+                    }),
             )
             .when(!compact, |element| {
                 element.child(
@@ -281,12 +304,7 @@ impl Desktop {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(app::NAME),
-                        )
+                        .child(div().text_lg().font(self.fonts.semibold()).child(app::NAME))
                         .child(label(p, "THE PLAY SPACE")),
                 )
             })
@@ -307,7 +325,7 @@ impl Desktop {
             .child(
                 div()
                     .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .font(self.fonts.medium())
                     .child(match self.page {
                         WorkspacePage::Console => self.tr(Text::Console),
                         WorkspacePage::Debug => self.tr(Text::Debugger),
@@ -324,6 +342,7 @@ impl Desktop {
             ))
             .child(
                 button(
+                    &self.fonts,
                     p,
                     "maximize",
                     if window.is_maximized() {
@@ -363,6 +382,7 @@ impl Desktop {
                     .gap_4()
                     .child(
                         action(
+                            &self.fonts,
                             p,
                             "game-back",
                             self.tr(Text::BackConsole),
@@ -383,7 +403,7 @@ impl Desktop {
                             .child(
                                 div()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font(self.fonts.semibold())
                                     .truncate()
                                     .child(self.display_title().to_owned()),
                             )
@@ -458,7 +478,7 @@ impl Desktop {
                             .child(
                                 div()
                                     .text_lg()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font(self.fonts.semibold())
                                     .child(self.tr(Text::Settings)),
                             )
                             .child(label(p, self.tr(Text::SettingsHint))),
@@ -479,6 +499,7 @@ impl Desktop {
                     .border_color(rgb(p.border))
                     .child(
                         button(
+                            &self.fonts,
                             p,
                             "tab-graphics",
                             self.tr(Text::GraphicsSettings),
@@ -491,6 +512,7 @@ impl Desktop {
                     )
                     .child(
                         button(
+                            &self.fonts,
                             p,
                             "tab-appearance",
                             self.tr(Text::Appearance),
@@ -563,6 +585,7 @@ fn nav_item(
 }
 
 fn platform(
+    fonts: &super::fonts::Fonts,
     p: &Palette,
     short: &'static str,
     name: &'static str,
@@ -587,7 +610,7 @@ fn platform(
                 .items_center()
                 .justify_center()
                 .text_xs()
-                .font_weight(gpui::FontWeight::BOLD)
+                .font(fonts.bold())
                 .child(short),
         )
         .when(!compact, |element| {
