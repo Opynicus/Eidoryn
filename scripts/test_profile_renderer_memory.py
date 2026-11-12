@@ -2,8 +2,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from profile_renderer_memory import PHASE, drm_clients, mappings
+from profile_renderer_memory import (PHASE, backend_states, backend_transitions,
+                                     dgop_sample, drm_clients, mappings, phase_identity)
 
 
 class RendererAccountingTests(unittest.TestCase):
@@ -32,6 +35,31 @@ class RendererAccountingTests(unittest.TestCase):
         self.assertIsNotNone(PHASE.fullmatch(record))
         self.assertIsNone(PHASE.fullmatch(record.replace("true", "false")))
         self.assertIsNone(PHASE.fullmatch(record.replace("None", 'Some("failure")')))
+
+    def test_cpu_transitions_are_observed_without_a_gpu_revision_change(self):
+        line = ("backend-probe seconds=1.000 cpu=Interpreter renderer=Serial revision=0 "
+                "bios=false disc=false running=true halted=false instructions=99 frames=1 "
+                "blocks=0 native=0 error=None\n")
+        jit = line.replace("cpu=Interpreter", "cpu=Jit").replace("blocks=0", "blocks=7")
+        states = backend_states(line + jit + jit + line + "backend-probe seconds=")
+        self.assertEqual(backend_transitions(states),
+                         [("Interpreter", "Serial"), ("Jit", "Serial"), ("Interpreter", "Serial")])
+        self.assertEqual(states[1]["blocks"], 7)
+        self.assertTrue(all(state["healthy"] for state in states))
+        self.assertFalse(backend_states(line.replace("None", 'Some("failure")'))[0]["healthy"])
+        self.assertNotEqual(phase_identity(line, "jit-first"), phase_identity(line + jit, "jit-first"))
+        # A periodic update with the same acknowledged mode is still the same phase.
+        self.assertEqual(phase_identity(line + jit, "jit-first"), phase_identity(line + jit + jit, "jit-first"))
+
+    def test_monitor_display_value_is_distinct_from_rss_and_other_processes_are_omitted(self):
+        result = SimpleNamespace(stdout='{"processes": ['
+                                 '{"pid": 1, "fullCommand": "unrelated"},'
+                                 '{"pid": 2, "memoryKB": 40000, "memoryCalculation": "pss_dirty",'
+                                 '"rssKB": 103000, "pssKB": 0, "fullCommand": "not recorded"}]}')
+        with patch("profile_renderer_memory.subprocess.run", return_value=result):
+            self.assertEqual(dgop_sample(2), {"memoryKB": 40000, "memoryCalculation": "pss_dirty",
+                                              "rssKB": 103000, "pssKB": 0})
+            self.assertIsNone(dgop_sample(3))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 //! Opt-in diagnostics for the `play_probe` example; normal windows do not record or inject input.
 use eidoryn_psx::systems::ps1::{
-    gpu::RendererMode,
-    runner::{Command, Snapshot},
+    cpu_engine::CpuMode,
+    runner::{Command, ExecutionState, Snapshot},
 };
 use std::{
     collections::VecDeque,
@@ -15,8 +15,8 @@ pub struct ProbeOptions {
     pub seconds: u64,
     pub buttons: u16,
     pub path: PathBuf,
-    /// Timed renderer requests for the memory probe; empty during input probes.
-    pub renderer_changes: Vec<(Duration, RendererMode)>,
+    /// Timed worker commands for memory probes; empty during input probes.
+    pub commands: Vec<(Duration, Command)>,
 }
 
 pub(super) struct Probe {
@@ -27,9 +27,20 @@ pub(super) struct Probe {
     closing: bool,
     rows: Vec<(u128, u64, &'static str)>,
     output: File,
-    renderer_changes: VecDeque<(Duration, RendererMode)>,
-    report_renderers: bool,
-    renderer_revision: Option<u64>,
+    commands: VecDeque<(Duration, Command)>,
+    report_status: bool,
+    state: Option<ProbeState>,
+    next_status: Duration,
+}
+
+#[derive(PartialEq, Eq)]
+struct ProbeState {
+    cpu: CpuMode,
+    renderer_revision: u64,
+    execution: ExecutionState,
+    bios: bool,
+    disc: bool,
+    error: bool,
 }
 
 impl Probe {
@@ -38,16 +49,13 @@ impl Probe {
             return Err("Window probe requires 1..30 seconds".into());
         }
         let duration = Duration::from_secs(options.seconds);
-        if options
-            .renderer_changes
-            .iter()
-            .any(|(at, _)| *at >= duration)
+        if options.commands.iter().any(|(at, _)| *at >= duration)
             || options
-                .renderer_changes
+                .commands
                 .windows(2)
                 .any(|pair| pair[0].0 >= pair[1].0)
         {
-            return Err("Renderer probe requests must be ordered and precede its end".into());
+            return Err("Probe commands must be ordered and precede its end".into());
         }
         Ok(Self {
             start: Instant::now(),
@@ -57,9 +65,10 @@ impl Probe {
             closing: false,
             rows: Vec::with_capacity(16_384),
             output: File::create_new(options.path).map_err(|e| e.to_string())?,
-            report_renderers: !options.renderer_changes.is_empty(),
-            renderer_changes: options.renderer_changes.into(),
-            renderer_revision: None,
+            report_status: !options.commands.is_empty(),
+            commands: options.commands.into(),
+            state: None,
+            next_status: Duration::ZERO,
         })
     }
 
@@ -72,13 +81,9 @@ impl Probe {
             }
             return None;
         }
-        if self
-            .renderer_changes
-            .front()
-            .is_some_and(|(at, _)| elapsed >= *at)
-        {
-            let (_, mode) = self.renderer_changes.pop_front().expect("checked front");
-            return Some(Command::SetRenderer(mode));
+        if self.commands.front().is_some_and(|(at, _)| elapsed >= *at) {
+            let (_, command) = self.commands.pop_front().expect("checked front");
+            return Some(command);
         }
         let held = if elapsed.as_millis() % 500 < 34 {
             self.buttons
@@ -95,8 +100,43 @@ impl Probe {
 
     pub(super) fn receive(&mut self, snapshot: &Snapshot) {
         self.record(snapshot.video_frames, "receive");
-        if self.report_renderers && self.renderer_revision != Some(snapshot.renderer_revision) {
-            self.renderer_revision = Some(snapshot.renderer_revision);
+        if !self.report_status {
+            return;
+        }
+        let state = ProbeState {
+            cpu: snapshot.cpu_mode,
+            renderer_revision: snapshot.renderer_revision,
+            execution: snapshot.execution_state(),
+            bios: snapshot.bios_path.is_some(),
+            disc: snapshot.disc_mounted,
+            error: snapshot.message.is_some(),
+        };
+        let renderer_changed = self
+            .state
+            .as_ref()
+            .is_none_or(|old| old.renderer_revision != state.renderer_revision);
+        let elapsed = self.start.elapsed();
+        if self.state.as_ref() != Some(&state) || elapsed >= self.next_status {
+            self.next_status = elapsed + Duration::from_secs(1);
+            self.state = Some(state);
+            println!(
+                "backend-probe seconds={:.3} cpu={:?} renderer={} revision={} bios={} disc={} running={} halted={} instructions={} frames={} blocks={} native={} error={:?}",
+                elapsed.as_secs_f64(),
+                snapshot.cpu_mode,
+                snapshot.renderer.label(),
+                snapshot.renderer_revision,
+                snapshot.bios_path.is_some(),
+                snapshot.disc_mounted,
+                snapshot.running,
+                snapshot.halted,
+                snapshot.cpu.instructions,
+                snapshot.video_frames,
+                snapshot.cpu_stats.compiled_blocks,
+                snapshot.cpu_stats.native_instructions,
+                snapshot.message,
+            );
+        }
+        if renderer_changed {
             println!(
                 "renderer-probe revision={} renderer={} running={} instructions={} frames={} error={:?}",
                 snapshot.renderer_revision,

@@ -1,0 +1,533 @@
+{
+  "date": "2026-11-12",
+  "content": "built-in original demo; no BIOS, discs or memory cards",
+  "core_revision": "b0673f1 with CPU/renderer diagnostic instrumentation",
+  "binary_sha256": "d29bd6588e94cc9e82ddca3f52a6b74b4d4bea4205184d3b22444f7b7b515e36",
+  "logical_window": [
+    1280,
+    900
+  ],
+  "scale": 1.5,
+  "preferences": {
+    "language": "zh-CN",
+    "crt": "classic",
+    "theme": "ember"
+  },
+  "sequence": "jit-first",
+  "all_windows_focused": true,
+  "monitor": {
+    "shell_package": "dux-shell 2.1.2-1.1",
+    "collector_package": "dux-gop 2.1.1-1.1",
+    "binary_sha256": "ccee554909fc43aaa2fc4fddc19f995902279ac059e8fe6c4449ad041e44d667",
+    "source": "https://github.com/duxlabs-dev/dux-gop/blob/v2.1.1/gops/processes.go",
+    "ui_source": "https://github.com/duxlabs-dev/dux-shell/blob/v2.1.2/quickshell/Services/DgopService.qml",
+    "sampling": "Fresh dgop CLI per sample; only child PID retained; not the UI server Pss_Dirty cache"
+  },
+  "note": "Kernel and dgop reads are sequential, not an atomic snapshot. Display memory switches basis above 102400 KiB RSS.",
+  "samples": [
+    {
+      "seconds": 0.253,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92772,
+        "Pss": 63539,
+        "Pss_Dirty": 42393,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42380
+      },
+      "dgop": {
+        "memoryKB": 92772,
+        "memoryCalculation": "rss",
+        "rssKB": 92772,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 1.349,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92776,
+        "Pss": 63543,
+        "Pss_Dirty": 42397,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42384
+      },
+      "dgop": {
+        "memoryKB": 92776,
+        "memoryCalculation": "rss",
+        "rssKB": 92776,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 2.454,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92784,
+        "Pss": 63551,
+        "Pss_Dirty": 42405,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42392
+      },
+      "dgop": {
+        "memoryKB": 92784,
+        "memoryCalculation": "rss",
+        "rssKB": 92784,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 3.551,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92788,
+        "Pss": 63555,
+        "Pss_Dirty": 42409,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42396
+      },
+      "dgop": {
+        "memoryKB": 92788,
+        "memoryCalculation": "rss",
+        "rssKB": 92788,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 4.653,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92796,
+        "Pss": 63563,
+        "Pss_Dirty": 42417,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42404
+      },
+      "dgop": {
+        "memoryKB": 92796,
+        "memoryCalculation": "rss",
+        "rssKB": 92796,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 5.747,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92800,
+        "Pss": 63567,
+        "Pss_Dirty": 42421,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42408
+      },
+      "dgop": {
+        "memoryKB": 92800,
+        "memoryCalculation": "rss",
+        "rssKB": 92800,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 6.841,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92808,
+        "Pss": 63575,
+        "Pss_Dirty": 42429,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42416
+      },
+      "dgop": {
+        "memoryKB": 92808,
+        "memoryCalculation": "rss",
+        "rssKB": 92808,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 7.938,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92812,
+        "Pss": 63579,
+        "Pss_Dirty": 42433,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42420
+      },
+      "dgop": {
+        "memoryKB": 92812,
+        "memoryCalculation": "rss",
+        "rssKB": 92812,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 9.03,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92820,
+        "Pss": 63587,
+        "Pss_Dirty": 42441,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42428
+      },
+      "dgop": {
+        "memoryKB": 92820,
+        "memoryCalculation": "rss",
+        "rssKB": 92820,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 10.122,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92824,
+        "Pss": 63591,
+        "Pss_Dirty": 42445,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42432
+      },
+      "dgop": {
+        "memoryKB": 92828,
+        "memoryCalculation": "rss",
+        "rssKB": 92828,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 11.215,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 92832,
+        "Pss": 63599,
+        "Pss_Dirty": 42453,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42440
+      },
+      "dgop": {
+        "memoryKB": 92832,
+        "memoryCalculation": "rss",
+        "rssKB": 92832,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 12.308,
+      "cpu": "Jit",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 93316,
+        "Pss": 64083,
+        "Pss_Dirty": 42937,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42924
+      },
+      "dgop": {
+        "memoryKB": 93316,
+        "memoryCalculation": "rss",
+        "rssKB": 93316,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 13.407,
+      "cpu": "Jit",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 93320,
+        "Pss": 64087,
+        "Pss_Dirty": 42941,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42928
+      },
+      "dgop": {
+        "memoryKB": 93320,
+        "memoryCalculation": "rss",
+        "rssKB": 93320,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 14.508,
+      "cpu": "Jit",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 93328,
+        "Pss": 64095,
+        "Pss_Dirty": 42949,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42936
+      },
+      "dgop": {
+        "memoryKB": 93328,
+        "memoryCalculation": "rss",
+        "rssKB": 93328,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 15.606,
+      "cpu": "Jit",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 93332,
+        "Pss": 64099,
+        "Pss_Dirty": 42953,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42940
+      },
+      "dgop": {
+        "memoryKB": 93332,
+        "memoryCalculation": "rss",
+        "rssKB": 93332,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 16.703,
+      "cpu": "Jit",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 93340,
+        "Pss": 64107,
+        "Pss_Dirty": 42961,
+        "Private_Clean": 10160,
+        "Private_Dirty": 42948
+      },
+      "dgop": {
+        "memoryKB": 93340,
+        "memoryCalculation": "rss",
+        "rssKB": 93340,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 17.806,
+      "cpu": "Jit",
+      "renderer": "Vulkan",
+      "kernel_KiB": {
+        "Rss": 101020,
+        "Pss": 71738,
+        "Pss_Dirty": 50529,
+        "Private_Clean": 10208,
+        "Private_Dirty": 50516
+      },
+      "dgop": {
+        "memoryKB": 101020,
+        "memoryCalculation": "rss",
+        "rssKB": 101020,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 18.901,
+      "cpu": "Jit",
+      "renderer": "Vulkan",
+      "kernel_KiB": {
+        "Rss": 101028,
+        "Pss": 71746,
+        "Pss_Dirty": 50537,
+        "Private_Clean": 10208,
+        "Private_Dirty": 50524
+      },
+      "dgop": {
+        "memoryKB": 101028,
+        "memoryCalculation": "rss",
+        "rssKB": 101028,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 19.995,
+      "cpu": "Jit",
+      "renderer": "Vulkan",
+      "kernel_KiB": {
+        "Rss": 101032,
+        "Pss": 71750,
+        "Pss_Dirty": 50541,
+        "Private_Clean": 10208,
+        "Private_Dirty": 50528
+      },
+      "dgop": {
+        "memoryKB": 101032,
+        "memoryCalculation": "rss",
+        "rssKB": 101032,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 21.096,
+      "cpu": "Jit",
+      "renderer": "Vulkan",
+      "kernel_KiB": {
+        "Rss": 101044,
+        "Pss": 71762,
+        "Pss_Dirty": 50553,
+        "Private_Clean": 10208,
+        "Private_Dirty": 50540
+      },
+      "dgop": {
+        "memoryKB": 101044,
+        "memoryCalculation": "rss",
+        "rssKB": 101044,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 22.197,
+      "cpu": "Jit",
+      "renderer": "Vulkan",
+      "kernel_KiB": {
+        "Rss": 100700,
+        "Pss": 71418,
+        "Pss_Dirty": 50209,
+        "Private_Clean": 10208,
+        "Private_Dirty": 50196
+      },
+      "dgop": {
+        "memoryKB": 100700,
+        "memoryCalculation": "rss",
+        "rssKB": 100700,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 23.292,
+      "cpu": "Interpreter",
+      "renderer": "Vulkan",
+      "kernel_KiB": {
+        "Rss": 100712,
+        "Pss": 71430,
+        "Pss_Dirty": 50221,
+        "Private_Clean": 10208,
+        "Private_Dirty": 50208
+      },
+      "dgop": {
+        "memoryKB": 100712,
+        "memoryCalculation": "rss",
+        "rssKB": 100712,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 24.394,
+      "cpu": "Interpreter",
+      "renderer": "Vulkan",
+      "kernel_KiB": {
+        "Rss": 100716,
+        "Pss": 71434,
+        "Pss_Dirty": 50225,
+        "Private_Clean": 10208,
+        "Private_Dirty": 50212
+      },
+      "dgop": {
+        "memoryKB": 100720,
+        "memoryCalculation": "rss",
+        "rssKB": 100720,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 25.493,
+      "cpu": "Interpreter",
+      "renderer": "Vulkan",
+      "kernel_KiB": {
+        "Rss": 100728,
+        "Pss": 71446,
+        "Pss_Dirty": 50237,
+        "Private_Clean": 10208,
+        "Private_Dirty": 50224
+      },
+      "dgop": {
+        "memoryKB": 100728,
+        "memoryCalculation": "rss",
+        "rssKB": 100728,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 26.595,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 102700,
+        "Pss": 73244,
+        "Pss_Dirty": 51961,
+        "Private_Clean": 10208,
+        "Private_Dirty": 51948
+      },
+      "dgop": {
+        "memoryKB": 51961,
+        "memoryCalculation": "pss_dirty",
+        "rssKB": 102700,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 27.693,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 102704,
+        "Pss": 73248,
+        "Pss_Dirty": 51965,
+        "Private_Clean": 10208,
+        "Private_Dirty": 51952
+      },
+      "dgop": {
+        "memoryKB": 51965,
+        "memoryCalculation": "pss_dirty",
+        "rssKB": 102704,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 28.79,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 102712,
+        "Pss": 73256,
+        "Pss_Dirty": 51973,
+        "Private_Clean": 10208,
+        "Private_Dirty": 51960
+      },
+      "dgop": {
+        "memoryKB": 51973,
+        "memoryCalculation": "pss_dirty",
+        "rssKB": 102712,
+        "pssKB": 0
+      }
+    },
+    {
+      "seconds": 29.887,
+      "cpu": "Interpreter",
+      "renderer": "Serial",
+      "kernel_KiB": {
+        "Rss": 102716,
+        "Pss": 73260,
+        "Pss_Dirty": 29081,
+        "Private_Clean": 33104,
+        "Private_Dirty": 29068
+      },
+      "dgop": {
+        "memoryKB": 29081,
+        "memoryCalculation": "pss_dirty",
+        "rssKB": 102716,
+        "pssKB": 0
+      }
+    }
+  ]
+}

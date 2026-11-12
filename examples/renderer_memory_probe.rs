@@ -8,7 +8,7 @@ mod desktop;
 
 #[cfg(feature = "desktop")]
 fn main() -> Result<(), String> {
-    use eidoryn_psx::{card_file::CardStore, gpu::RendererMode, machine::Machine};
+    use eidoryn_psx::{card_file::CardStore, gpu::RendererMode, machine::Machine, runner::Command};
     use std::{path::PathBuf, time::Duration};
 
     let mut args = std::env::args_os().skip(1);
@@ -36,14 +36,14 @@ fn main() -> Result<(), String> {
             seconds: 30,
             buttons: 0,
             path,
-            renderer_changes: [
+            commands: [
                 (5, RendererMode::Threaded),
                 (10, RendererMode::Serial),
                 (15, RendererMode::Vulkan),
                 (20, RendererMode::Serial),
                 (25, RendererMode::Vulkan),
             ]
-            .map(|(seconds, mode)| (Duration::from_secs(seconds), mode))
+            .map(|(seconds, mode)| (Duration::from_secs(seconds), Command::SetRenderer(mode)))
             .into(),
         }),
     )

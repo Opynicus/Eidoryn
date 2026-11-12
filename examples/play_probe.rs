@@ -369,7 +369,7 @@ impl Session {
                     },
                     CardStore::default(),
                     Some(desktop::ProbeOptions {
-                        renderer_changes: Vec::new(),
+                        commands: Vec::new(),
                         seconds,
                         buttons,
                         path,
