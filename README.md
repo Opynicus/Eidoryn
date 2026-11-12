@@ -18,19 +18,6 @@ Eidoryn is an experimental emulator written in Rust with a native GPUI interface
 
 The architecture leaves room for additional systems, but **GBA and PS2 are not currently supported**. No game images, BIOS files, or saves are included.
 
-<p align="center">
-  <img src="docs/images/eidoryn-console-en.png" alt="Eidoryn console in English, showing the built-in demo, session details, and memory-card panel" width="1000">
-  <br>
-  <sub>The native GPUI console in the Midnight theme, running the original built-in demo. No BIOS or game image is required.</sub>
-</p>
-
-<details>
-<summary>Simplified Chinese interface</summary>
-
-![Eidoryn console in Simplified Chinese](docs/images/eidoryn-console-zh-CN.png)
-
-</details>
-
 ## Features
 
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
@@ -56,7 +43,7 @@ Save states, CHD images, and disc swapping are not supported. Memory-card saves 
 ### Requirements
 
 - Rust **1.95 or newer** and Cargo. A release build is recommended for running games.
-- The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for Linux build dependencies and the [desktop integration guide](packaging/README.md) for optional launcher installation.
+- The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for the Linux, Windows, and macOS build configurations.
 - Vulkan rendering requires a physical Vulkan-capable GPU and driver. The default software renderer does not require Vulkan hardware.
 - Bring your own BIOS and game images; they are not supplied by this project.
 
@@ -151,7 +138,7 @@ The architecture document is currently in Chinese.
 | Document | Contents |
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
-| [Linux desktop integration](packaging/README.md) · [Third-party information](THIRD_PARTY.md) | Launcher installation, dependencies, and hardware references |
+| [Third-party information](THIRD_PARTY.md) | Dependencies and hardware references |
 
 ## Roadmap
 

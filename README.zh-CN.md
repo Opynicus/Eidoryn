@@ -18,19 +18,6 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 
 架构为未来增加其他主机预留了空间；**目前不支持 GBA 或 PS2**。项目不包含游戏镜像、BIOS 或存档。
 
-<p align="center">
-  <img src="docs/images/eidoryn-console-zh-CN.png" alt="Eidoryn 中文控制台，展示内置演示、当前会话与记忆卡面板" width="1000">
-  <br>
-  <sub>Midnight 主题下的原生 GPUI 控制台与内置原创演示；无需 BIOS 或游戏镜像。</sub>
-</p>
-
-<details>
-<summary>查看英文界面</summary>
-
-![Eidoryn 英文控制台](docs/images/eidoryn-console-en.png)
-
-</details>
-
 ## 功能
 
 - **PS1 模拟**：MIPS CPU、GTE、GPU、MDEC、SPU、光驱、DMA、计时器、统一 CPU/设备周期时间线和数字手柄。
@@ -56,7 +43,7 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 ### 环境要求
 
 - Rust **1.95 或更新版本**及 Cargo；建议使用 release 构建运行游戏。
-- 桌面版需要 GPUI 所需的系统图形、字体与音频开发库，以及可用图形驱动。Linux 构建依赖示例见[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)；[桌面集成说明](packaging/README.md)介绍了可选的启动器安装方式。
+- 桌面版需要 GPUI 所需的系统图形、字体与音频开发库，以及可用图形驱动。Linux、Windows 和 macOS 的构建配置见[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)。
 - Vulkan 模式需要支持 Vulkan 的物理显卡和驱动；默认软件模式不要求 Vulkan 硬件。
 - 启动游戏需要自行准备相应 BIOS 和镜像。项目不提供这些文件。
 
@@ -149,7 +136,7 @@ PS1 机器状态由运行线程持有；界面通过命令和快照与其交互�
 | 文档 | 内容 |
 | --- | --- |
 | [架构](docs/ARCHITECTURE.md) | 模块边界、线程与数据流 |
-| [Linux 桌面集成](packaging/README.md) · [第三方资料](THIRD_PARTY.md) | 启动器安装、依赖与硬件参考 |
+| [第三方资料](THIRD_PARTY.md) | 依赖与硬件参考 |
 
 ## 路线图
 

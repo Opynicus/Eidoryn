@@ -20,6 +20,6 @@ test-assets/
 /dist/
 __pycache__/
 
-# Keep only the architecture Markdown document under version control in docs/.
-/docs/**/*.[mM][dD]
+# Keep docs/ limited to the architecture document.
+/docs/*
 !/docs/ARCHITECTURE.md
