@@ -15,8 +15,16 @@ pub enum ExecutionState {
     Stopped,
 }
 
+/// Display clients do not need formatted CPU instructions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotMode {
+    Display,
+    Debug,
+}
+
 #[allow(clippy::struct_excessive_bools)] // Independent media, execution, and shutdown flags.
 pub struct Snapshot {
+    pub mode: SnapshotMode,
     pub cards: [Option<CardStatus>; 2],
     pub pad_buttons: u16,
     pub pad_polls: u64,
@@ -66,12 +74,22 @@ impl Snapshot {
     }
 
     pub fn capture(machine: &Machine, running: bool, message: Option<String>, rate: f64) -> Self {
+        Self::capture_with_mode(machine, running, message, rate, SnapshotMode::Debug)
+    }
+
+    pub fn capture_with_mode(
+        machine: &Machine,
+        running: bool,
+        message: Option<String>,
+        rate: f64,
+        mode: SnapshotMode,
+    ) -> Self {
         let gpu = &machine.bus.gpu;
         let (dimensions, rgb) = gpu.completed_frame().map_or_else(
             || (gpu.dimensions(), gpu.display_rgb().into()),
             |frame| (frame.dimensions, Arc::clone(&frame.rgb)),
         );
-        let disassembly = (0..9)
+        let disassembly = (0..if mode == SnapshotMode::Debug { 9 } else { 0 })
             .map(|n| {
                 let pc = machine.cpu.pc.wrapping_add(n * 4);
                 let word = machine.bus.peek32(pc);
@@ -85,6 +103,7 @@ impl Snapshot {
         let renderer_error = gpu.renderer_error();
         let halted = machine.halted.is_some() || renderer_error.is_some();
         Self {
+            mode,
             cards: std::array::from_fn(|slot| {
                 machine.bus.sio.cards[slot].as_ref().map(|card| CardStatus {
                     path: None,

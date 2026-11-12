@@ -70,10 +70,70 @@ fn sidebar_clicks_navigate_between_workspaces(cx: &mut TestAppContext) {
     }
 }
 
+#[gpui::test]
+fn debugger_is_optional_and_hidden_views_release_display_resources(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.image.is_some()));
+    assert!(!view.read_with(cx, |v, _| v.debugger_enabled));
+    let nav = cx.debug_bounds("nav-debug").unwrap();
+    cx.simulate_click(nav.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.image.is_none()));
+    assert!(cx.debug_bounds("debug-instructions").is_none());
+    let toggle = cx.debug_bounds("debug-toggle").unwrap();
+    cx.simulate_click(toggle.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |v, _| v.snapshot_mode),
+        SnapshotMode::Debug
+    );
+    // The UI waits for an acknowledged debug snapshot before showing registers.
+    assert!(cx.debug_bounds("debug-instructions").is_none());
+    view.update(cx, |v, cx| {
+        v.snapshot = Snapshot::capture(&Machine::demo(), false, None, 0.);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("debug-instructions").is_some());
+    cx.simulate_keystrokes("f6");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |v, _| v.snapshot_mode),
+        SnapshotMode::Display
+    );
+    assert_eq!(
+        view.read_with(cx, |v, _| v.snapshot.disassembly.capacity()),
+        0
+    );
+    assert!(view.read_with(cx, |v, _| v.image.is_some()));
+    cx.simulate_keystrokes("f6");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |v, _| v.snapshot_mode),
+        SnapshotMode::Debug
+    );
+    let toggle = cx.debug_bounds("debug-toggle").unwrap();
+    cx.simulate_click(toggle.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(!view.read_with(cx, |v, _| v.debugger_enabled));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.snapshot_mode),
+        SnapshotMode::Display
+    );
+    // GPUI 0.2.2 retains historical debug_bounds entries after controls disappear.
+    assert_eq!(
+        view.read_with(cx, |v, _| v.snapshot.disassembly.capacity()),
+        0
+    );
+    assert!(view.read_with(cx, |v, _| v.image.is_none()));
+}
+
 fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Desktop {
     let machine = Machine::from_exe(&eidoryn_psx::demo::executable(), "UI test").unwrap();
-    let snapshot = Snapshot::capture(&machine, false, None, 0.);
-    let image = frame_image(&snapshot);
+    let snapshot = Snapshot::capture_with_mode(&machine, false, None, 0., SnapshotMode::Display);
     let focus = cx.focus_handle();
     window.focus(&focus);
     let mut themes = ThemeCatalog::default();
@@ -87,14 +147,20 @@ fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Deskto
         theme_paths: std::collections::HashMap::new(),
         clean_fullscreen: false,
         settings_focus: cx.focus_handle(),
-        runner: Runner::new(machine, false).unwrap(),
+        runner: Runner::with_snapshot_mode(
+            machine,
+            false,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        )
+        .unwrap(),
         graphics: graphics::GraphicsControls::new(snapshot.renderer, false),
         snapshot,
-        image,
-        icon: Arc::new(gpui::Image::from_bytes(
-            gpui::ImageFormat::Png,
-            include_bytes!("../../assets/eidoryn.png").to_vec(),
-        )),
+        image: None,
+        icon: OnceCell::new(),
+        debugger_enabled: false,
+        snapshot_mode: SnapshotMode::Display,
         crt: CrtState::new(eidoryn_psx::video_filter::CrtFilter::Off),
         last_redraw: Instant::now(),
         focus,
@@ -181,6 +247,11 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
                             view.language = language;
                             view.themes.select(theme).unwrap();
                             view.page = page;
+                            view.debugger_enabled = page == WorkspacePage::Debug;
+                            if view.debugger_enabled {
+                                view.snapshot =
+                                    Snapshot::capture(&Machine::demo(), false, None, 0.);
+                            }
                             view.game_view = game;
                             view.graphics.open = settings;
                             view.appearance_open = appearance;

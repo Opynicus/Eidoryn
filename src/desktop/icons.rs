@@ -1,6 +1,19 @@
 //! Embedded vector icons from the interface prototype.
-use gpui::{AssetSource, SharedString, Styled, svg};
-use std::borrow::Cow;
+use gpui::{AssetSource, RenderImage, SharedString, Styled, svg};
+use std::{borrow::Cow, sync::Arc};
+
+/// The sidebar displays 38 logical pixels. 256 pixels cover up to 6.7x scaling
+/// without keeping the 1254px packaging artwork decoded in the window cache.
+pub(super) fn app_icon() -> image::ImageResult<Arc<RenderImage>> {
+    let mut pixels = image::load_from_memory(include_bytes!("../../assets/eidoryn.png"))?
+        .resize(256, 256, image::imageops::FilterType::Triangle)
+        .into_rgba8();
+    // GPUI RenderImage consumes BGRA, including images not produced by the GPU.
+    for pixel in pixels.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    Ok(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])))
+}
 
 pub(super) struct Icons;
 

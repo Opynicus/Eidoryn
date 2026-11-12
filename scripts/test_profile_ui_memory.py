@@ -35,6 +35,12 @@ class HeapAccountingTests(unittest.TestCase):
                 "2000-3000 rw-p 0 00:00 0 [heap]\nRss: 5000 kB\n")
         self.assertEqual(smaps_summary(text), {"Size_KiB": 20000, "Rss_KiB": 4000, "Pss_KiB": 1000})
 
+    def test_pixel_buffers_are_not_charged_to_their_layout_caller(self):
+        self.assertEqual(category(["eidoryn::desktop::video::frame_image", "gpui::element::Drawable"]), "image_buffers")
+        self.assertEqual(category(["image::images::dynimage::DynamicImage", "eidoryn::desktop::view"]), "image_buffers")
+        self.assertEqual(category(["eidoryn_ps1::machine::Machine::clone"]), "emulation")
+        self.assertEqual(category(["libpipewire-0.3.so"]), "host_audio")
+
 
 if __name__ == "__main__":
     unittest.main()

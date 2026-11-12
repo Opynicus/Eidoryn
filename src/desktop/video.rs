@@ -5,9 +5,14 @@ use eidoryn_psx::{
     video_filter::{CrtFilter, OverlayKey},
 };
 use gpui::{
-    Bounds, Context, Corners, IntoElement, RenderImage, canvas, point, prelude::*, px, size,
+    Bounds, Context, Corners, IntoElement, RenderImage, Window, canvas, point, prelude::*, px, size,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+pub(super) struct VideoImage {
+    image: Arc<RenderImage>,
+    pub(super) dirty: bool,
+}
 
 struct CachedOverlay {
     key: OverlayKey,
@@ -42,6 +47,30 @@ pub(super) fn frame_image(snapshot: &Snapshot) -> Arc<RenderImage> {
 }
 
 impl Desktop {
+    /// Convert only the latest visible frame. Debugger pages do not use video
+    /// or CRT textures, so release those images until the display returns.
+    pub(super) fn sync_video(&mut self, visible: bool, window: &mut Window) {
+        if !visible {
+            if let Some(old) = self.image.take() {
+                let _ = window.drop_image(old.image);
+            }
+            if let Some(old) = self.crt.overlay.borrow_mut().take() {
+                let _ = window.drop_image(old.image);
+            }
+            return;
+        }
+        if self.image.as_ref().is_some_and(|cached| !cached.dirty) {
+            return;
+        }
+        let next = VideoImage {
+            image: frame_image(&self.snapshot),
+            dirty: false,
+        };
+        if let Some(old) = self.image.replace(next) {
+            let _ = window.drop_image(old.image);
+        }
+    }
+
     pub(super) fn toggle_crt(&mut self, cx: &mut Context<Self>) {
         self.set_crt_filter(self.crt.filter.next(), cx);
     }
@@ -69,7 +98,7 @@ impl Desktop {
     }
 
     pub(super) fn video(&self) -> impl IntoElement {
-        let image = Arc::clone(&self.image);
+        let image = self.image.as_ref().map(|cached| Arc::clone(&cached.image));
         let filter = self.crt.filter;
         let cache = Rc::clone(&self.crt.overlay);
         let lines = self.snapshot.dimensions.1;
@@ -79,6 +108,9 @@ impl Desktop {
         canvas(
             |_, _, _| (),
             move |bounds, (), window, _| {
+                let Some(image) = image else {
+                    return;
+                };
                 let width = bounds.size.width.min(bounds.size.height * aspect);
                 let height = width / aspect;
                 let origin = bounds.origin

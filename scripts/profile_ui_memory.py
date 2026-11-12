@@ -27,6 +27,11 @@ PATTERNS = (
     ("shared_rendering", r"gpui::scene::|gpui::platform::blade::blade_atlas|<gpui::window::Window>::paint_layer"),
     ("svg", r"usvg::|resvg::|gpui::svg_renderer|gpui::elements::svg|paint_svg"),
     ("fonts_text", r"cosmic_text::|fontdb::|swash::|rustybuzz::|gpui::text_system|gpui::platform::linux::text_system|gpui::elements::text|ttf_parser::"),
+    # Recognize pixel ownership before the caller's layout/render stack. Moving
+    # frame conversion into Render must not relabel its pixels as layout memory.
+    ("image_buffers", r"image::|eidoryn::desktop::video::frame_image|gpui::platform::Image>::to_image_data"),
+    ("emulation", r"eidoryn_ps1::|eidoryn_psx::systems::ps1::runner::snapshot::"),
+    ("host_audio", r"eidoryn_host::audio::|cpal::|libpipewire|libspa-|\bpw_"),
     ("layout_elements", r"gpui::taffy|taffy::|gpui::elements::div|gpui::style::|gpui::arena::|gpui::element::|gpui::interactive::|eidoryn::desktop::(view|console|components|appearance|graphics|ps1_inspector)"),
 )
 # Actual rasterization under the atlas is still SVG/font work. Only atlas/scene
@@ -205,6 +210,8 @@ def capture(args):
         command.extend(["--language", args.language])
     if args.view == "game":
         command.append("--game-view")
+    elif args.view == "debugger":
+        command.append("--debugger")
     elif args.view == "fullscreen":
         command.append("--fullscreen")
         if not args.legacy_ui:
@@ -280,7 +287,7 @@ def main():
     run.add_argument("--output", type=Path, required=True, help="New directory for this run")
     run.add_argument("--language", choices=("en", "zh-CN"), default="en")
     run.add_argument("--legacy-ui", action="store_true", help="Pre-redesign build: English only, no clean-fullscreen flag")
-    run.add_argument("--view", choices=("console", "game", "fullscreen"), default="console")
+    run.add_argument("--view", choices=("console", "debugger", "game", "fullscreen"), default="console")
     run.add_argument("--seconds", type=int, choices=range(1, 31), default=5)
     run.add_argument("--rss-only", action="store_true")
     run.add_argument("--niri", action="store_true", help="Focus the probe; use 1280x900 floating for windowed views")

@@ -17,6 +17,8 @@ impl Render for Desktop {
         }
         let p = self.themes.active().palette;
         let game = self.game_view || window.is_fullscreen();
+        self.sync_snapshot_mode(!game && self.page == WorkspacePage::Debug);
+        self.sync_video(game || self.page == WorkspacePage::Console, window);
         let pure_video = window.is_fullscreen() && self.clean_fullscreen;
         let body = if pure_video {
             div()
@@ -280,10 +282,21 @@ impl Desktop {
             .px_1()
             .mb_6()
             .when(compact, gpui::Styled::justify_center)
-            .child(
-                gpui::img(std::sync::Arc::clone(&self.icon))
-                    .size(px(38.))
-                    .rounded_lg(),
+            .children(
+                self.icon
+                    .get_or_init(|| match super::icons::app_icon() {
+                        Ok(icon) => Some(icon),
+                        Err(error) => {
+                            eprintln!("Eidoryn sidebar icon: {error}");
+                            None
+                        }
+                    })
+                    .as_ref()
+                    .map(|icon| {
+                        gpui::img(std::sync::Arc::clone(icon))
+                            .size(px(38.))
+                            .rounded_lg()
+                    }),
             )
             .when(!compact, |element| {
                 element.child(

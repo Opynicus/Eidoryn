@@ -37,7 +37,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 - **Graphics and performance options:** serial and multithreaded software rendering, optional Vulkan acceleration, enlarged and fullscreen views, and a CRT display filter.
 - **Desktop experience:** English and Simplified Chinese, keyboard navigation, four built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
 - **Media and saves:** ISO, BIN, and multi-track CUE/BIN images; two memory-card slots with automatic persistence.
-- **Debugging tools:** CPU registers, disassembly, single stepping, and execution slices; an optional experimental JIT and a headless CLI.
+- **Debugging tools:** An optional debugger with CPU registers, disassembly, single stepping, and execution slices; an experimental JIT and a headless CLI. Enable the debugger in its workspace or start with `--debugger`.
 
 ## Current Status
 
@@ -150,6 +150,7 @@ Most detailed hardware documents are currently in Chinese.
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
 | [Desktop workspaces](docs/UI.md) | Console, debugger, game view, and settings |
+| [Memory by module](docs/UI-MEMORY-MODULES.md) | Measurements, optional debugger, and resource loading |
 | [Timing](docs/TIMING.md) · [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/device cycles, graphics backends, and CPU execution |
 | [Audio](docs/AUDIO.md) · [Memory cards](docs/SAVES.md) | Output, persistence, and limitations |
 | [Theme plugins](docs/THEMES.md) | Built-in themes and the custom JSON format |

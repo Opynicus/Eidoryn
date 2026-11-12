@@ -1,5 +1,5 @@
 //! PlayStation session scheduling and transitions. No frontend dependencies.
-use super::{Command, SharedSnapshot, Snapshot};
+use super::{Command, SharedSnapshot, Snapshot, SnapshotMode};
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
@@ -25,8 +25,9 @@ pub(super) fn run(
     output: &SharedSnapshot,
     store: CardStore,
     audio: Option<AudioBuffer>,
+    mode: SnapshotMode,
 ) {
-    let mut worker = Worker::new(machine, auto_run, store, audio);
+    let mut worker = Worker::new(machine, auto_run, store, audio, mode);
     loop {
         let command = if worker.running {
             match receiver.recv_timeout(worker.deadline.saturating_duration_since(Instant::now())) {
@@ -40,6 +41,7 @@ pub(super) fn run(
                 Err(_) => break,
             }
         };
+        let view_only = matches!(command, Some(Command::SetSnapshotMode(_)));
         let mut force_publish = command
             .as_ref()
             .is_some_and(|c| !matches!(c, Command::SetButtons(_)));
@@ -51,7 +53,7 @@ pub(super) fn run(
                 false
             }
         };
-        if !worker.flush_cards(!worker.running) {
+        if !view_only && !worker.flush_cards(!worker.running) {
             close_ready = false;
             force_publish = true;
         }
@@ -77,6 +79,7 @@ pub(super) fn run(
 }
 
 struct Worker {
+    snapshot_mode: SnapshotMode,
     machine: Machine,
     initial: Machine,
     renderer: RendererMode,
@@ -104,12 +107,14 @@ impl Worker {
         running: bool,
         store: CardStore,
         audio: Option<AudioBuffer>,
+        snapshot_mode: SnapshotMode,
     ) -> Self {
         machine.bus.spu.drain_audio().for_each(drop);
         let now = Instant::now();
         let frames = machine.bus.gpu.frames;
         let frame_interval = Duration::from_secs_f64(1.0 / machine.bus.gpu.nominal_fps());
         Self {
+            snapshot_mode,
             initial: machine.clone(),
             renderer: machine.bus.gpu.renderer_mode(),
             renderer_revision: 0,
@@ -184,16 +189,18 @@ impl Worker {
             // Also acknowledge a request rejected by the card-flush guard below.
             self.renderer_revision = self.renderer_revision.wrapping_add(1);
         }
-        if !matches!(command, Command::SetButtons(_)) && !self.flush_cards(true) {
+        let view_only = matches!(command, Command::SetSnapshotMode(_));
+        if !view_only && !matches!(command, Command::SetButtons(_)) && !self.flush_cards(true) {
             return false;
         }
-        if !matches!(command, Command::SetButtons(_) | Command::FlushCards) {
+        if !view_only && !matches!(command, Command::SetButtons(_) | Command::FlushCards) {
             if let Some(audio) = &self.audio {
                 audio.clear();
             }
             self.machine.bus.spu.drain_audio().for_each(drop);
         }
         match command {
+            Command::SetSnapshotMode(mode) => self.snapshot_mode = mode,
             Command::SetButtons(buttons) => self.machine.bus.sio.set_buttons(buttons),
             Command::SetCpuMode(mode) => self.select_cpu(mode),
             Command::SetRenderer(mode) => {
@@ -355,11 +362,12 @@ impl Worker {
             self.epoch_frames = self.machine.bus.gpu.frames;
             self.epoch = Instant::now();
         }
-        let mut snapshot = Snapshot::capture(
+        let mut snapshot = Snapshot::capture_with_mode(
             &self.machine,
             self.running,
             self.message.clone(),
             if self.running { self.rate } else { 0.0 },
+            self.snapshot_mode,
         );
         snapshot.bios_path.clone_from(&self.bios_path);
         snapshot.renderer_revision = self.renderer_revision;
@@ -377,5 +385,49 @@ impl Worker {
         drop(previous);
         self.last_publish = Instant::now();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_mode_does_not_reset_execution_audio_or_notifications() {
+        let audio = AudioBuffer::default();
+        audio.set_playing(true);
+        audio.push([[123, -123]; 2048]);
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            Some(audio.clone()),
+            SnapshotMode::Display,
+        );
+        worker.message = Some("Previous notification".into());
+        let deadline = worker.deadline;
+        let frame_deadline = worker.frame_deadline;
+        let pc = worker.machine.cpu.pc;
+        for mode in [SnapshotMode::Debug, SnapshotMode::Display] {
+            let queued = audio.stats().queued_frames;
+            let generated = worker.machine.bus.spu.generated_samples;
+            worker
+                .machine
+                .bus
+                .spu
+                .tick(crate::systems::ps1::spu::SAMPLE_CLOCKS * 16)
+                .unwrap();
+            let new_samples = worker.machine.bus.spu.generated_samples - generated;
+            assert!(new_samples > 0);
+            assert!(!worker.apply(Command::SetSnapshotMode(mode)));
+            worker.publish_audio();
+            assert_eq!(worker.snapshot_mode, mode);
+            assert!(worker.running);
+            assert_eq!(worker.message.as_deref(), Some("Previous notification"));
+            assert_eq!(worker.machine.cpu.pc, pc);
+            assert_eq!(worker.deadline, deadline);
+            assert_eq!(worker.frame_deadline, frame_deadline);
+            assert_eq!(audio.stats().queued_frames, queued + new_samples as usize);
+        }
     }
 }

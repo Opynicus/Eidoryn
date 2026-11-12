@@ -4,6 +4,8 @@
 
 本页基线是已经重构 UI 的 `719bcbf`。与重构前 `feature/device-event-boundaries` 的比较见 [UI 重构前后内存对比](UI-MEMORY-COMPARISON.md)。
 
+后续的模块占用分析、图标缩减、按需调试快照与隐藏视频优化见 [各模块内存占用](UI-MEMORY-MODULES.md)。下文保留第一次字体和侧栏优化的数据。
+
 ## 测量口径
 
 - **存活堆内存**：gperftools 记录的已分配、尚未释放的请求字节数，是采样时刻的值，不是峰值，也不是 RSS。

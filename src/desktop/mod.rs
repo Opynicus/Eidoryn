@@ -23,7 +23,7 @@ use eidoryn_psx::{
     systems::ps1::{
         card_file::CardStore,
         machine::Machine,
-        runner::{Command, Runner, Snapshot},
+        runner::{Command, Runner, Snapshot, SnapshotMode},
     },
     theme::ThemeCatalog,
 };
@@ -33,16 +33,17 @@ use gpui::{
 };
 pub use probe::ProbeOptions;
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
-use video::{CrtState, frame_image};
+use video::{CrtState, VideoImage};
 
 #[allow(clippy::struct_excessive_bools)] // Independent startup preferences.
 #[derive(Default)]
 pub struct Options {
+    pub debugger: bool,
     pub language: Option<eidoryn_psx::i18n::Language>,
     pub muted: Option<bool>,
     pub volume: Option<u8>,
@@ -79,10 +80,21 @@ pub fn run_with_probe(
             None
         }
     };
-    let mut snapshot = Snapshot::capture(&machine, options.auto_run, None, 0.0);
+    let mode = if options.debugger {
+        SnapshotMode::Debug
+    } else {
+        SnapshotMode::Display
+    };
+    let mut snapshot = Snapshot::capture_with_mode(&machine, options.auto_run, None, 0.0, mode);
     snapshot.cards = store.status(&machine.bus.sio.cards);
-    let runner = Runner::with_outputs(machine, options.auto_run, store, Some(audio_buffer.clone()))
-        .map_err(|e| e.to_string())?;
+    let runner = Runner::with_snapshot_mode(
+        machine,
+        options.auto_run,
+        store,
+        Some(audio_buffer.clone()),
+        mode,
+    )
+    .map_err(|e| e.to_string())?;
     let audio = AudioControls {
         buffer: audio_buffer,
         output: audio_output,
@@ -93,6 +105,7 @@ pub fn run_with_probe(
     open_window(runner, snapshot, options, startup, audio, probe)
 }
 
+#[allow(clippy::too_many_lines)] // Keep window setup and the Desktop initializer together.
 fn open_window(
     runner: Runner,
     snapshot: Snapshot,
@@ -140,7 +153,6 @@ fn open_window(
                                 view.stop_input(cx);
                             }),
                         ];
-                        let image = frame_image(&snapshot);
                         let weak = cx.weak_entity();
                         window.on_window_should_close(cx, move |_, cx| {
                             weak.update(cx, |view: &mut Desktop, cx| {
@@ -163,12 +175,11 @@ fn open_window(
                             clean_fullscreen: startup.clean_fullscreen,
                             settings_focus: cx.focus_handle(),
                             runner,
+                            snapshot_mode: snapshot.mode,
                             snapshot,
-                            image,
-                            icon: Arc::new(gpui::Image::from_bytes(
-                                gpui::ImageFormat::Png,
-                                include_bytes!("../../assets/eidoryn.png").to_vec(),
-                            )),
+                            image: None,
+                            icon: OnceCell::new(),
+                            debugger_enabled: options.debugger,
                             crt: CrtState::new(startup.crt),
                             last_redraw: Instant::now(),
                             focus,
@@ -176,7 +187,11 @@ fn open_window(
                             audio,
                             bios: options.bios,
                             game_view: options.game_view,
-                            page: WorkspacePage::Console,
+                            page: if options.debugger {
+                                WorkspacePage::Debug
+                            } else {
+                                WorkspacePage::Console
+                            },
                             themes: startup.themes,
                             appearance_open: false,
                             pressed_buttons: 0,
@@ -202,6 +217,7 @@ fn open_window(
     startup_error.borrow_mut().take().map_or(Ok(()), Err)
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent view, debugger, and appearance preferences.
 struct Desktop {
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
     fonts: fonts::Fonts,
@@ -213,8 +229,10 @@ struct Desktop {
     settings_focus: FocusHandle,
     runner: Runner,
     snapshot: Snapshot,
-    image: Arc<RenderImage>,
-    icon: Arc<gpui::Image>,
+    image: Option<VideoImage>,
+    icon: OnceCell<Option<Arc<RenderImage>>>,
+    debugger_enabled: bool,
+    snapshot_mode: SnapshotMode,
     crt: CrtState,
     last_redraw: Instant,
     focus: FocusHandle,
@@ -274,7 +292,12 @@ impl Desktop {
             self.notice = Some(error);
             cx.notify();
         }
-        if let Some(snapshot) = self.runner.take_snapshot() {
+        if let Some(mut snapshot) = self.runner.take_snapshot() {
+            // A queued debug snapshot can arrive after the user closes the view.
+            if self.snapshot_mode == SnapshotMode::Display {
+                snapshot.mode = SnapshotMode::Display;
+                snapshot.disassembly = Vec::new();
+            }
             if let Some(probe) = &mut self.probe {
                 probe.record(snapshot.video_frames, "receive");
             }
@@ -286,16 +309,16 @@ impl Desktop {
                 self.bios.clone_from(&snapshot.bios_path);
             }
             let frame_changed = !snapshot.has_same_frame(&self.snapshot);
+            if frame_changed && let Some(image) = &mut self.image {
+                // Coalesce pending frames without keeping a second RGB allocation.
+                image.dirty = true;
+            }
             let redraw = frame_changed
+                || snapshot.mode != self.snapshot.mode
                 || !snapshot.running
                 || snapshot.running != self.snapshot.running
                 || snapshot.close_ready
                 || self.last_redraw.elapsed() >= Duration::from_millis(100);
-            if frame_changed {
-                let image = frame_image(&snapshot);
-                let old = std::mem::replace(&mut self.image, image);
-                cx.drop_image(old, None);
-            }
             self.snapshot = snapshot;
             // Static video only needs occasional inspector/status updates. Changed
             // video and paused/manual execution remain immediately visible.
