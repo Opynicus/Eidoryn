@@ -25,6 +25,7 @@ Eidoryn (CLI / GPUI)
 | `crates/jit-runtime/` | 原创 x86-64 发射器及隔离的 RW→RX/原生调用安全边界 |
 | `crates/host/src/audio.rs`、`audio/` | 与主机无关的 PCM 队列、显式源采样率、CPAL 输出和 WAV 导出 |
 | `crates/host/src/video_filter.rs`、`theme/` | CRT 遮罩、语义配色与数据型主题插件，无 GPUI 类型 |
+| `src/systems/ps1/input.rs` | 按键保持状态、独立连发相位与配置校验；以模拟 CPU 周期计时 |
 | `src/systems/ps1/media.rs` | BIOS/EXE 读取、校验与 PS1 会话构建 |
 | `src/systems/ps1/card_file.rs` | PS1 卡文件锁、批量同步和原子替换 |
 | `src/systems/ps1/runner/` | PS1 命令、会话线程、持久化边界、快照与调试状态 |
@@ -48,6 +49,8 @@ Eidoryn (CLI / GPUI)
 ## PS1 执行与同步
 
 工作线程独占 `Machine` 和 `CardStore`，窗口通过通道发送命令，从邮箱取走最新完整快照。关闭请求先同步记忆卡，成功后发布最终快照再退出；失败则暂停并允许重试。`Runner::drop` 回收线程并尝试最终同步。媒体加载先校验，成功后再替换机器和重置基准；换媒体和重置均保留当前记忆卡。失败仍保留原会话。
+
+手柄输入通过 `Command::SetButtons` 更新实际保持状态，`Command::SetTurbo` 配置动作/肩键连发。运行线程在每个有界执行片段前后采样连发状态并送入 SIO；按键各自以首次按下的 CPU 周期为起点，按下/松开各占半个周期。暂停和会话替换释放输入但保留连发配置。输入配置不清空音频、不重置帧节奏，也不改动硬件核心的手柄协议。
 
 命令行与库中新建 `Gpu` 默认串行；`--renderer threaded`、`--renderer vulkan` 或 `Gpu::set_renderer` 选择其他后端。Graphics/F8 面板通过 `Command::SetRenderer` 在运行中切换，保留机器和记忆卡。多线程软件模式将原有光栅器和 VRAM 移入一个持久工作线程。解释器继续负责 GP0 解包、寄存器和设备时钟；绘图命令携带提交时的绘图状态，按原顺序成批发送。每批最多 128 条，通道最多排队 2 批；DMA2 结束时也提交不足一批的命令，使绘图能与后续 CPU 指令重叠。批次缓冲回收复用，生产速度过快时产生背压。绘图之间不并发，因此纹理反馈、透明混合、遮罩和重叠复制保持原有顺序。
 

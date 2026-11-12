@@ -6,5 +6,6 @@ pub use eidoryn_ps1::{
 };
 
 pub mod card_file;
+pub mod input;
 pub mod media;
 pub mod runner;

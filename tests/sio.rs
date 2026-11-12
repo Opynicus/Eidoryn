@@ -26,6 +26,31 @@ fn exchange(sio: &mut Sio, byte: u8) -> u8 {
 }
 
 #[test]
+fn turbo_pulses_are_visible_in_active_low_pad_replies() {
+    use eidoryn_psx::systems::ps1::{
+        input::{PadInput, TurboConfig},
+        timing::CPU_CLOCK_HZ,
+    };
+    let mut input = PadInput::default();
+    input.configure(TurboConfig::new(0x8000, 10).unwrap(), 0);
+    input.set_buttons(0x8020, 0);
+    let mut sio = pad();
+    for (cycles, high) in [
+        (0, 0x7f),
+        (CPU_CLOCK_HZ / 20, 0xff),
+        (CPU_CLOCK_HZ / 10, 0x7f),
+    ] {
+        sio.write(CTRL, 2, 1);
+        sio.write(CTRL, 2, 3);
+        sio.set_buttons(input.buttons(u64::from(cycles)));
+        assert_eq!(
+            [1, 0x42, 0, 0, 0].map(|byte| exchange(&mut sio, byte)),
+            [0xff, 0x41, 0x5a, 0xdf, high]
+        );
+    }
+}
+
+#[test]
 fn batched_bus_ticks_match_each_serial_transfer_and_ack_edge() {
     let mut batched = Bus::default();
     batched.write16(MODE, 0x0d).unwrap();
