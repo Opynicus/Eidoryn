@@ -1,0 +1,63 @@
+name: CI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+      - name: Cache Cargo downloads
+        id: registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+      - name: Fetch dependencies
+        if: steps.registry.outputs.cache-hit != 'true'
+        run: cargo fetch --locked --target x86_64-unknown-linux-gnu
+  test:
+    name: Linux x86_64 ${{ matrix.backend }}
+    needs: dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [wayland, x11]
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt && rustup default 1.98.1
+      - name: Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xinput-dev libxcb-cursor-dev libfontconfig1-dev libfreetype6-dev libvulkan-dev
+      - name: Restore Cargo downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.backend }}-test
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Test
+        run: cargo test --locked --workspace --no-default-features --features ${{ matrix.backend }},vulkan,jit
