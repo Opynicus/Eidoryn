@@ -64,6 +64,9 @@ impl VulkanRenderer {
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Eidoryn PS1 rasterizer"),
+            // Our fixed buffers total less than 8 MiB. Large default allocation
+            // blocks waste device/unified memory; resources can still grow.
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         }))
         .map_err(io::Error::other)?;
@@ -148,11 +151,24 @@ impl VulkanRenderer {
         })
     }
 
-    pub(super) fn start(&mut self, raster: Rasterizer) {
-        let words: Vec<u32> = raster.vram.iter().map(|&v| u32::from(v)).collect();
-        self.queue
-            .write_buffer(&self.buffers[0], 0, bytemuck::cast_slice(&words));
+    pub(super) fn start(&mut self, raster: Rasterizer) -> Result<(), String> {
+        // Expand directly into staging memory: a temporary Vec<u32> would
+        // duplicate this entire 2 MiB upload on every renderer switch.
+        {
+            let mut upload = self
+                .queue
+                .write_buffer_with(
+                    &self.buffers[0],
+                    0,
+                    wgpu::BufferSize::new(VRAM_BYTES).expect("VRAM is not empty"),
+                )
+                .ok_or("Vulkan VRAM upload staging allocation failed")?;
+            upload
+                .slice(..)
+                .write_iter(raster.vram.iter().flat_map(|&v| u32::from(v).to_ne_bytes()));
+        } // Schedule the upload before Engine::start synchronizes the queue.
         self.read_cache = Some(raster.vram);
+        self.check()
     }
 
     pub(super) fn execute(&mut self, command: RasterCommand) -> Result<(), String> {

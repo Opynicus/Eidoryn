@@ -149,6 +149,7 @@ PS1 机器状态由运行线程持有；界面通过命令和快照与其交互�
 | [架构](docs/ARCHITECTURE.md) | 模块边界、线程与数据流 |
 | [桌面工作区](docs/UI.md) | 控制台、调试器、游戏视图与设置 |
 | [各模块内存占用](docs/UI-MEMORY-MODULES.md) | 实测结果、调试器开关与资源加载 |
+| [渲染器内存](docs/RENDERER-MEMORY.md) | 运行时切换、进程 RSS 与 Vulkan 分配开销 |
 | [周期模型](docs/TIMING.md) · [渲染后端](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/设备周期、图形加速和 CPU 执行 |
 | [音频](docs/AUDIO.md) · [记忆卡](docs/SAVES.md) | 输出、保存与已知限制 |
 | [主题插件](docs/THEMES.md) | 内置主题与自定义 JSON 格式 |
