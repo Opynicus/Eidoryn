@@ -132,3 +132,5 @@ cargo run --locked --release --no-default-features --example snapshot_bench
 ## UI 内存与分配
 
 SVG、字体/文本、布局/元素的独立归因、优化前后数据和复现脚本见 [UI 内存测量](UI-MEMORY.md)。该测量区分存活堆、累计分配、字体映射和默认分配器 RSS，优先消除重复字体错误分配，并复用静态侧栏布局。
+
+与 UI 重构前 `feature/device-event-boundaries` 的比较见 [UI 重构前后内存对比](UI-MEMORY-COMPARISON.md)，包含 Release、开发构建、字体文件映射和一分钟运行观察。

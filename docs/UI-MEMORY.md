@@ -2,6 +2,8 @@
 
 本次先测量 SVG、字体/文本和布局/元素，再消除重复工作。数据来自内置原创演示，不加载 BIOS、光盘或文件记忆卡；不能据此推算游戏帧率。
 
+本页基线是已经重构 UI 的 `719bcbf`。与重构前 `feature/device-event-boundaries` 的比较见 [UI 重构前后内存对比](UI-MEMORY-COMPARISON.md)。
+
 ## 测量口径
 
 - **存活堆内存**：gperftools 记录的已分配、尚未释放的请求字节数，是采样时刻的值，不是峰值，也不是 RSS。

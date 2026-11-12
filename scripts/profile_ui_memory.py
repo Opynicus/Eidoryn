@@ -199,12 +199,16 @@ def capture(args):
         env.update(LD_PRELOAD=library, HEAPPROFILE=str(output / "heap"),
                    HEAP_PROFILE_ALLOCATION_INTERVAL="0", HEAP_PROFILE_INUSE_INTERVAL="0",
                    HEAP_PROFILE_TIME_INTERVAL=str(args.seconds))
-    command = [str(binary), "--no-memory-cards", "--mute", "--language", args.language,
+    command = [str(binary), "--no-memory-cards", "--mute",
                "--theme", "midnight", "--renderer", "serial", "--crt", "off"]
+    if not args.legacy_ui:
+        command.extend(["--language", args.language])
     if args.view == "game":
         command.append("--game-view")
     elif args.view == "fullscreen":
-        command.extend(["--fullscreen", "--clean-fullscreen"])
+        command.append("--fullscreen")
+        if not args.legacy_ui:
+            command.append("--clean-fullscreen")
     samples = []
     with (output / "run.log").open("w") as log:
         process = subprocess.Popen(command, env=env, stdout=log, stderr=log)
@@ -275,6 +279,7 @@ def main():
     run.add_argument("--binary", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True, help="New directory for this run")
     run.add_argument("--language", choices=("en", "zh-CN"), default="en")
+    run.add_argument("--legacy-ui", action="store_true", help="Pre-redesign build: English only, no clean-fullscreen flag")
     run.add_argument("--view", choices=("console", "game", "fullscreen"), default="console")
     run.add_argument("--seconds", type=int, choices=range(1, 31), default=5)
     run.add_argument("--rss-only", action="store_true")
@@ -285,6 +290,8 @@ def main():
     report.add_argument("--base", type=Path)
     args = parser.parse_args()
     if args.command == "capture":
+        if args.legacy_ui and args.language != "en":
+            parser.error("--legacy-ui supports only --language en")
         capture(args)
     else:
         if shutil.which("llvm-symbolizer") is None:
