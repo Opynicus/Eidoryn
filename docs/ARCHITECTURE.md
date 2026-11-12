@@ -11,7 +11,7 @@ Eidoryn (CLI / GPUI)
 └── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
-`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认仅依赖标准库。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认也仅依赖标准库。Vulkan/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用原有 `desktop`、`vulkan`、`jit` 特性转发到对应组件，默认设置与 CLI 均保持不变。
+`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认仅依赖标准库。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认也仅依赖标准库。Vulkan/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`vulkan`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
 
 | 位置 | 职责 |
 | --- | --- |
