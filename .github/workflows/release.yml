@@ -1,50 +1,61 @@
-name: Release
+name: Linux Desktop Release
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
   build:
+    name: Linux x86_64 ${{ matrix.backend }}
+    needs: ci
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {os: ubuntu-24.04, label: linux-x86_64-desktop, mode: desktop, args: '', binary: eidoryn}
-          - {os: ubuntu-24.04, label: linux-x86_64-cli, mode: cli, args: '--no-default-features', binary: eidoryn}
-          - {os: windows-2022, label: windows-x86_64-desktop, mode: desktop, args: '--no-default-features --features desktop', binary: eidoryn.exe}
-          - {os: windows-2022, label: windows-x86_64-cli, mode: cli, args: '--no-default-features', binary: eidoryn.exe}
-          - {os: macos-15, label: macos-arm64-desktop, mode: desktop, args: '--no-default-features --features desktop', binary: eidoryn}
-          - {os: macos-15, label: macos-arm64-cli, mode: cli, args: '--no-default-features', binary: eidoryn}
-    runs-on: ${{ matrix.os }}
-    continue-on-error: true
+        backend: [wayland, x11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v4
       - name: Rust
         shell: bash
         run: rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
       - name: Linux desktop dependencies
-        if: runner.os == 'Linux' && matrix.mode == 'desktop'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xinput-dev libxcb-cursor-dev libfontconfig1-dev libfreetype6-dev libvulkan-dev
+      - name: Restore Cargo downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.backend }}-release
       - name: Build
-        shell: bash
-        run: cargo build --locked --release --bin eidoryn ${{ matrix.args }}
+        run: cargo build --locked --release --bin eidoryn --no-default-features --features ${{ matrix.backend }},vulkan,jit
       - name: Original demo smoke test
-        shell: bash
-        run: ./target/release/${{ matrix.binary }} --headless --no-memory-cards --frames 1
+        run: ./target/release/eidoryn --headless --no-memory-cards --frames 120
       - name: Package
-        shell: bash
-        run: python scripts/package_release.py --label '${{ github.ref_name }}-${{ matrix.label }}' --binary target/release/${{ matrix.binary }}
+        env:
+          PACKAGE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        run: python3 scripts/package_release.py --label "${PACKAGE_VERSION}-linux-x86_64-${{ matrix.backend }}" --binary target/release/eidoryn
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.label }}
+          name: linux-x86_64-${{ matrix.backend }}
           path: dist/*
           if-no-files-found: error
   publish:
-    if: always() && startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -52,9 +63,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: linux-x86_64-*
           path: dist
           merge-multiple: true
-      - name: Publish successful packages
+      - name: Publish Wayland and X11 packages
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -62,17 +74,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          files=(dist/*)
-          ((${#files[@]} > 0)) || { echo 'No successful packages; refusing empty release'; exit 1; }
-          cat > notes.md <<'NOTES'
+          cd dist
+          files=()
+          for backend in wayland x11; do
+            archive="Eidoryn-${RELEASE_TAG}-linux-x86_64-${backend}.tar.gz"
+            sha256sum --check --strict "${archive}.sha256"
+            files+=("$archive" "${archive}.sha256")
+          done
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
           Experimental project developed with extensive AI assistance. Hardware accuracy and game compatibility are still under active development.
 
-          Experimental, unsigned packages. Only successful builds that pass the original headless demo smoke test are attached. Desktop launches and gameplay on Windows/macOS have not been manually verified. CLI packages have no GPUI window. No BIOS, games, saves or gameplay test artifacts are distributed.
+          Experimental, unsigned Linux x86-64 desktop packages. Choose the Wayland archive for a Wayland session, or the X11 archive for an X11 session. Each build enables only its named GPUI window backend. Requires Ubuntu 24.04 or a compatible newer glibc and the corresponding Wayland/XCB, xkbcommon, fontconfig, FreeType and ALSA runtime libraries.
 
-          Linux desktop: Ubuntu 24.04 or compatible newer glibc, XCB/xkbcommon and ALSA runtime libraries; Vulkan requires a supported physical GPU/driver. Windows/macOS desktop builds use software rendering; JIT is Linux x86-64 only. SHA-256 sidecars accompany every archive.
+          Both variants must pass tests, the release build and the original headless demo smoke test before publishing. SHA-256 sidecars accompany both archives. Vulkan rendering requires a supported physical GPU and driver; software rendering remains the default. JIT is optional at runtime. No BIOS, games, saves or gameplay test artifacts are distributed.
 
-          See the Actions run for failed or unavailable platform builds. These packages do not imply full game compatibility.
+          Windows, macOS and standalone CLI packages are not published by this workflow. Automated headless checks do not verify desktop gameplay or full game compatibility.
           NOTES
-          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "Eidoryn $RELEASE_TAG" --notes-file notes.md --prerelease
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --verify-tag --title "Eidoryn $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease
           gh release upload "$RELEASE_TAG" "${files[@]}" --clobber

@@ -43,11 +43,11 @@ Save states, CHD images, and disc swapping are not supported. Memory-card saves 
 ### Requirements
 
 - Rust **1.95 or newer** and Cargo. A release build is recommended for running games.
-- The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for the Linux, Windows, and macOS build configurations.
+- The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for the Linux build dependencies.
 - Vulkan rendering requires a physical Vulkan-capable GPU and driver. The default software renderer does not require Vulkan hardware.
 - Bring your own BIOS and game images; they are not supplied by this project.
 
-See [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) for available builds. Check each asset's name for its platform and whether it is a desktop or headless CLI build. Windows and macOS release builds use software rendering.
+The [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) currently publishes Linux x86-64 Wayland and X11 desktop archives with SHA-256 checksums to [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases). Choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. Pushes to `main` and pull requests validate both builds; only `v*` tags publish a release. Other platforms remain available to build from source.
 
 ### Build and launch
 
@@ -58,6 +58,13 @@ cargo run --locked --release
 ```
 
 Without media, Eidoryn opens its original built-in demo without requiring a BIOS. After building, the executable is at `target/release/eidoryn` on Linux and macOS, or `target/release/eidoryn.exe` on Windows. `--locked` fixes dependency versions; `--release` enables optimizations.
+
+The default Linux build includes Wayland and X11. To reproduce either release variant, select its window backend explicitly:
+
+```bash
+cargo build --locked --release --bin eidoryn --no-default-features --features wayland,vulkan,jit
+cargo build --locked --release --bin eidoryn --no-default-features --features x11,vulkan,jit
+```
 
 ### Interface language
 

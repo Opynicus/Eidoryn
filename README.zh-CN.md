@@ -43,11 +43,11 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 ### 环境要求
 
 - Rust **1.95 或更新版本**及 Cargo；建议使用 release 构建运行游戏。
-- 桌面版需要 GPUI 所需的系统图形、字体与音频开发库，以及可用图形驱动。Linux、Windows 和 macOS 的构建配置见[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)。
+- 桌面版需要 GPUI 所需的系统图形、字体与音频开发库，以及可用图形驱动。Linux 构建依赖见[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)。
 - Vulkan 模式需要支持 Vulkan 的物理显卡和驱动；默认软件模式不要求 Vulkan 硬件。
 - 启动游戏需要自行准备相应 BIOS 和镜像。项目不提供这些文件。
 
-可在 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) 查看已发布的构建；请根据附件名称区分桌面版和无窗口 CLI 版，并留意各平台的验证状态。Windows 和 macOS 发布包使用软件绘图。
+[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)当前仅向 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) 发布 Linux x86-64 Wayland 和 X11 桌面压缩包及其 SHA-256 校验文件。请按桌面会话选择对应版本，需要 Ubuntu 24.04 或兼容的更新系统。推送到 `main` 和 PR 时验证两个版本，仅 `v*` 标签触发发布。其他平台仍可从源码构建。
 
 ### 构建与启动
 
@@ -58,6 +58,13 @@ cargo run --locked --release
 ```
 
 未指定媒体时会打开内置原创演示，无需 BIOS。构建后可运行 Linux/macOS 的 `target/release/eidoryn` 或 Windows 的 `target/release/eidoryn.exe`。`--locked` 固定依赖版本，`--release` 才会启用优化。
+
+Linux 默认构建同时包含 Wayland 和 X11。复现发布版本时，可明确选择窗口后端：
+
+```bash
+cargo build --locked --release --bin eidoryn --no-default-features --features wayland,vulkan,jit
+cargo build --locked --release --bin eidoryn --no-default-features --features x11,vulkan,jit
+```
 
 ### 界面语言
 
