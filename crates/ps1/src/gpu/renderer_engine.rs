@@ -47,7 +47,7 @@ impl Engine {
             Self::Software(current) => *current = raster,
             #[cfg(feature = "vulkan")]
             Self::Vulkan(gpu) => {
-                gpu.start(raster);
+                gpu.start(raster)?;
                 gpu.synchronize()?;
             }
         }

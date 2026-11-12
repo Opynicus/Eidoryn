@@ -299,7 +299,7 @@ impl Desktop {
                 snapshot.disassembly = Vec::new();
             }
             if let Some(probe) = &mut self.probe {
-                probe.record(snapshot.video_frames, "receive");
+                probe.receive(&snapshot);
             }
             if let Some(mode) = self.graphics.receive(&snapshot) {
                 self.preferences.renderer = mode.label().to_ascii_lowercase();

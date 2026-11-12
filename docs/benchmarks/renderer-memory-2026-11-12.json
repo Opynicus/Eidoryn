@@ -1,0 +1,2200 @@
+{
+  "date": "2026-11-12",
+  "baseline": "b0673f1 + timed renderer probe",
+  "optimized": "perf/renderer-memory-residency; MemoryUsage hint + direct staging upload",
+  "platform": {
+    "os": "Linux 7.3.1-1-cachyos",
+    "rust": "1.98.1",
+    "gpu": "AMD Radeon 780M Graphics (RADV PHOENIX)",
+    "scale": 1.5,
+    "logical_window": [
+      1280,
+      900
+    ]
+  },
+  "workload": {
+    "content": "built-in original demo",
+    "language": "en",
+    "theme": "midnight",
+    "crt": "off",
+    "muted": true,
+    "debugger": false,
+    "memory_cards": false,
+    "cpu": "interpreter",
+    "profile": "release"
+  },
+  "units": "KiB unless indicated; DRM counts deduplicate client FDs, may still include shared objects; never add to RSS",
+  "native_runs": [
+    {
+      "version": "before",
+      "run": 1,
+      "sha256": "0e0049a92f4d59c5e473f13460ffcaefcfb06c4df6033479eba5a99405872742",
+      "allocator": "native",
+      "all_sample_windows_focused": true,
+      "valid_sequence": true,
+      "phases": [
+        {
+          "revision": 0,
+          "renderer": "Serial",
+          "seconds": 4.549,
+          "smaps_rollup": {
+            "Rss": 84004,
+            "Pss": 71353,
+            "Pss_Dirty": 38369,
+            "Pss_Anon": 20948,
+            "Pss_File": 32917,
+            "Pss_Shmem": 17488,
+            "Shared_Clean": 17016,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28596,
+            "Private_Dirty": 38356,
+            "Referenced": 84004,
+            "Anonymous": 20948,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 84004,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 186872,
+              "drm-resident-vram": 624,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187496,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 1,
+          "renderer": "Threaded",
+          "seconds": 8.591,
+          "smaps_rollup": {
+            "Rss": 84576,
+            "Pss": 71956,
+            "Pss_Dirty": 38941,
+            "Pss_Anon": 21520,
+            "Pss_File": 32947,
+            "Pss_Shmem": 17488,
+            "Shared_Clean": 16980,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28632,
+            "Private_Dirty": 38928,
+            "Referenced": 84576,
+            "Anonymous": 21520,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 84576,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 186872,
+              "drm-resident-vram": 624,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187496,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 2,
+          "renderer": "Serial",
+          "seconds": 14.658,
+          "smaps_rollup": {
+            "Rss": 85540,
+            "Pss": 72855,
+            "Pss_Dirty": 39841,
+            "Pss_Anon": 22356,
+            "Pss_File": 32946,
+            "Pss_Shmem": 17552,
+            "Shared_Clean": 17044,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28632,
+            "Private_Dirty": 39828,
+            "Referenced": 66024,
+            "Anonymous": 22356,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 85540,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 186872,
+              "drm-resident-vram": 624,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187496,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 3,
+          "renderer": "Vulkan",
+          "seconds": 18.71,
+          "smaps_rollup": {
+            "Rss": 92356,
+            "Pss": 79666,
+            "Pss_Dirty": 46609,
+            "Pss_Anon": 25988,
+            "Pss_File": 32989,
+            "Pss_Shmem": 20688,
+            "Shared_Clean": 17052,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28672,
+            "Private_Dirty": 46596,
+            "Referenced": 75740,
+            "Anonymous": 25988,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 92356,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 456944,
+              "drm-resident-vram": 1676,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 460680,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 4,
+          "renderer": "Serial",
+          "seconds": 24.781,
+          "smaps_rollup": {
+            "Rss": 94132,
+            "Pss": 81446,
+            "Pss_Dirty": 48205,
+            "Pss_Anon": 27520,
+            "Pss_File": 33173,
+            "Pss_Shmem": 20752,
+            "Shared_Clean": 17048,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28856,
+            "Private_Dirty": 48192,
+            "Referenced": 77560,
+            "Anonymous": 27520,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 94132,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 186872,
+              "drm-resident-vram": 636,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187508,
+          "library_Rss": {
+            "LLVM": 26236,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 5,
+          "renderer": "Vulkan",
+          "seconds": 28.832,
+          "smaps_rollup": {
+            "Rss": 98496,
+            "Pss": 85803,
+            "Pss_Dirty": 52561,
+            "Pss_Anon": 31876,
+            "Pss_File": 33175,
+            "Pss_Shmem": 20752,
+            "Shared_Clean": 17056,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28856,
+            "Private_Dirty": 52548,
+            "Referenced": 81892,
+            "Anonymous": 31876,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 98496,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 456944,
+              "drm-resident-vram": 1676,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 460680,
+          "library_Rss": {
+            "LLVM": 26236,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        }
+      ]
+    },
+    {
+      "version": "before",
+      "run": 2,
+      "sha256": "0e0049a92f4d59c5e473f13460ffcaefcfb06c4df6033479eba5a99405872742",
+      "allocator": "native",
+      "all_sample_windows_focused": true,
+      "valid_sequence": true,
+      "phases": [
+        {
+          "revision": 0,
+          "renderer": "Serial",
+          "seconds": 4.344,
+          "smaps_rollup": {
+            "Rss": 83364,
+            "Pss": 70704,
+            "Pss_Dirty": 37645,
+            "Pss_Anon": 20880,
+            "Pss_File": 32992,
+            "Pss_Shmem": 16832,
+            "Shared_Clean": 17020,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28676,
+            "Private_Dirty": 37632,
+            "Referenced": 77956,
+            "Anonymous": 20880,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 83364,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21972,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187532,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 1,
+          "renderer": "Threaded",
+          "seconds": 8.398,
+          "smaps_rollup": {
+            "Rss": 83840,
+            "Pss": 71180,
+            "Pss_Dirty": 38121,
+            "Pss_Anon": 21228,
+            "Pss_File": 32992,
+            "Pss_Shmem": 16960,
+            "Shared_Clean": 17020,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28676,
+            "Private_Dirty": 38108,
+            "Referenced": 78432,
+            "Anonymous": 21228,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 83840,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21972,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187532,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 2,
+          "renderer": "Serial",
+          "seconds": 14.497,
+          "smaps_rollup": {
+            "Rss": 84964,
+            "Pss": 72241,
+            "Pss_Dirty": 39181,
+            "Pss_Anon": 22288,
+            "Pss_File": 32993,
+            "Pss_Shmem": 16960,
+            "Shared_Clean": 17084,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28676,
+            "Private_Dirty": 39168,
+            "Referenced": 69396,
+            "Anonymous": 22288,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 84964,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21972,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187532,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 3,
+          "renderer": "Vulkan",
+          "seconds": 18.557,
+          "smaps_rollup": {
+            "Rss": 92540,
+            "Pss": 80009,
+            "Pss_Dirty": 46709,
+            "Pss_Anon": 26680,
+            "Pss_File": 33232,
+            "Pss_Shmem": 20096,
+            "Shared_Clean": 16728,
+            "Shared_Dirty": 36,
+            "Private_Clean": 29080,
+            "Private_Dirty": 46696,
+            "Referenced": 77040,
+            "Anonymous": 26680,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 92540,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 436400,
+              "drm-resident-vram": 22256,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 460716,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 4,
+          "renderer": "Serial",
+          "seconds": 24.627,
+          "smaps_rollup": {
+            "Rss": 94460,
+            "Pss": 81433,
+            "Pss_Dirty": 48457,
+            "Pss_Anon": 28428,
+            "Pss_File": 32909,
+            "Pss_Shmem": 20095,
+            "Shared_Clean": 17640,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28340,
+            "Private_Dirty": 48444,
+            "Referenced": 78960,
+            "Anonymous": 28428,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 94460,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21984,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187544,
+          "library_Rss": {
+            "LLVM": 26228,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 5,
+          "renderer": "Vulkan",
+          "seconds": 28.676,
+          "smaps_rollup": {
+            "Rss": 98900,
+            "Pss": 86039,
+            "Pss_Dirty": 52889,
+            "Pss_Anon": 32860,
+            "Pss_File": 33082,
+            "Pss_Shmem": 20096,
+            "Shared_Clean": 17300,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28688,
+            "Private_Dirty": 52876,
+            "Referenced": 83400,
+            "Anonymous": 32860,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 98900,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 436400,
+              "drm-resident-vram": 22256,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 460716,
+          "library_Rss": {
+            "LLVM": 26228,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        }
+      ]
+    },
+    {
+      "version": "before",
+      "run": 3,
+      "sha256": "0e0049a92f4d59c5e473f13460ffcaefcfb06c4df6033479eba5a99405872742",
+      "allocator": "native",
+      "all_sample_windows_focused": true,
+      "valid_sequence": true,
+      "phases": [
+        {
+          "revision": 0,
+          "renderer": "Serial",
+          "seconds": 4.324,
+          "smaps_rollup": {
+            "Rss": 83660,
+            "Pss": 70995,
+            "Pss_Dirty": 37949,
+            "Pss_Anon": 20592,
+            "Pss_File": 32978,
+            "Pss_Shmem": 17424,
+            "Shared_Clean": 17036,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28652,
+            "Private_Dirty": 37936,
+            "Referenced": 83660,
+            "Anonymous": 20592,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 83660,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21976,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187536,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 1,
+          "renderer": "Threaded",
+          "seconds": 8.37,
+          "smaps_rollup": {
+            "Rss": 84236,
+            "Pss": 71571,
+            "Pss_Dirty": 38525,
+            "Pss_Anon": 21168,
+            "Pss_File": 32978,
+            "Pss_Shmem": 17424,
+            "Shared_Clean": 17036,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28652,
+            "Private_Dirty": 38512,
+            "Referenced": 84236,
+            "Anonymous": 21168,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 84236,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21976,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187536,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 2,
+          "renderer": "Serial",
+          "seconds": 14.441,
+          "smaps_rollup": {
+            "Rss": 85200,
+            "Pss": 72471,
+            "Pss_Dirty": 39425,
+            "Pss_Anon": 22004,
+            "Pss_File": 32979,
+            "Pss_Shmem": 17488,
+            "Shared_Clean": 17100,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28652,
+            "Private_Dirty": 39412,
+            "Referenced": 85200,
+            "Anonymous": 22004,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 85200,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21976,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187536,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 3,
+          "renderer": "Vulkan",
+          "seconds": 18.487,
+          "smaps_rollup": {
+            "Rss": 92252,
+            "Pss": 79517,
+            "Pss_Dirty": 46429,
+            "Pss_Anon": 25872,
+            "Pss_File": 33020,
+            "Pss_Shmem": 20624,
+            "Shared_Clean": 17108,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28692,
+            "Private_Dirty": 46416,
+            "Referenced": 92252,
+            "Anonymous": 25872,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 92252,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 436400,
+              "drm-resident-vram": 22260,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 460720,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 4,
+          "renderer": "Serial",
+          "seconds": 24.56,
+          "smaps_rollup": {
+            "Rss": 94044,
+            "Pss": 81313,
+            "Pss_Dirty": 48049,
+            "Pss_Anon": 27428,
+            "Pss_File": 33196,
+            "Pss_Shmem": 20688,
+            "Shared_Clean": 17104,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28868,
+            "Private_Dirty": 48036,
+            "Referenced": 94044,
+            "Anonymous": 27428,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 94044,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21988,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187548,
+          "library_Rss": {
+            "LLVM": 26228,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 5,
+          "renderer": "Vulkan",
+          "seconds": 28.609,
+          "smaps_rollup": {
+            "Rss": 98396,
+            "Pss": 85658,
+            "Pss_Dirty": 52393,
+            "Pss_Anon": 31772,
+            "Pss_File": 33197,
+            "Pss_Shmem": 20688,
+            "Shared_Clean": 17112,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28868,
+            "Private_Dirty": 52380,
+            "Referenced": 98396,
+            "Anonymous": 31772,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 98396,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 436400,
+              "drm-resident-vram": 22260,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 460720,
+          "library_Rss": {
+            "LLVM": 26228,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        }
+      ]
+    },
+    {
+      "version": "after",
+      "run": 1,
+      "sha256": "9563ae5ae0789307ad8617d73eea23911632aaadb867706859776fef701d25e0",
+      "allocator": "native",
+      "all_sample_windows_focused": true,
+      "valid_sequence": true,
+      "phases": [
+        {
+          "revision": 0,
+          "renderer": "Serial",
+          "seconds": 4.325,
+          "smaps_rollup": {
+            "Rss": 83356,
+            "Pss": 70733,
+            "Pss_Dirty": 37709,
+            "Pss_Anon": 20600,
+            "Pss_File": 32956,
+            "Pss_Shmem": 17176,
+            "Shared_Clean": 16980,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28644,
+            "Private_Dirty": 37696,
+            "Referenced": 83356,
+            "Anonymous": 20600,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 83356,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 176216,
+              "drm-resident-vram": 11300,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187516,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 1,
+          "renderer": "Threaded",
+          "seconds": 8.374,
+          "smaps_rollup": {
+            "Rss": 83996,
+            "Pss": 71373,
+            "Pss_Dirty": 38349,
+            "Pss_Anon": 21176,
+            "Pss_File": 32956,
+            "Pss_Shmem": 17240,
+            "Shared_Clean": 16980,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28644,
+            "Private_Dirty": 38336,
+            "Referenced": 83124,
+            "Anonymous": 21176,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 83996,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 176216,
+              "drm-resident-vram": 11300,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187516,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 2,
+          "renderer": "Serial",
+          "seconds": 14.442,
+          "smaps_rollup": {
+            "Rss": 84960,
+            "Pss": 72273,
+            "Pss_Dirty": 39249,
+            "Pss_Anon": 22012,
+            "Pss_File": 32957,
+            "Pss_Shmem": 17304,
+            "Shared_Clean": 17044,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28644,
+            "Private_Dirty": 39236,
+            "Referenced": 84088,
+            "Anonymous": 22012,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 84960,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 176216,
+              "drm-resident-vram": 11300,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187516,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 3,
+          "renderer": "Vulkan",
+          "seconds": 18.494,
+          "smaps_rollup": {
+            "Rss": 91860,
+            "Pss": 79167,
+            "Pss_Dirty": 46101,
+            "Pss_Anon": 25664,
+            "Pss_File": 32998,
+            "Pss_Shmem": 20504,
+            "Shared_Clean": 17052,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28684,
+            "Private_Dirty": 46088,
+            "Referenced": 90988,
+            "Anonymous": 25664,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 91860,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 201296,
+              "drm-resident-vram": 11576,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 214932,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 4,
+          "renderer": "Serial",
+          "seconds": 24.563,
+          "smaps_rollup": {
+            "Rss": 93340,
+            "Pss": 80651,
+            "Pss_Dirty": 47401,
+            "Pss_Anon": 26964,
+            "Pss_File": 33182,
+            "Pss_Shmem": 20504,
+            "Shared_Clean": 17048,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28868,
+            "Private_Dirty": 47388,
+            "Referenced": 92468,
+            "Anonymous": 26964,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 93340,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 176216,
+              "drm-resident-vram": 11304,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187520,
+          "library_Rss": {
+            "LLVM": 26236,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 5,
+          "renderer": "Vulkan",
+          "seconds": 28.615,
+          "smaps_rollup": {
+            "Rss": 97728,
+            "Pss": 85032,
+            "Pss_Dirty": 51781,
+            "Pss_Anon": 31344,
+            "Pss_File": 33184,
+            "Pss_Shmem": 20504,
+            "Shared_Clean": 17056,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28868,
+            "Private_Dirty": 51768,
+            "Referenced": 96856,
+            "Anonymous": 31344,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 97728,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 201296,
+              "drm-resident-vram": 11576,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 214932,
+          "library_Rss": {
+            "LLVM": 26236,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        }
+      ]
+    },
+    {
+      "version": "after",
+      "run": 2,
+      "sha256": "9563ae5ae0789307ad8617d73eea23911632aaadb867706859776fef701d25e0",
+      "allocator": "native",
+      "all_sample_windows_focused": true,
+      "valid_sequence": true,
+      "phases": [
+        {
+          "revision": 0,
+          "renderer": "Serial",
+          "seconds": 4.338,
+          "smaps_rollup": {
+            "Rss": 83388,
+            "Pss": 70767,
+            "Pss_Dirty": 37773,
+            "Pss_Anon": 20664,
+            "Pss_File": 32927,
+            "Pss_Shmem": 17176,
+            "Shared_Clean": 16984,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28608,
+            "Private_Dirty": 37760,
+            "Referenced": 83388,
+            "Anonymous": 20664,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 83388,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21976,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187536,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 1,
+          "renderer": "Threaded",
+          "seconds": 8.386,
+          "smaps_rollup": {
+            "Rss": 84028,
+            "Pss": 71407,
+            "Pss_Dirty": 38413,
+            "Pss_Anon": 21240,
+            "Pss_File": 32927,
+            "Pss_Shmem": 17240,
+            "Shared_Clean": 16984,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28608,
+            "Private_Dirty": 38400,
+            "Referenced": 84028,
+            "Anonymous": 21240,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 84028,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21976,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187536,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 2,
+          "renderer": "Serial",
+          "seconds": 14.455,
+          "smaps_rollup": {
+            "Rss": 84992,
+            "Pss": 72308,
+            "Pss_Dirty": 39313,
+            "Pss_Anon": 22076,
+            "Pss_File": 32927,
+            "Pss_Shmem": 17304,
+            "Shared_Clean": 17048,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28608,
+            "Private_Dirty": 39300,
+            "Referenced": 84992,
+            "Anonymous": 22076,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 84992,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21976,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187536,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 3,
+          "renderer": "Vulkan",
+          "seconds": 18.508,
+          "smaps_rollup": {
+            "Rss": 91824,
+            "Pss": 79133,
+            "Pss_Dirty": 46097,
+            "Pss_Anon": 25724,
+            "Pss_File": 32969,
+            "Pss_Shmem": 20440,
+            "Shared_Clean": 17056,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28648,
+            "Private_Dirty": 46084,
+            "Referenced": 91824,
+            "Anonymous": 25724,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 91824,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 190640,
+              "drm-resident-vram": 22252,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 214952,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 4,
+          "renderer": "Serial",
+          "seconds": 24.576,
+          "smaps_rollup": {
+            "Rss": 93696,
+            "Pss": 81009,
+            "Pss_Dirty": 47797,
+            "Pss_Anon": 27360,
+            "Pss_File": 33145,
+            "Pss_Shmem": 20504,
+            "Shared_Clean": 17052,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28824,
+            "Private_Dirty": 47784,
+            "Referenced": 93696,
+            "Anonymous": 27360,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 93696,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 165560,
+              "drm-resident-vram": 21980,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187540,
+          "library_Rss": {
+            "LLVM": 26228,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 5,
+          "renderer": "Vulkan",
+          "seconds": 28.631,
+          "smaps_rollup": {
+            "Rss": 98632,
+            "Pss": 85939,
+            "Pss_Dirty": 52725,
+            "Pss_Anon": 32288,
+            "Pss_File": 33146,
+            "Pss_Shmem": 20504,
+            "Shared_Clean": 17060,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28824,
+            "Private_Dirty": 52712,
+            "Referenced": 98632,
+            "Anonymous": 32288,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 98632,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 190640,
+              "drm-resident-vram": 22252,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 214952,
+          "library_Rss": {
+            "LLVM": 26228,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        }
+      ]
+    },
+    {
+      "version": "after",
+      "run": 3,
+      "sha256": "9563ae5ae0789307ad8617d73eea23911632aaadb867706859776fef701d25e0",
+      "allocator": "native",
+      "all_sample_windows_focused": true,
+      "valid_sequence": true,
+      "phases": [
+        {
+          "revision": 0,
+          "renderer": "Serial",
+          "seconds": 4.219,
+          "smaps_rollup": {
+            "Rss": 83244,
+            "Pss": 70565,
+            "Pss_Dirty": 37601,
+            "Pss_Anon": 20560,
+            "Pss_File": 32897,
+            "Pss_Shmem": 17108,
+            "Shared_Clean": 17024,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28596,
+            "Private_Dirty": 37588,
+            "Referenced": 83244,
+            "Anonymous": 20560,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 83244,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 154904,
+              "drm-resident-vram": 32652,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187556,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 1,
+          "renderer": "Threaded",
+          "seconds": 8.269,
+          "smaps_rollup": {
+            "Rss": 83892,
+            "Pss": 71213,
+            "Pss_Dirty": 38249,
+            "Pss_Anon": 21144,
+            "Pss_File": 32897,
+            "Pss_Shmem": 17172,
+            "Shared_Clean": 17024,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28596,
+            "Private_Dirty": 38236,
+            "Referenced": 83892,
+            "Anonymous": 21144,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 83892,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 154904,
+              "drm-resident-vram": 32652,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187556,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 2,
+          "renderer": "Serial",
+          "seconds": 14.336,
+          "smaps_rollup": {
+            "Rss": 84792,
+            "Pss": 72050,
+            "Pss_Dirty": 39085,
+            "Pss_Anon": 21980,
+            "Pss_File": 32897,
+            "Pss_Shmem": 17172,
+            "Shared_Clean": 17088,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28596,
+            "Private_Dirty": 39072,
+            "Referenced": 84792,
+            "Anonymous": 21980,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 84792,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 154904,
+              "drm-resident-vram": 32652,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187556,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2904
+          }
+        },
+        {
+          "revision": 3,
+          "renderer": "Vulkan",
+          "seconds": 18.382,
+          "smaps_rollup": {
+            "Rss": 92388,
+            "Pss": 79639,
+            "Pss_Dirty": 46633,
+            "Pss_Anon": 26392,
+            "Pss_File": 32939,
+            "Pss_Shmem": 20308,
+            "Shared_Clean": 17096,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28636,
+            "Private_Dirty": 46620,
+            "Referenced": 92388,
+            "Anonymous": 26392,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 92388,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 179984,
+              "drm-resident-vram": 32928,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 214972,
+          "library_Rss": {
+            "LLVM": 26048,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 4,
+          "renderer": "Serial",
+          "seconds": 24.462,
+          "smaps_rollup": {
+            "Rss": 94304,
+            "Pss": 81463,
+            "Pss_Dirty": 48377,
+            "Pss_Anon": 28136,
+            "Pss_File": 33019,
+            "Pss_Shmem": 20307,
+            "Shared_Clean": 17288,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28616,
+            "Private_Dirty": 48364,
+            "Referenced": 94304,
+            "Anonymous": 28136,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 94304,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 154904,
+              "drm-resident-vram": 32656,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            }
+          ],
+          "driver_resident_sum": 187560,
+          "library_Rss": {
+            "LLVM": 26228,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        },
+        {
+          "revision": 5,
+          "renderer": "Vulkan",
+          "seconds": 28.514,
+          "smaps_rollup": {
+            "Rss": 98656,
+            "Pss": 85981,
+            "Pss_Dirty": 52721,
+            "Pss_Anon": 32480,
+            "Pss_File": 33192,
+            "Pss_Shmem": 20308,
+            "Shared_Clean": 16948,
+            "Shared_Dirty": 36,
+            "Private_Clean": 28964,
+            "Private_Dirty": 52708,
+            "Referenced": 98656,
+            "Anonymous": 32480,
+            "KSM": 0,
+            "LazyFree": 0,
+            "AnonHugePages": 2048,
+            "ShmemPmdMapped": 0,
+            "FilePmdMapped": 0,
+            "Shared_Hugetlb": 0,
+            "Private_Hugetlb": 0,
+            "Swap": 0,
+            "SwapPss": 0,
+            "Locked": 73
+          },
+          "status_VmRSS": 98656,
+          "driver_clients": [
+            {
+              "drm-resident-gtt": 179984,
+              "drm-resident-vram": 32928,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 42624
+            },
+            {
+              "drm-resident-gtt": 2048,
+              "drm-resident-vram": 12,
+              "drm-shared-gtt": 0,
+              "drm-shared-vram": 0
+            }
+          ],
+          "driver_resident_sum": 214972,
+          "library_Rss": {
+            "LLVM": 26228,
+            "RADV": 5548,
+            "lavapipe": 2944
+          }
+        }
+      ]
+    }
+  ],
+  "raster_benchmark": {
+    "frames_per_round": 240,
+    "rounds_per_process": 3,
+    "process_order": [
+      "before",
+      "after",
+      "after",
+      "before",
+      "before",
+      "after"
+    ],
+    "runs": [
+      {
+        "version": "before",
+        "run": 1,
+        "binary_sha256": "5ceec4308533c32278b324cd8568146c501e0aa70ad3fe1d9650604027caa0cb",
+        "full_vram_equal": true,
+        "rounds": [
+          {
+            "round": 1,
+            "mode": "Serial",
+            "ms_per_frame": 4.354
+          },
+          {
+            "round": 1,
+            "mode": "Threaded",
+            "ms_per_frame": 4.426
+          },
+          {
+            "round": 1,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.84
+          },
+          {
+            "round": 2,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.854
+          },
+          {
+            "round": 2,
+            "mode": "Threaded",
+            "ms_per_frame": 4.385
+          },
+          {
+            "round": 2,
+            "mode": "Serial",
+            "ms_per_frame": 4.343
+          },
+          {
+            "round": 3,
+            "mode": "Serial",
+            "ms_per_frame": 4.341
+          },
+          {
+            "round": 3,
+            "mode": "Threaded",
+            "ms_per_frame": 4.405
+          },
+          {
+            "round": 3,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.836
+          }
+        ],
+        "medians_ms_per_frame": {
+          "Serial": 4.343,
+          "Threaded": 4.405,
+          "Vulkan": 0.84
+        }
+      },
+      {
+        "version": "before",
+        "run": 2,
+        "binary_sha256": "5ceec4308533c32278b324cd8568146c501e0aa70ad3fe1d9650604027caa0cb",
+        "full_vram_equal": true,
+        "rounds": [
+          {
+            "round": 1,
+            "mode": "Serial",
+            "ms_per_frame": 4.383
+          },
+          {
+            "round": 1,
+            "mode": "Threaded",
+            "ms_per_frame": 4.424
+          },
+          {
+            "round": 1,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.875
+          },
+          {
+            "round": 2,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.825
+          },
+          {
+            "round": 2,
+            "mode": "Threaded",
+            "ms_per_frame": 4.39
+          },
+          {
+            "round": 2,
+            "mode": "Serial",
+            "ms_per_frame": 4.383
+          },
+          {
+            "round": 3,
+            "mode": "Serial",
+            "ms_per_frame": 4.386
+          },
+          {
+            "round": 3,
+            "mode": "Threaded",
+            "ms_per_frame": 4.471
+          },
+          {
+            "round": 3,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.845
+          }
+        ],
+        "medians_ms_per_frame": {
+          "Serial": 4.383,
+          "Threaded": 4.424,
+          "Vulkan": 0.845
+        }
+      },
+      {
+        "version": "before",
+        "run": 3,
+        "binary_sha256": "5ceec4308533c32278b324cd8568146c501e0aa70ad3fe1d9650604027caa0cb",
+        "full_vram_equal": true,
+        "rounds": [
+          {
+            "round": 1,
+            "mode": "Serial",
+            "ms_per_frame": 4.51
+          },
+          {
+            "round": 1,
+            "mode": "Threaded",
+            "ms_per_frame": 4.419
+          },
+          {
+            "round": 1,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.828
+          },
+          {
+            "round": 2,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.805
+          },
+          {
+            "round": 2,
+            "mode": "Threaded",
+            "ms_per_frame": 4.437
+          },
+          {
+            "round": 2,
+            "mode": "Serial",
+            "ms_per_frame": 4.531
+          },
+          {
+            "round": 3,
+            "mode": "Serial",
+            "ms_per_frame": 4.505
+          },
+          {
+            "round": 3,
+            "mode": "Threaded",
+            "ms_per_frame": 4.422
+          },
+          {
+            "round": 3,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.81
+          }
+        ],
+        "medians_ms_per_frame": {
+          "Serial": 4.51,
+          "Threaded": 4.422,
+          "Vulkan": 0.81
+        }
+      },
+      {
+        "version": "after",
+        "run": 1,
+        "binary_sha256": "bf247f22b3e2b0e8d03d65c487a3eecf6f764aa859b1c4af5b997ab756d5e428",
+        "full_vram_equal": true,
+        "rounds": [
+          {
+            "round": 1,
+            "mode": "Serial",
+            "ms_per_frame": 4.345
+          },
+          {
+            "round": 1,
+            "mode": "Threaded",
+            "ms_per_frame": 4.369
+          },
+          {
+            "round": 1,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.955
+          },
+          {
+            "round": 2,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.781
+          },
+          {
+            "round": 2,
+            "mode": "Threaded",
+            "ms_per_frame": 4.388
+          },
+          {
+            "round": 2,
+            "mode": "Serial",
+            "ms_per_frame": 4.356
+          },
+          {
+            "round": 3,
+            "mode": "Serial",
+            "ms_per_frame": 4.358
+          },
+          {
+            "round": 3,
+            "mode": "Threaded",
+            "ms_per_frame": 4.407
+          },
+          {
+            "round": 3,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.882
+          }
+        ],
+        "medians_ms_per_frame": {
+          "Serial": 4.356,
+          "Threaded": 4.388,
+          "Vulkan": 0.882
+        }
+      },
+      {
+        "version": "after",
+        "run": 2,
+        "binary_sha256": "bf247f22b3e2b0e8d03d65c487a3eecf6f764aa859b1c4af5b997ab756d5e428",
+        "full_vram_equal": true,
+        "rounds": [
+          {
+            "round": 1,
+            "mode": "Serial",
+            "ms_per_frame": 4.381
+          },
+          {
+            "round": 1,
+            "mode": "Threaded",
+            "ms_per_frame": 4.428
+          },
+          {
+            "round": 1,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.925
+          },
+          {
+            "round": 2,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.854
+          },
+          {
+            "round": 2,
+            "mode": "Threaded",
+            "ms_per_frame": 4.439
+          },
+          {
+            "round": 2,
+            "mode": "Serial",
+            "ms_per_frame": 4.378
+          },
+          {
+            "round": 3,
+            "mode": "Serial",
+            "ms_per_frame": 4.38
+          },
+          {
+            "round": 3,
+            "mode": "Threaded",
+            "ms_per_frame": 4.431
+          },
+          {
+            "round": 3,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.851
+          }
+        ],
+        "medians_ms_per_frame": {
+          "Serial": 4.38,
+          "Threaded": 4.431,
+          "Vulkan": 0.854
+        }
+      },
+      {
+        "version": "after",
+        "run": 3,
+        "binary_sha256": "bf247f22b3e2b0e8d03d65c487a3eecf6f764aa859b1c4af5b997ab756d5e428",
+        "full_vram_equal": true,
+        "rounds": [
+          {
+            "round": 1,
+            "mode": "Serial",
+            "ms_per_frame": 4.44
+          },
+          {
+            "round": 1,
+            "mode": "Threaded",
+            "ms_per_frame": 4.481
+          },
+          {
+            "round": 1,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.79
+          },
+          {
+            "round": 2,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.735
+          },
+          {
+            "round": 2,
+            "mode": "Threaded",
+            "ms_per_frame": 4.419
+          },
+          {
+            "round": 2,
+            "mode": "Serial",
+            "ms_per_frame": 4.399
+          },
+          {
+            "round": 3,
+            "mode": "Serial",
+            "ms_per_frame": 4.396
+          },
+          {
+            "round": 3,
+            "mode": "Threaded",
+            "ms_per_frame": 4.397
+          },
+          {
+            "round": 3,
+            "mode": "Vulkan",
+            "ms_per_frame": 0.832
+          }
+        ],
+        "medians_ms_per_frame": {
+          "Serial": 4.399,
+          "Threaded": 4.419,
+          "Vulkan": 0.79
+        }
+      }
+    ]
+  },
+  "live_heap": {
+    "allocator": "gperftools tcmalloc; never use this process for native RSS comparison",
+    "version": "after",
+    "binary_sha256": "9563ae5ae0789307ad8617d73eea23911632aaadb867706859776fef701d25e0",
+    "runs": 1,
+    "samples": [
+      {
+        "seconds": 0.006,
+        "live_bytes": 472,
+        "allocated_bytes": 472
+      },
+      {
+        "seconds": 1.638,
+        "live_bytes": 17822597,
+        "allocated_bytes": 331971491
+      },
+      {
+        "seconds": 3.639,
+        "live_bytes": 17592151,
+        "allocated_bytes": 670620834
+      },
+      {
+        "seconds": 5.633,
+        "live_bytes": 17869161,
+        "allocated_bytes": 1013362344
+      },
+      {
+        "seconds": 7.639,
+        "live_bytes": 17736199,
+        "allocated_bytes": 1352570436
+      },
+      {
+        "seconds": 9.636,
+        "live_bytes": 17638693,
+        "allocated_bytes": 1693383031
+      },
+      {
+        "seconds": 11.631,
+        "live_bytes": 17828523,
+        "allocated_bytes": 2033948254
+      },
+      {
+        "seconds": 13.634,
+        "live_bytes": 17598055,
+        "allocated_bytes": 2373053814
+      },
+      {
+        "seconds": 15.639,
+        "live_bytes": 22424226,
+        "allocated_bytes": 2732555821
+      },
+      {
+        "seconds": 17.639,
+        "live_bytes": 22319888,
+        "allocated_bytes": 3070303781
+      },
+      {
+        "seconds": 19.635,
+        "live_bytes": 22431616,
+        "allocated_bytes": 3414489992
+      },
+      {
+        "seconds": 21.646,
+        "live_bytes": 17591844,
+        "allocated_bytes": 3756111198
+      },
+      {
+        "seconds": 23.643,
+        "live_bytes": 17822185,
+        "allocated_bytes": 4094521563
+      },
+      {
+        "seconds": 25.646,
+        "live_bytes": 22318827,
+        "allocated_bytes": 4444915574
+      },
+      {
+        "seconds": 27.644,
+        "live_bytes": 22323980,
+        "allocated_bytes": 4783922597
+      },
+      {
+        "seconds": 29.644,
+        "live_bytes": 22550376,
+        "allocated_bytes": 5031026575
+      },
+      {
+        "seconds": 30.6,
+        "live_bytes": 1306628,
+        "allocated_bytes": 5193205414
+      }
+    ]
+  }
+}

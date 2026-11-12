@@ -151,6 +151,7 @@ Most detailed hardware documents are currently in Chinese.
 | [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
 | [Desktop workspaces](docs/UI.md) | Console, debugger, game view, and settings |
 | [Memory by module](docs/UI-MEMORY-MODULES.md) | Measurements, optional debugger, and resource loading |
+| [Renderer memory](docs/RENDERER-MEMORY.md) | Runtime switching, process RSS, and Vulkan allocation costs |
 | [Timing](docs/TIMING.md) · [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/device cycles, graphics backends, and CPU execution |
 | [Audio](docs/AUDIO.md) · [Memory cards](docs/SAVES.md) | Output, persistence, and limitations |
 | [Theme plugins](docs/THEMES.md) | Built-in themes and the custom JSON format |
