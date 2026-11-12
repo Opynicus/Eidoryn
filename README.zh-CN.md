@@ -49,7 +49,7 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 | CPU JIT | 实验性功能，默认关闭，仅支持 Linux x86-64 的部分整数指令 |
 | 精度与兼容性 | 设备时序、图形和音频并非周期精确；游戏兼容性和性能因场景与设备而异 |
 
-目前不支持即时存档、CHD 或运行中换盘。记忆卡存档需要在游戏自身的存档点或菜单中完成。具体范围和测量结果见[验证说明](docs/TESTING.md)与[性能报告](docs/PERFORMANCE.md)。
+目前不支持即时存档、CHD 或运行中换盘。记忆卡存档需要在游戏自身的存档点或菜单中完成。
 
 ## 快速开始
 
@@ -76,7 +76,7 @@ cargo run --locked --release
 
 在 **设置 → 外观主题 → 语言** 中选择 **English** 或 **简体中文**，界面立即切换，并保存供下次启动使用。首次启动时，中文系统语言选择简体中文，其余语言默认使用英文。
 
-可通过 `--language en` 或 `--language zh-CN` 临时指定本次启动语言。配置文件位置与翻译范围见[界面语言说明](docs/UI.md#界面语言)。
+可通过 `--language en` 或 `--language zh-CN` 临时指定本次启动语言。
 
 主题、CRT、音量、静音状态、首选渲染器和全屏控制栏也会保存。启动参数优先于已保存设置，例如 `--theme ocean --volume 60 --crt soft`。在 **设置 → 图形设置 → 纯画面全屏** 中隐藏全屏控制栏，也可用 `--fullscreen --clean-fullscreen` 启动。
 
@@ -149,15 +149,7 @@ PS1 机器状态由运行线程持有；界面通过命令和快照与其交互�
 | 文档 | 内容 |
 | --- | --- |
 | [架构](docs/ARCHITECTURE.md) | 模块边界、线程与数据流 |
-| [桌面工作区](docs/UI.md) | 控制台、调试器、游戏视图与设置 |
-| [各模块内存占用](docs/UI-MEMORY-MODULES.md) | 实测结果、调试器开关与资源加载 |
-| [渲染器内存](docs/RENDERER-MEMORY.md) | 运行时切换、进程 RSS 与 Vulkan 分配开销 |
-| [周期模型](docs/TIMING.md) · [渲染后端](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/设备周期、图形加速和 CPU 执行 |
-| [音频](docs/AUDIO.md) · [记忆卡](docs/SAVES.md) | 输出、保存与已知限制 |
-| [主题插件](docs/THEMES.md) | 内置主题与自定义 JSON 格式 |
-| [测试](docs/TESTING.md) · [性能](docs/PERFORMANCE.md) | 验证方法、基准结果及适用范围 |
 | [Linux 桌面集成](packaging/README.md) · [第三方资料](THIRD_PARTY.md) | 启动器安装、依赖与硬件参考 |
-| [贡献指南](docs/CONTRIBUTING.md) | 特性分支、提交规范与验证 |
 
 ## 路线图
 

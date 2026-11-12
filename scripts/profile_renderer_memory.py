@@ -3,7 +3,7 @@
 
 Build the renderer_memory_probe or backend_memory_probe example first. Captures
 only its own process, with disconnected memory cards. The original demo is used
-unless BIOS and disc paths are explicitly supplied. See docs/RENDERER-MEMORY.md.
+unless BIOS and disc paths are explicitly supplied.
 """
 import argparse
 import collections

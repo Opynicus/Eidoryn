@@ -59,11 +59,11 @@ Eidoryn (CLI / GPUI)
 
 Vulkan 模式通过 wgpu 的安全接口把显存保存在 GPU storage buffer，每个 PS1 半字对应 u32，避免相邻半字写入竞争。GP0 图元编码为固定 32-word 记录，按 8×8 像素分块，每个 GPU invocation 独占一个像素，依次执行该块的命令并保留遮罩/混合顺序。根据 UV 范围、窗口、翻转和 CLUT 追踪读取区域；读写区域发生依赖时结束批次，自身反馈/重叠复制使用有序 GPU shader。上传合并为行段。批次最多 2048 图元、262144 个块引用、65536 上传半字；在途提交到 64 次时等待，防止无 VBlank 程序无限排队。原生分辨率和整数运算与软件算法一致，不要求 shader int64。
 
-Vulkan 的 RGB15/RGB24 显示转换也在 GPU 执行，然后读回 RGB 供 GPUI 显示，尚未共享显示纹理。下载显存时缓存完整读回到下一次绘图；模式切换/克隆显式同步。Vulkan 编译特性和后端选择独立，默认构建提供 Vulkan，但默认运行软件模式；无物理显卡时报告错误，不选择 CPU Vulkan 适配器。范围、开关和验证方法见 [RENDERING.md](RENDERING.md)。
+Vulkan 的 RGB15/RGB24 显示转换也在 GPU 执行，然后读回 RGB 供 GPUI 显示，尚未共享显示纹理。下载显存时缓存完整读回到下一次绘图；模式切换/克隆显式同步。Vulkan 编译特性和后端选择独立，默认构建提供 Vulkan，但默认运行软件模式；无物理显卡时报告错误，不选择 CPU Vulkan 适配器。后端实现位于 `crates/ps1/src/gpu/`；验证见 `tests/vulkan_gpu.rs`、`tests/threaded_gpu.rs` 和 `tests/display.rs`。
 
-CPU 与设备共用 33,868,800 Hz 的累计周期时间线；指令按当前近似耗时推进设备，JIT 与解释器遵守相同的边界。具体周期、计数 API 与未建模部分见[周期模型](TIMING.md)。
+CPU 与设备共用 33,868,800 Hz 的累计周期时间线；指令按当前近似耗时推进设备，JIT 与解释器遵守相同的边界。周期定义与计数 API 位于 `crates/ps1/src/timing.rs` 和 `crates/ps1/src/bus.rs`，时序回归测试见 `tests/cpu_timing.rs`。
 
-`Machine::run_steps` 和 `run_slice` 按所选 CPU 模式执行；`step` 保留解释器调试语义。JIT 仅编译非陷阱整数操作，逐指令回调负责设备时钟、异常边界和代码修改校验。缓存有上限，原生代码只读共享，选择失败不改变原机器。具体范围和安全边界见 [JIT.md](JIT.md)。
+`Machine::run_steps` 和 `run_slice` 按所选 CPU 模式执行；`step` 保留解释器调试语义。JIT 仅编译非陷阱整数操作，逐指令回调负责设备时钟、异常边界和代码修改校验。缓存有上限，原生代码只读共享，选择失败不改变原机器。原生执行安全边界见 [JIT runtime 安全约束](../crates/jit-runtime/SAFETY.md)。
 
 执行块以约 4 ms 宿主时间为限，便于响应命令；一帧完成后才等待相应 NTSC/PAL 截止时间。FPS 由 GPU 完成的视频帧数测量，有限吸收调度抖动，避免旧的固定工作预算降低模拟速度。取指/RAM 字访问走连续区域快路径，越界和镜像交界仍走完整访存；计时器和 GPU 时序优化有逐时钟对照测试。
 

@@ -49,7 +49,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 | CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
 | Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
-Save states, CHD images, and disc swapping are not supported. Memory-card saves must be made at a save point or through the game's own menu. See [testing](docs/TESTING.md) and [performance](docs/PERFORMANCE.md) for coverage and measurement details.
+Save states, CHD images, and disc swapping are not supported. Memory-card saves must be made at a save point or through the game's own menu.
 
 ## Getting Started
 
@@ -76,7 +76,7 @@ Without media, Eidoryn opens its original built-in demo without requiring a BIOS
 
 Choose **Settings → Appearance → Language** to switch between **English** and **简体中文** immediately. The choice is saved for the next launch. On first launch, a Chinese locale selects Simplified Chinese; other locales use English.
 
-Use `--language en` or `--language zh-CN` to override the language for one session. See [interface language settings](docs/UI.md#界面语言) for configuration paths and translation scope.
+Use `--language en` or `--language zh-CN` to override the language for one session.
 
 Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are also saved. CLI options override saved preferences for the current session; for example, `--theme ocean --volume 60 --crt soft`. Enable **Settings → Graphics → Clean fullscreen** to hide controls while fullscreen, or use `--fullscreen --clean-fullscreen`.
 
@@ -146,20 +146,12 @@ The emulation worker owns the PS1 machine; the interface communicates through co
 
 ## Documentation
 
-Most detailed hardware documents are currently in Chinese.
+The architecture document is currently in Chinese.
 
 | Document | Contents |
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
-| [Desktop workspaces](docs/UI.md) | Console, debugger, game view, and settings |
-| [Memory by module](docs/UI-MEMORY-MODULES.md) | Measurements, optional debugger, and resource loading |
-| [Renderer memory](docs/RENDERER-MEMORY.md) | Runtime switching, process RSS, and Vulkan allocation costs |
-| [Timing](docs/TIMING.md) · [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/device cycles, graphics backends, and CPU execution |
-| [Audio](docs/AUDIO.md) · [Memory cards](docs/SAVES.md) | Output, persistence, and limitations |
-| [Theme plugins](docs/THEMES.md) | Built-in themes and the custom JSON format |
-| [Testing](docs/TESTING.md) · [Performance](docs/PERFORMANCE.md) | Validation, benchmarks, and their scope |
 | [Linux desktop integration](packaging/README.md) · [Third-party information](THIRD_PARTY.md) | Launcher installation, dependencies, and hardware references |
-| [Contributing](docs/CONTRIBUTING.md) | Feature branches, commits, and validation |
 
 ## Roadmap
 

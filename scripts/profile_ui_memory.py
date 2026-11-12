@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Linux UI heap attribution with gperftools and llvm-symbolizer (no app hooks).
 
-See docs/UI-MEMORY.md for categories, workload, and limits. The profiler replaces
-malloc only in the measured child; do not interpret its RSS as production RSS.
+The profiler replaces malloc only in the measured child; do not interpret its RSS
+as production RSS.
 """
 import argparse
 import bisect
