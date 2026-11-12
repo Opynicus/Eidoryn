@@ -1,5 +1,9 @@
 //! Desktop preferences. CLI overrides are applied in memory, never saved implicitly.
-use crate::{i18n::Language, systems::ps1::gpu::RendererMode, video_filter::CrtFilter};
+use crate::{
+    i18n::Language,
+    systems::ps1::{gpu::RendererMode, input::TurboConfig},
+    video_filter::CrtFilter,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
@@ -18,6 +22,8 @@ pub struct Preferences {
     pub muted: bool,
     pub renderer: String,
     pub clean_fullscreen: bool,
+    pub turbo_buttons: u16,
+    pub turbo_hz: u8,
 }
 
 impl Default for Preferences {
@@ -31,6 +37,8 @@ impl Default for Preferences {
             muted: false,
             renderer: "serial".into(),
             clean_fullscreen: false,
+            turbo_buttons: 0,
+            turbo_hz: TurboConfig::default().hz(),
         }
     }
 }
@@ -51,12 +59,17 @@ impl Preferences {
         self.renderer.parse().unwrap_or_default()
     }
 
+    pub fn turbo(&self) -> Result<TurboConfig, String> {
+        TurboConfig::new(self.turbo_buttons, self.turbo_hz)
+    }
+
     fn validate(&self) -> Result<(), String> {
         if let Some(language) = &self.language {
             language.parse::<Language>()?;
         }
         self.crt.parse::<CrtFilter>()?;
         self.renderer.parse::<RendererMode>()?;
+        self.turbo()?;
         if self.volume > 100 || self.theme.is_empty() {
             return Err("Volume must be 0..100 and theme must not be empty".into());
         }
@@ -140,6 +153,8 @@ mod tests {
             renderer: "threaded".into(),
             theme_plugin: Some(PathBuf::from("themes/海洋.json")),
             clean_fullscreen: true,
+            turbo_buttons: 0x8400,
+            turbo_hz: 15,
             ..Preferences::default()
         };
         settings.save(&path).unwrap();
@@ -147,10 +162,20 @@ mod tests {
         settings.volume = 101;
         assert!(settings.save(&path).is_err());
         assert_eq!(Preferences::load(&path).unwrap().volume, 42);
+        settings.volume = 42;
+        settings.turbo_hz = 0;
+        assert!(settings.save(&path).is_err());
+        assert_eq!(Preferences::load(&path).unwrap().turbo_hz, 15);
         std::fs::write(&path, b"{broken").unwrap();
         assert!(Preferences::load(&path).is_err());
         std::fs::write(&path, b"{\"theme\":\"forest\"}").unwrap();
         assert_eq!(Preferences::load(&path).unwrap().volume, 75);
+        assert_eq!(
+            Preferences::load(&path).unwrap().turbo().unwrap(),
+            TurboConfig::default()
+        );
+        std::fs::write(&path, b"{\"turbo_buttons\":32}").unwrap();
+        assert!(Preferences::load(&path).is_err());
         std::fs::remove_file(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap(), Preferences::default());
     }

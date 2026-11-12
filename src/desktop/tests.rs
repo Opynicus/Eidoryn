@@ -176,7 +176,7 @@ fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Deskto
         game_view: false,
         page: WorkspacePage::Console,
         themes,
-        appearance_open: false,
+        settings_tab: SettingsTab::Graphics,
         pressed_buttons: 0,
         probe: None,
         _subscriptions: Vec::new(),
@@ -234,12 +234,13 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
                 eidoryn_psx::i18n::Language::En,
                 eidoryn_psx::i18n::Language::ZhCn,
             ] {
-                for (page, game, settings, appearance) in [
-                    (WorkspacePage::Console, false, false, false),
-                    (WorkspacePage::Debug, false, false, false),
-                    (WorkspacePage::Console, true, false, false),
-                    (WorkspacePage::Console, false, true, false),
-                    (WorkspacePage::Console, false, true, true),
+                for (page, game, settings, tab) in [
+                    (WorkspacePage::Console, false, false, SettingsTab::Graphics),
+                    (WorkspacePage::Debug, false, false, SettingsTab::Graphics),
+                    (WorkspacePage::Console, true, false, SettingsTab::Graphics),
+                    (WorkspacePage::Console, false, true, SettingsTab::Graphics),
+                    (WorkspacePage::Console, false, true, SettingsTab::Appearance),
+                    (WorkspacePage::Console, false, true, SettingsTab::Controller),
                 ] {
                     window
                         .update(&mut visual, |view, window, cx| {
@@ -254,7 +255,7 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
                             }
                             view.game_view = game;
                             view.graphics.open = settings;
-                            view.appearance_open = appearance;
+                            view.settings_tab = tab;
                             cx.notify();
                         })
                         .unwrap();
@@ -276,8 +277,11 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
     assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Debug);
     assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
     press_keys(cx, "escape f8 tab tab tab enter");
-    assert!(view.read_with(cx, |v, _| v.appearance_open));
-    press_keys(cx, "tab enter");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.settings_tab),
+        SettingsTab::Appearance
+    );
+    press_keys(cx, "tab tab enter");
     assert_eq!(
         view.read_with(cx, |v, _| v.language),
         eidoryn_psx::i18n::Language::En
@@ -316,6 +320,55 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
     assert!(cx.debug_bounds("game-controls").is_some());
     assert!(cx.debug_bounds("pure-display").is_none());
     press_keys(cx, "escape");
+}
+
+#[gpui::test]
+fn turbo_settings_persist_and_input_releases_at_ui_boundaries(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let path = view.read_with(cx, |v, _| v.preferences_path.clone().unwrap());
+    let _cleanup = TestConfig(path.clone());
+    cx.simulate_keystrokes("z");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0x8000);
+    press_keys(cx, "f8");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    cx.run_until_parked();
+    let tab = cx.debug_bounds("tab-controller").unwrap();
+    cx.simulate_click(tab.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |v, _| v.settings_tab),
+        SettingsTab::Controller
+    );
+    let square = cx.debug_bounds("turbo-square").unwrap();
+    cx.simulate_click(square.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    let rate = cx.debug_bounds("turbo-rate-15").unwrap();
+    cx.simulate_click(rate.center(), gpui::Modifiers::none());
+    let saved = eidoryn_psx::preferences::Preferences::load(&path).unwrap();
+    assert_eq!(saved.turbo_buttons, 0x8000);
+    assert_eq!(saved.turbo_hz, 15);
+    press_keys(cx, "z");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    press_keys(cx, "escape");
+    cx.simulate_keystrokes("z");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0x8000);
+    view.update(cx, Desktop::stop_input);
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    // A key-up after losing focus is harmless; another press/release still works.
+    press_keys(cx, "z");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    press_keys(cx, "f8 tab tab tab tab enter tab tab enter");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.settings_tab),
+        SettingsTab::Controller
+    );
+    assert_eq!(view.read_with(cx, |v, _| v.preferences.turbo_buttons), 0);
+    assert_eq!(
+        eidoryn_psx::preferences::Preferences::load(&path)
+            .unwrap()
+            .turbo_buttons,
+        0
+    );
 }
 
 fn test_config_path() -> std::path::PathBuf {

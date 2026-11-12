@@ -19,6 +19,7 @@ type SharedSnapshot = Arc<Mutex<Option<Snapshot>>>;
 pub enum Command {
     SetSnapshotMode(SnapshotMode),
     SetButtons(u16),
+    SetTurbo(super::input::TurboConfig),
     SetRenderer(crate::systems::ps1::gpu::RendererMode),
     SetCpuMode(crate::systems::ps1::cpu_engine::CpuMode),
     Toggle,

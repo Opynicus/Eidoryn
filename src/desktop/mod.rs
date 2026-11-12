@@ -4,6 +4,7 @@ mod appearance;
 mod audio_controls;
 mod components;
 mod console;
+mod controller;
 mod fonts;
 mod graphics;
 mod icons;
@@ -95,6 +96,7 @@ pub fn run_with_probe(
         mode,
     )
     .map_err(|e| e.to_string())?;
+    runner.send(Command::SetTurbo(startup.preferences.turbo()?))?;
     let audio = AudioControls {
         buffer: audio_buffer,
         output: audio_output,
@@ -193,7 +195,7 @@ fn open_window(
                                 WorkspacePage::Console
                             },
                             themes: startup.themes,
-                            appearance_open: false,
+                            settings_tab: SettingsTab::Graphics,
                             pressed_buttons: 0,
                             probe,
                             _subscriptions: subscriptions,
@@ -244,9 +246,17 @@ struct Desktop {
     pressed_buttons: u16,
     probe: Option<probe::Probe>,
     themes: ThemeCatalog,
-    appearance_open: bool,
+    settings_tab: SettingsTab,
     graphics: graphics::GraphicsControls,
     _subscriptions: Vec<gpui::Subscription>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SettingsTab {
+    #[default]
+    Graphics,
+    Appearance,
+    Controller,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

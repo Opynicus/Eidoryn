@@ -4,6 +4,7 @@ use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
     gpu::RendererMode,
+    input::PadInput,
     machine::{INSTRUCTIONS_PER_SLICE, Machine},
     media::{load_disc, load_path},
 };
@@ -44,7 +45,7 @@ pub(super) fn run(
         let view_only = matches!(command, Some(Command::SetSnapshotMode(_)));
         let mut force_publish = command
             .as_ref()
-            .is_some_and(|c| !matches!(c, Command::SetButtons(_)));
+            .is_some_and(|c| !matches!(c, Command::SetButtons(_) | Command::SetTurbo(_)));
         let mut close_ready = match command {
             Some(Command::Shutdown) => break,
             Some(command) => worker.apply(command),
@@ -81,6 +82,7 @@ pub(super) fn run(
 struct Worker {
     snapshot_mode: SnapshotMode,
     machine: Machine,
+    input: PadInput,
     initial: Machine,
     renderer: RendererMode,
     renderer_revision: u64,
@@ -113,7 +115,10 @@ impl Worker {
         let now = Instant::now();
         let frames = machine.bus.gpu.frames;
         let frame_interval = Duration::from_secs_f64(1.0 / machine.bus.gpu.nominal_fps());
+        let mut input = PadInput::default();
+        input.set_buttons(machine.bus.sio.buttons(), machine.bus.elapsed_cycles());
         Self {
+            input,
             snapshot_mode,
             initial: machine.clone(),
             renderer: machine.bus.gpu.renderer_mode(),
@@ -164,6 +169,7 @@ impl Worker {
         machine.bus.sio.cards = std::mem::take(&mut self.machine.bus.sio.cards);
         machine.bus.sio.deselect_cards();
         self.machine = machine;
+        self.release_input();
         self.initial.clone_from(&self.machine);
         self.message = None;
         true
@@ -184,16 +190,18 @@ impl Worker {
     }
 
     /// Returns true when the frontend should close after receiving the final snapshot.
+    #[allow(clippy::too_many_lines)] // Keep session command transitions together.
     fn apply(&mut self, command: Command) -> bool {
         if matches!(command, Command::SetRenderer(_)) {
             // Also acknowledge a request rejected by the card-flush guard below.
             self.renderer_revision = self.renderer_revision.wrapping_add(1);
         }
         let view_only = matches!(command, Command::SetSnapshotMode(_));
-        if !view_only && !matches!(command, Command::SetButtons(_)) && !self.flush_cards(true) {
+        let input_only = matches!(command, Command::SetButtons(_) | Command::SetTurbo(_));
+        if !view_only && !input_only && !self.flush_cards(true) {
             return false;
         }
-        if !view_only && !matches!(command, Command::SetButtons(_) | Command::FlushCards) {
+        if !view_only && !input_only && !matches!(command, Command::FlushCards) {
             if let Some(audio) = &self.audio {
                 audio.clear();
             }
@@ -201,7 +209,16 @@ impl Worker {
         }
         match command {
             Command::SetSnapshotMode(mode) => self.snapshot_mode = mode,
-            Command::SetButtons(buttons) => self.machine.bus.sio.set_buttons(buttons),
+            Command::SetButtons(buttons) => {
+                self.input
+                    .set_buttons(buttons, self.machine.bus.elapsed_cycles());
+                self.update_input();
+            }
+            Command::SetTurbo(config) => {
+                self.input
+                    .configure(config, self.machine.bus.elapsed_cycles());
+                self.update_input();
+            }
             Command::SetCpuMode(mode) => self.select_cpu(mode),
             Command::SetRenderer(mode) => {
                 match self.machine.bus.gpu.set_renderer(mode) {
@@ -220,24 +237,28 @@ impl Worker {
                 self.message = None;
                 self.running = !self.running;
                 if !self.running {
-                    self.machine.bus.sio.set_buttons(0);
+                    self.release_input();
                 }
                 self.reset_pacing();
             }
             Command::Step => {
                 self.running = false;
+                self.update_input();
                 self.message = self.machine.step().err().map(|e| e.to_string());
+                self.update_input();
                 self.machine.bus.gpu.latch_display();
             }
             Command::Slice => {
                 self.running = false;
+                self.update_input();
                 self.message = self.machine.run_slice().err().map(|e| e.to_string());
+                self.update_input();
                 self.machine.bus.gpu.latch_display();
             }
             Command::Reset => {
                 self.running = false;
                 self.replace_machine(self.initial.clone());
-                self.machine.bus.sio.set_buttons(0);
+                self.release_input();
                 self.reset_pacing();
             }
             Command::Demo => {
@@ -247,6 +268,7 @@ impl Worker {
             Command::FlushCards => self.message = None,
             Command::Load { path, bios } => {
                 self.running = false;
+                self.release_input();
                 match load_path(&path, bios) {
                     Ok(loaded) => {
                         if self.replace_machine(loaded) && bios {
@@ -263,6 +285,7 @@ impl Worker {
                 fast_boot,
             } => {
                 self.running = false;
+                self.release_input();
                 match load_disc(&path, bios.as_deref(), fast_boot) {
                     Ok(loaded) => {
                         if self.replace_machine(loaded) {
@@ -278,6 +301,7 @@ impl Worker {
             }
             Command::RequestClose | Command::Shutdown => {
                 self.running = false;
+                self.release_input();
                 return true;
             }
         }
@@ -311,6 +335,7 @@ impl Worker {
         let start = Instant::now();
         let mut frame_finished = false;
         loop {
+            self.update_input();
             match self.machine.run_slice() {
                 Ok(n) => {
                     self.count += 1;
@@ -324,6 +349,7 @@ impl Worker {
                 Err(error) => {
                     self.message = Some(error.to_string());
                     self.running = false;
+                    self.release_input();
                     break;
                 }
             }
@@ -331,6 +357,7 @@ impl Worker {
                 break;
             }
         }
+        self.update_input();
         let now = Instant::now();
         self.deadline = now;
         if frame_finished {
@@ -345,6 +372,18 @@ impl Worker {
             self.next_frame = self.machine.bus.gpu.frames + 1;
         }
         frame_finished || !self.running
+    }
+
+    fn update_input(&mut self) {
+        self.machine
+            .bus
+            .sio
+            .set_buttons(self.input.buttons(self.machine.bus.elapsed_cycles()));
+    }
+
+    fn release_input(&mut self) {
+        self.input.set_buttons(0, self.machine.bus.elapsed_cycles());
+        self.update_input();
     }
 
     fn publish(&mut self, output: &SharedSnapshot, close_ready: bool) -> bool {
@@ -391,6 +430,94 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::ps1::{input::TurboConfig, timing::CPU_CLOCK_HZ};
+
+    #[test]
+    fn turbo_reaches_sio_without_clearing_audio_and_survives_session_reset() {
+        let audio = AudioBuffer::default();
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            Some(audio.clone()),
+            SnapshotMode::Display,
+        );
+        audio.push([[123, -123]; 128]);
+        let queued = audio.stats().queued_frames;
+        let deadline = worker.frame_deadline;
+        worker.apply(Command::SetTurbo(TurboConfig::new(0x8000, 10).unwrap()));
+        worker.apply(Command::SetButtons(0x8020));
+        assert_eq!(audio.stats().queued_frames, queued);
+        assert_eq!(worker.frame_deadline, deadline);
+        assert_eq!(worker.machine.bus.sio.buttons(), 0x8020);
+        worker.machine.bus.tick(CPU_CLOCK_HZ / 20).unwrap();
+        worker.apply(Command::SetButtons(0x8020));
+        assert_eq!(worker.machine.bus.sio.buttons(), 0x0020);
+        worker.machine.bus.tick(CPU_CLOCK_HZ / 20).unwrap();
+        worker.apply(Command::Slice);
+        assert_eq!(worker.machine.bus.sio.buttons(), 0x8020);
+        worker.apply(Command::Reset);
+        assert_eq!(worker.machine.bus.sio.buttons(), 0);
+        worker.apply(Command::SetButtons(0x8000));
+        assert_eq!(worker.machine.bus.sio.buttons(), 0x8000);
+        worker.machine.bus.tick(CPU_CLOCK_HZ / 20).unwrap();
+        worker.apply(Command::Step);
+        assert_eq!(worker.machine.bus.sio.buttons(), 0);
+    }
+
+    #[test]
+    fn run_batches_pulse_and_pause_or_media_changes_release_input() {
+        let mut machine =
+            Machine::from_exe(&crate::systems::ps1::demo::executable(), "Turbo test").unwrap();
+        // A tiny CPU loop advances time without the demo's expensive redraws.
+        machine.bus.write32(0x8001_0000, 0x0800_4000).unwrap();
+        machine.bus.write32(0x8001_0004, 0).unwrap();
+        let mut worker = Worker::new(
+            machine,
+            true,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        worker.apply(Command::SetTurbo(TurboConfig::new(0x8000, 20).unwrap()));
+        worker.apply(Command::SetButtons(0x8000));
+        let mut previous = worker.machine.bus.sio.buttons();
+        let mut edges = 0;
+        for _ in 0..500 {
+            worker.run_batch();
+            assert!(worker.running);
+            let buttons = worker.machine.bus.sio.buttons();
+            edges += usize::from(previous != buttons);
+            previous = buttons;
+            if edges >= 6 {
+                break;
+            }
+        }
+        assert!(
+            edges >= 6,
+            "Expected repeat edges during execution, got {edges}"
+        );
+        worker.apply(Command::Toggle);
+        assert!(!worker.running);
+        worker.machine.bus.tick(CPU_CLOCK_HZ / 10).unwrap();
+        worker.update_input();
+        assert_eq!(worker.machine.bus.sio.buttons(), 0);
+        for command in [
+            Command::Demo,
+            Command::Reset,
+            Command::Load {
+                path: PathBuf::from("missing-turbo-test.exe"),
+                bios: false,
+            },
+            Command::RequestClose,
+        ] {
+            worker.apply(Command::SetButtons(0x8000));
+            worker.apply(command);
+            worker.machine.bus.tick(CPU_CLOCK_HZ / 10).unwrap();
+            worker.update_input();
+            assert_eq!(worker.machine.bus.sio.buttons(), 0);
+        }
+    }
 
     #[test]
     fn snapshot_mode_does_not_reset_execution_audio_or_notifications() {

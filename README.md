@@ -18,19 +18,6 @@ Eidoryn is an experimental emulator written in Rust with a native GPUI interface
 
 The architecture leaves room for additional systems, but **GBA and PS2 are not currently supported**. No game images, BIOS files, or saves are included.
 
-<p align="center">
-  <img src="docs/images/eidoryn-console-en.png" alt="Eidoryn console in English, showing the built-in demo, session details, and memory-card panel" width="1000">
-  <br>
-  <sub>The native GPUI console in the Midnight theme, running the original built-in demo. No BIOS or game image is required.</sub>
-</p>
-
-<details>
-<summary>Simplified Chinese interface</summary>
-
-![Eidoryn console in Simplified Chinese](docs/images/eidoryn-console-zh-CN.png)
-
-</details>
-
 ## Features
 
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
@@ -49,14 +36,14 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 | CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
 | Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
-Save states, CHD images, and disc swapping are not supported. Memory-card saves must be made at a save point or through the game's own menu. See [testing](docs/TESTING.md) and [performance](docs/PERFORMANCE.md) for coverage and measurement details.
+Save states, CHD images, and disc swapping are not supported. Memory-card saves must be made at a save point or through the game's own menu.
 
 ## Getting Started
 
 ### Requirements
 
 - Rust **1.95 or newer** and Cargo. A release build is recommended for running games.
-- The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for Linux build dependencies and the [desktop integration guide](packaging/README.md) for optional launcher installation.
+- The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for the Linux, Windows, and macOS build configurations.
 - Vulkan rendering requires a physical Vulkan-capable GPU and driver. The default software renderer does not require Vulkan hardware.
 - Bring your own BIOS and game images; they are not supplied by this project.
 
@@ -76,7 +63,7 @@ Without media, Eidoryn opens its original built-in demo without requiring a BIOS
 
 Choose **Settings → Appearance → Language** to switch between **English** and **简体中文** immediately. The choice is saved for the next launch. On first launch, a Chinese locale selects Simplified Chinese; other locales use English.
 
-Use `--language en` or `--language zh-CN` to override the language for one session. See [interface language settings](docs/UI.md#界面语言) for configuration paths and translation scope.
+Use `--language en` or `--language zh-CN` to override the language for one session.
 
 Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are also saved. CLI options override saved preferences for the current session; for example, `--theme ocean --volume 60 --crt soft`. Enable **Settings → Graphics → Clean fullscreen** to hide controls while fullscreen, or use `--fullscreen --clean-fullscreen`.
 
@@ -117,6 +104,8 @@ With default features disabled, the core and CLI use only the Rust standard libr
 | `Q` / `E` | L1 / R1 |
 | `A` / `F` | L2 / R2 |
 
+Open **Settings (F8) → Controller** to enable turbo for individual action or shoulder buttons. Hold the corresponding keyboard key to repeat; release to stop. Choose 5, 10, 15, or 20 presses per second. Turbo is off by default, and button/rate choices are saved. Directions, Start, and Select keep their normal behavior.
+
 | Shortcut | Action |
 | --- | --- |
 | `Space` | Run / pause |
@@ -144,20 +133,12 @@ The emulation worker owns the PS1 machine; the interface communicates through co
 
 ## Documentation
 
-Most detailed hardware documents are currently in Chinese.
+The architecture document is currently in Chinese.
 
 | Document | Contents |
 | --- | --- |
 | [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
-| [Desktop workspaces](docs/UI.md) | Console, debugger, game view, and settings |
-| [Memory by module](docs/UI-MEMORY-MODULES.md) | Measurements, optional debugger, and resource loading |
-| [Renderer memory](docs/RENDERER-MEMORY.md) | Runtime switching, process RSS, and Vulkan allocation costs |
-| [Timing](docs/TIMING.md) · [Rendering](docs/RENDERING.md) · [JIT](docs/JIT.md) | CPU/device cycles, graphics backends, and CPU execution |
-| [Audio](docs/AUDIO.md) · [Memory cards](docs/SAVES.md) | Output, persistence, and limitations |
-| [Theme plugins](docs/THEMES.md) | Built-in themes and the custom JSON format |
-| [Testing](docs/TESTING.md) · [Performance](docs/PERFORMANCE.md) | Validation, benchmarks, and their scope |
-| [Linux desktop integration](packaging/README.md) · [Third-party information](THIRD_PARTY.md) | Launcher installation, dependencies, and hardware references |
-| [Contributing](docs/CONTRIBUTING.md) | Feature branches, commits, and validation |
+| [Third-party information](THIRD_PARTY.md) | Dependencies and hardware references |
 
 ## Roadmap
 

@@ -21,8 +21,10 @@ with tempfile.TemporaryDirectory() as temporary:
     shutil.copy2(args.binary, stage / args.binary.name)
     for filename in ['README.md', 'README.zh-CN.md', 'LICENSE', 'LICENSE-MIT', 'THIRD_PARTY.md']:
         shutil.copy2(root / filename, stage / filename)
-    for directory in ['assets', 'plugins', 'packaging', 'docs']:
+    for directory in ['assets', 'plugins']:
         shutil.copytree(root / directory, stage / directory)
+    (stage / 'docs').mkdir()
+    shutil.copy2(root / 'docs' / 'ARCHITECTURE.md', stage / 'docs' / 'ARCHITECTURE.md')
     (stage / 'BUILD.txt').write_text(
         f'Eidoryn {args.label}\n'
         'Experimental project developed with extensive AI assistance. '

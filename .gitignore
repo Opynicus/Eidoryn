@@ -19,3 +19,7 @@ test-assets/
 
 /dist/
 __pycache__/
+
+# Keep docs/ limited to the architecture document.
+/docs/*
+!/docs/ARCHITECTURE.md

@@ -1,5 +1,5 @@
 use super::{
-    Desktop, WorkspacePage,
+    Desktop, SettingsTab, WorkspacePage,
     components::{action, button, icon_button, label},
     icons::icon,
 };
@@ -497,31 +497,25 @@ impl Desktop {
                     .gap_2()
                     .border_b_1()
                     .border_color(rgb(p.border))
-                    .child(
-                        button(
-                            &self.fonts,
-                            p,
-                            "tab-graphics",
-                            self.tr(Text::GraphicsSettings),
-                            !self.appearance_open,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.appearance_open = false;
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        button(
-                            &self.fonts,
-                            p,
-                            "tab-appearance",
-                            self.tr(Text::Appearance),
-                            self.appearance_open,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.appearance_open = true;
-                            cx.notify();
-                        })),
+                    .children(
+                        [
+                            (
+                                "tab-graphics",
+                                Text::GraphicsSettings,
+                                SettingsTab::Graphics,
+                            ),
+                            ("tab-appearance", Text::Appearance, SettingsTab::Appearance),
+                            ("tab-controller", Text::Controller, SettingsTab::Controller),
+                        ]
+                        .into_iter()
+                        .map(|(id, title, tab)| {
+                            button(&self.fonts, p, id, self.tr(title), self.settings_tab == tab)
+                                .debug_selector(move || id.into())
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.settings_tab = tab;
+                                    cx.notify();
+                                }))
+                        }),
                     ),
             )
             .child(label(p, self.tr(Text::KeyboardHint)).px_5().py_2())
@@ -538,10 +532,10 @@ impl Desktop {
                             .flex_col()
                             .gap_4()
                             .children(self.notice_banner())
-                            .child(if self.appearance_open {
-                                self.appearance(cx)
-                            } else {
-                                self.graphics_panel(cx)
+                            .child(match self.settings_tab {
+                                SettingsTab::Graphics => self.graphics_panel(cx),
+                                SettingsTab::Appearance => self.appearance(cx),
+                                SettingsTab::Controller => self.controller_panel(cx),
                             }),
                     ),
             )

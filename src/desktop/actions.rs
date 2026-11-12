@@ -1,4 +1,4 @@
-use super::{Desktop, WorkspacePage};
+use super::{Desktop, SettingsTab, WorkspacePage};
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::systems::ps1::runner::Command;
 use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
@@ -40,7 +40,7 @@ impl Desktop {
     }
 
     pub(super) fn command(&mut self, command: Command, cx: &mut Context<Self>) {
-        let input_only = matches!(command, Command::SetButtons(_));
+        let input_only = matches!(command, Command::SetButtons(_) | Command::SetTurbo(_));
         if matches!(
             command,
             Command::Reset
@@ -281,7 +281,11 @@ impl Desktop {
     pub(super) fn open_settings(&mut self, appearance: bool, cx: &mut Context<Self>) {
         self.release_buttons(cx);
         self.graphics.open = true;
-        self.appearance_open = appearance;
+        self.settings_tab = if appearance {
+            SettingsTab::Appearance
+        } else {
+            SettingsTab::Graphics
+        };
         cx.notify();
     }
 
