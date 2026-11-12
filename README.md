@@ -47,7 +47,7 @@ Save states, CHD images, and disc swapping are not supported. Memory-card saves 
 - Vulkan rendering requires a physical Vulkan-capable GPU and driver. The default software renderer does not require Vulkan hardware.
 - Bring your own BIOS and game images; they are not supplied by this project.
 
-The [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) currently publishes Linux x86-64 Wayland and X11 desktop archives with SHA-256 checksums to [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases). Choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. Branch pushes and pull requests validate both builds; only `v*` tags publish a release. Other platforms remain available to build from source.
+The [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) currently publishes Linux x86-64 Wayland and X11 desktop archives with SHA-256 checksums to [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases). Choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. Pushes to `main` and pull requests validate both builds; only `v*` tags publish a release. Other platforms remain available to build from source.
 
 ### Build and launch
 

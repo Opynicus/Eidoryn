@@ -47,7 +47,7 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 - Vulkan 模式需要支持 Vulkan 的物理显卡和驱动；默认软件模式不要求 Vulkan 硬件。
 - 启动游戏需要自行准备相应 BIOS 和镜像。项目不提供这些文件。
 
-[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)当前仅向 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) 发布 Linux x86-64 Wayland 和 X11 桌面压缩包及其 SHA-256 校验文件。请按桌面会话选择对应版本，需要 Ubuntu 24.04 或兼容的更新系统。分支推送和 PR 验证两个版本，仅 `v*` 标签触发发布。其他平台仍可从源码构建。
+[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)当前仅向 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) 发布 Linux x86-64 Wayland 和 X11 桌面压缩包及其 SHA-256 校验文件。请按桌面会话选择对应版本，需要 Ubuntu 24.04 或兼容的更新系统。推送到 `main` 和 PR 时验证两个版本，仅 `v*` 标签触发发布。其他平台仍可从源码构建。
 
 ### 构建与启动
 
