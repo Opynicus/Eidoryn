@@ -1,17 +1,19 @@
-use super::icons::icon;
+use super::{fonts::Fonts, icons::icon};
 use eidoryn_psx::theme::Palette;
 use gpui::{SharedString, div, prelude::*, px, rgb};
 
 pub(super) fn button(
+    fonts: &Fonts,
     p: &Palette,
     id: impl Into<gpui::ElementId>,
     text: impl Into<SharedString>,
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
-    action(p, id, text, None, primary)
+    action(fonts, p, id, text, None, primary)
 }
 
 pub(super) fn action(
+    fonts: &Fonts,
     p: &Palette,
     id: impl Into<gpui::ElementId>,
     text: impl Into<SharedString>,
@@ -39,7 +41,7 @@ pub(super) fn action(
         .rounded_lg()
         .cursor_pointer()
         .text_sm()
-        .font_weight(gpui::FontWeight::MEDIUM)
+        .font(fonts.medium())
         .bg(rgb(background))
         .border_1()
         .border_color(rgb(background))
@@ -122,18 +124,18 @@ pub(super) fn label(p: &Palette, text: impl Into<SharedString>) -> gpui::Div {
     div().text_xs().text_color(rgb(p.muted)).child(text.into())
 }
 
-pub(super) fn heading(p: &Palette, title: &'static str, detail: &'static str) -> gpui::Div {
+pub(super) fn heading(
+    fonts: &Fonts,
+    p: &Palette,
+    title: &'static str,
+    detail: &'static str,
+) -> gpui::Div {
     div()
         .flex()
         .items_center()
         .justify_between()
         .gap_3()
-        .child(
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title),
-        )
+        .child(div().text_sm().font(fonts.semibold()).child(title))
         .child(label(p, detail))
 }
 

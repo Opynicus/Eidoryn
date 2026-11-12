@@ -39,14 +39,14 @@ impl Desktop {
                             .child(
                                 div()
                                     .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .font(self.fonts.bold())
                                     .text_color(rgb(p.primary))
                                     .child(self.tr(Text::DebugEyebrow)),
                             )
                             .child(
                                 div()
                                     .text_2xl()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font(self.fonts.semibold())
                                     .child(self.tr(Text::DebugWorkspace)),
                             )
                             .child(label(p, self.tr(Text::DebugHint))),
@@ -57,6 +57,7 @@ impl Desktop {
                             .gap_2()
                             .child(
                                 action(
+                                    &self.fonts,
                                     p,
                                     "debug-back",
                                     self.tr(Text::BackConsole),
@@ -71,6 +72,7 @@ impl Desktop {
                             )
                             .child(
                                 action(
+                                    &self.fonts,
                                     p,
                                     "debug-run",
                                     if self.snapshot.running {
@@ -113,7 +115,12 @@ impl Desktop {
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(p, self.tr(Text::Instructions), "MIPS I"))
+            .child(heading(
+                &self.fonts,
+                p,
+                self.tr(Text::Instructions),
+                "MIPS I",
+            ))
             .child(
                 div()
                     .flex()
@@ -131,7 +138,7 @@ impl Desktop {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .font_family("monospace")
+                    .font(self.fonts.mono())
                     .children(self.snapshot.disassembly.iter().enumerate().map(
                         |(index, (address, word, instruction))| {
                             div()
@@ -171,19 +178,27 @@ impl Desktop {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        action(p, "debug-step", self.tr(Text::Step), Some("skip"), false).on_click(
-                            cx.listener(|view, _, _, cx| view.command(Command::Step, cx)),
-                        ),
+                        action(
+                            &self.fonts,
+                            p,
+                            "debug-step",
+                            self.tr(Text::Step),
+                            Some("skip"),
+                            false,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Step, cx))),
                     )
                     .child(
-                        button(p, "debug-slice", self.tr(Text::Slice), false).on_click(
-                            cx.listener(|view, _, _, cx| view.command(Command::Slice, cx)),
-                        ),
+                        button(&self.fonts, p, "debug-slice", self.tr(Text::Slice), false)
+                            .on_click(
+                                cx.listener(|view, _, _, cx| view.command(Command::Slice, cx)),
+                            ),
                     )
                     .child(
-                        button(p, "debug-reset", self.tr(Text::Reset), false).on_click(
-                            cx.listener(|view, _, _, cx| view.command(Command::Reset, cx)),
-                        ),
+                        button(&self.fonts, p, "debug-reset", self.tr(Text::Reset), false)
+                            .on_click(
+                                cx.listener(|view, _, _, cx| view.command(Command::Reset, cx)),
+                            ),
                     ),
             )
     }
@@ -194,7 +209,7 @@ impl Desktop {
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(p, self.tr(Text::Registers), "R3000A"))
+            .child(heading(&self.fonts, p, self.tr(Text::Registers), "R3000A"))
             .child(
                 div()
                     .p_3()
@@ -205,7 +220,7 @@ impl Desktop {
                         div()
                             .mt_1()
                             .text_xl()
-                            .font_family("monospace")
+                            .font(self.fonts.mono())
                             .text_color(rgb(p.primary))
                             .child(format!("{:08X}", cpu.pc)),
                     ),
@@ -214,7 +229,7 @@ impl Desktop {
                 div()
                     .flex()
                     .flex_col()
-                    .font_family("monospace")
+                    .font(self.fonts.mono())
                     .children((0..16).map(|row| {
                         div()
                             .flex()
@@ -256,7 +271,12 @@ impl Desktop {
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(p, self.tr(Text::GpuStatus), "PLAYSTATION"))
+            .child(heading(
+                &self.fonts,
+                p,
+                self.tr(Text::GpuStatus),
+                "PLAYSTATION",
+            ))
             .child(pair(p, self.tr(Text::Renderer), self.renderer_label()))
             .child(pair(
                 p,

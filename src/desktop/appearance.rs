@@ -15,7 +15,7 @@ impl Desktop {
             .child(
                 div()
                     .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font(self.fonts.semibold())
                     .child(self.tr(Text::Language)),
             )
             .child(label(p, self.tr(Text::LanguageHint)))
@@ -23,7 +23,7 @@ impl Desktop {
             .child(
                 div()
                     .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font(self.fonts.semibold())
                     .child(self.tr(Text::Theme)),
             )
             .child(label(p, self.tr(Text::ThemeHint)))
@@ -82,6 +82,7 @@ impl Desktop {
             )
             .child(
                 action(
+                    &self.fonts,
                     p,
                     "load-theme",
                     self.tr(Text::LoadTheme),
@@ -103,8 +104,14 @@ impl Desktop {
             .into_iter()
             .enumerate()
             .map(|(index, (language, name))| {
-                super::components::button(p, ("language", index), name, self.language == language)
-                    .on_click(cx.listener(move |view, _, _, cx| view.set_language(language, cx)))
+                super::components::button(
+                    &self.fonts,
+                    p,
+                    ("language", index),
+                    name,
+                    self.language == language,
+                )
+                .on_click(cx.listener(move |view, _, _, cx| view.set_language(language, cx)))
             }),
         )
     }

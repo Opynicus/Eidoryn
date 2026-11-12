@@ -4,11 +4,13 @@ mod appearance;
 mod audio_controls;
 mod components;
 mod console;
+mod fonts;
 mod graphics;
 mod icons;
 mod probe;
 mod ps1_inspector;
 mod settings;
+mod sidebar;
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
 mod video;
@@ -148,6 +150,8 @@ fn open_window(
                         });
                         Desktop::start_snapshot_updates(cx);
                         Desktop {
+                            sidebar: None,
+                            fonts: fonts::Fonts::new(Arc::clone(cx.text_system())),
                             graphics: graphics::GraphicsControls::new(
                                 snapshot.renderer,
                                 options.graphics_open,
@@ -199,6 +203,8 @@ fn open_window(
 }
 
 struct Desktop {
+    sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
+    fonts: fonts::Fonts,
     language: eidoryn_psx::i18n::Language,
     preferences: eidoryn_psx::preferences::Preferences,
     preferences_path: Option<std::path::PathBuf>,

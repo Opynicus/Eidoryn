@@ -59,6 +59,7 @@ impl Desktop {
 
     pub(super) fn crt_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
         button(
+            &self.fonts,
             &self.themes.active().palette,
             "crt-filter",
             format!("CRT  {}", crt_label(self.language, self.crt.filter)),

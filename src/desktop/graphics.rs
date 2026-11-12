@@ -76,6 +76,7 @@ impl Desktop {
                 target_os = "linux"
             ));
         switch(
+            &self.fonts,
             &self.themes.active().palette,
             "jit-switch",
             self.tr(Text::Jit),
@@ -104,6 +105,7 @@ impl Desktop {
 
     fn clean_fullscreen_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         switch(
+            &self.fonts,
             &self.themes.active().palette,
             "clean-fullscreen",
             self.tr(Text::CleanFullscreen),
@@ -114,8 +116,33 @@ impl Desktop {
         .on_click(cx.listener(|view, _, _, cx| view.toggle_clean_fullscreen(cx)))
     }
 
+    fn crt_choices(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let fonts = &self.fonts;
+        div().flex().gap_2().children(
+            [
+                (CrtFilter::Off, self.tr(Text::Off)),
+                (CrtFilter::Soft, self.tr(Text::Soft)),
+                (CrtFilter::Classic, self.tr(Text::Classic)),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (filter, name))| {
+                button(
+                    fonts,
+                    p,
+                    ("crt-choice", index),
+                    name,
+                    self.crt_filter() == filter,
+                )
+                .on_click(cx.listener(move |view, _, _, cx| view.set_crt_filter(filter, cx)))
+            }),
+        )
+    }
+
     pub(super) fn graphics_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let fonts = &self.fonts;
         let hardware = self.snapshot.renderer == RendererMode::Vulkan;
         let ready = self.graphics.pending.is_none() && self.graphics.pending_cpu.is_none();
         let software_threads = self.graphics.software == RendererMode::Threaded;
@@ -126,37 +153,22 @@ impl Desktop {
             .child(
                 div()
                     .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font(self.fonts.semibold())
                     .child(self.tr(Text::Crt)),
             )
             .child(label(p, self.tr(Text::CrtHint)))
-            .child(
-                div().flex().gap_2().children(
-                    [
-                        (CrtFilter::Off, self.tr(Text::Off)),
-                        (CrtFilter::Soft, self.tr(Text::Soft)),
-                        (CrtFilter::Classic, self.tr(Text::Classic)),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (filter, name))| {
-                        button(p, ("crt-choice", index), name, self.crt_filter() == filter)
-                            .on_click(
-                                cx.listener(move |view, _, _, cx| view.set_crt_filter(filter, cx)),
-                            )
-                    }),
-                ),
-            )
+            .child(self.crt_choices(cx))
             .child(
                 div()
                     .mt_4()
                     .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font(self.fonts.semibold())
                     .child(self.tr(Text::Performance)),
             )
             .child(label(p, self.tr(Text::PerformanceHint)))
             .child(
                 switch(
+                    fonts,
                     p,
                     "vulkan-switch",
                     self.tr(Text::Vulkan),
@@ -177,6 +189,7 @@ impl Desktop {
             )
             .child(
                 switch(
+                    fonts,
                     p,
                     "threaded-switch",
                     self.tr(Text::Threaded),
@@ -217,6 +230,7 @@ impl Desktop {
 }
 
 fn switch(
+    fonts: &super::fonts::Fonts,
     p: &Palette,
     id: &'static str,
     title: &'static str,
@@ -249,12 +263,7 @@ fn switch(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .child(title),
-                )
+                .child(div().text_sm().font(fonts.medium()).child(title))
                 .child(label(p, detail)),
         )
         .child(
