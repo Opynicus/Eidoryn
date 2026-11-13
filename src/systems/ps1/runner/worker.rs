@@ -1,5 +1,5 @@
 //! PlayStation session scheduling and transitions. No frontend dependencies.
-use super::{Command, SharedSnapshot, Snapshot, SnapshotMode};
+use super::{Command, SharedSnapshot, Snapshot, SnapshotMode, pacing::Pacing};
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
@@ -31,7 +31,12 @@ pub(super) fn run(
     let mut worker = Worker::new(machine, auto_run, store, audio, mode);
     loop {
         let command = if worker.running {
-            match receiver.recv_timeout(worker.deadline.saturating_duration_since(Instant::now())) {
+            match receiver.recv_timeout(
+                worker
+                    .pacing
+                    .deadline
+                    .saturating_duration_since(Instant::now()),
+            ) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -90,9 +95,7 @@ struct Worker {
     running: bool,
     message: Option<String>,
     bios_path: Option<PathBuf>,
-    deadline: Instant,
-    frame_deadline: Instant,
-    next_frame: u64,
+    pacing: Pacing,
     last_publish: Instant,
     epoch: Instant,
     epoch_frames: u64,
@@ -114,7 +117,7 @@ impl Worker {
         machine.bus.spu.drain_audio().for_each(drop);
         let now = Instant::now();
         let frames = machine.bus.gpu.frames;
-        let frame_interval = Duration::from_secs_f64(1.0 / machine.bus.gpu.nominal_fps());
+        let pacing = Pacing::new(now, frames, machine.bus.gpu.nominal_fps());
         let mut input = PadInput::default();
         input.set_buttons(machine.bus.sio.buttons(), machine.bus.elapsed_cycles());
         Self {
@@ -128,9 +131,7 @@ impl Worker {
             running,
             message: None,
             bios_path: None,
-            deadline: now,
-            frame_deadline: now + frame_interval,
-            next_frame: frames + 1,
+            pacing,
             last_publish: now,
             epoch: now,
             epoch_frames: frames,
@@ -144,10 +145,11 @@ impl Worker {
 
     fn reset_pacing(&mut self) {
         let now = Instant::now();
-        self.deadline = now;
-        self.frame_deadline =
-            now + Duration::from_secs_f64(1.0 / self.machine.bus.gpu.nominal_fps());
-        self.next_frame = self.machine.bus.gpu.frames + 1;
+        self.pacing = Pacing::new(
+            now,
+            self.machine.bus.gpu.frames,
+            self.machine.bus.gpu.nominal_fps(),
+        );
         self.epoch = now;
         self.epoch_frames = self.machine.bus.gpu.frames;
         self.count = 0;
@@ -340,7 +342,8 @@ impl Worker {
                 Ok(n) => {
                     self.count += 1;
                     // The built-in demo explicitly yields at a drawn frame.
-                    if n < INSTRUCTIONS_PER_SLICE || self.machine.bus.gpu.frames >= self.next_frame
+                    if n < INSTRUCTIONS_PER_SLICE
+                        || self.machine.bus.gpu.frames >= self.pacing.next_frame
                     {
                         frame_finished = true;
                         break;
@@ -358,19 +361,12 @@ impl Worker {
             }
         }
         self.update_input();
-        let now = Instant::now();
-        self.deadline = now;
-        if frame_finished {
-            // Preserve small scheduling jitter; discard a backlog longer than one frame.
-            self.deadline = self.frame_deadline.max(now);
-            let interval = Duration::from_secs_f64(1.0 / self.machine.bus.gpu.nominal_fps());
-            self.frame_deadline = if now.saturating_duration_since(self.frame_deadline) > interval {
-                now + interval
-            } else {
-                self.frame_deadline + interval
-            };
-            self.next_frame = self.machine.bus.gpu.frames + 1;
-        }
+        self.pacing.finish_batch(
+            Instant::now(),
+            frame_finished,
+            self.machine.bus.gpu.frames,
+            self.machine.bus.gpu.nominal_fps(),
+        );
         frame_finished || !self.running
     }
 
@@ -444,11 +440,11 @@ mod tests {
         );
         audio.push([[123, -123]; 128]);
         let queued = audio.stats().queued_frames;
-        let deadline = worker.frame_deadline;
+        let deadline = worker.pacing.frame_deadline;
         worker.apply(Command::SetTurbo(TurboConfig::new(0x8000, 10).unwrap()));
         worker.apply(Command::SetButtons(0x8020));
         assert_eq!(audio.stats().queued_frames, queued);
-        assert_eq!(worker.frame_deadline, deadline);
+        assert_eq!(worker.pacing.frame_deadline, deadline);
         assert_eq!(worker.machine.bus.sio.buttons(), 0x8020);
         worker.machine.bus.tick(CPU_CLOCK_HZ / 20).unwrap();
         worker.apply(Command::SetButtons(0x8020));
@@ -532,8 +528,8 @@ mod tests {
             SnapshotMode::Display,
         );
         worker.message = Some("Previous notification".into());
-        let deadline = worker.deadline;
-        let frame_deadline = worker.frame_deadline;
+        let deadline = worker.pacing.deadline;
+        let frame_deadline = worker.pacing.frame_deadline;
         let pc = worker.machine.cpu.pc;
         for mode in [SnapshotMode::Debug, SnapshotMode::Display] {
             let queued = audio.stats().queued_frames;
@@ -552,8 +548,8 @@ mod tests {
             assert!(worker.running);
             assert_eq!(worker.message.as_deref(), Some("Previous notification"));
             assert_eq!(worker.machine.cpu.pc, pc);
-            assert_eq!(worker.deadline, deadline);
-            assert_eq!(worker.frame_deadline, frame_deadline);
+            assert_eq!(worker.pacing.deadline, deadline);
+            assert_eq!(worker.pacing.frame_deadline, frame_deadline);
             assert_eq!(audio.stats().queued_frames, queued + new_samples as usize);
         }
     }

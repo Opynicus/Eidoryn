@@ -1,4 +1,5 @@
 //! One emulation thread owns the machine; clients send commands and consume snapshots.
+mod pacing;
 mod snapshot;
 mod worker;
 
