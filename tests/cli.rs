@@ -40,6 +40,72 @@ fn help_does_not_require_display_server() {
 }
 
 #[test]
+fn help_and_conflicting_options_preserve_error_precedence() {
+    for args in [
+        vec!["--headless", "--fullscreen", "--help", "--unknown"],
+        vec!["--card1", "unused.mcd", "--help"],
+    ] {
+        let output = cli().args(args).output().unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+    }
+    for (args, expected) in [
+        (
+            vec!["--unknown", "--help"],
+            "Unknown argument: --unknown. Use --help.",
+        ),
+        (vec!["--exe", "a", "--exe"], "Duplicate --exe"),
+        (
+            vec!["--card1", "unused.mcd", "--inspect-disc", "missing.iso"],
+            "--no-memory-cards cannot be combined with --card1/--card2",
+        ),
+        (
+            vec![
+                "--inspect-disc",
+                "missing.iso",
+                "--export-demo",
+                "unused.exe",
+            ],
+            "--inspect-disc is a standalone operation",
+        ),
+        (
+            vec!["--export-demo", "unused.exe", "--headless"],
+            "EXE export is a standalone operation",
+        ),
+        (
+            vec!["--frames", "1", "--fast-boot"],
+            "--frames, --dump-frame and --dump-audio require --headless",
+        ),
+    ] {
+        let output = cli().args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!("eidoryn: {expected}\n")
+        );
+    }
+}
+
+#[test]
+fn repeated_frame_count_uses_last_value_and_export_never_overwrites() {
+    let directory = TempDirectory::new();
+    let path = directory.0.join("demo.exe");
+    let export = || cli().arg("--export-demo").arg(&path).output().unwrap();
+    assert!(export().status.success());
+    let original = std::fs::read(&path).unwrap();
+    assert!(!export().status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    let output = cli()
+        .args(["--headless", "--frames", "1", "--frames", "2", "--exe"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("slices=2 instructions=40000"));
+}
+
+#[test]
 fn invalid_options_fail_without_opening_a_window() {
     for args in [
         vec!["--unknown"],
