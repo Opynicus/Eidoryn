@@ -1,5 +1,5 @@
 //! PlayStation session scheduling and transitions. No frontend dependencies.
-use super::{Command, SharedSnapshot, Snapshot, SnapshotMode};
+use super::{Command, SharedSnapshot, Snapshot, SnapshotMode, pacing::FramePacing};
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
@@ -10,7 +10,7 @@ use crate::systems::ps1::{
 };
 use eidoryn_host::audio::AudioBuffer;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -31,7 +31,12 @@ pub(super) fn run(
     let mut worker = Worker::new(machine, auto_run, store, audio, mode);
     loop {
         let command = if worker.running {
-            match receiver.recv_timeout(worker.deadline.saturating_duration_since(Instant::now())) {
+            match receiver.recv_timeout(
+                worker
+                    .pacing
+                    .deadline()
+                    .saturating_duration_since(Instant::now()),
+            ) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -90,9 +95,7 @@ struct Worker {
     running: bool,
     message: Option<String>,
     bios_path: Option<PathBuf>,
-    deadline: Instant,
-    frame_deadline: Instant,
-    next_frame: u64,
+    pacing: FramePacing,
     last_publish: Instant,
     epoch: Instant,
     epoch_frames: u64,
@@ -114,7 +117,7 @@ impl Worker {
         machine.bus.spu.drain_audio().for_each(drop);
         let now = Instant::now();
         let frames = machine.bus.gpu.frames;
-        let frame_interval = Duration::from_secs_f64(1.0 / machine.bus.gpu.nominal_fps());
+        let pacing = FramePacing::new(now, frames, machine.bus.gpu.nominal_fps());
         let mut input = PadInput::default();
         input.set_buttons(machine.bus.sio.buttons(), machine.bus.elapsed_cycles());
         Self {
@@ -128,9 +131,7 @@ impl Worker {
             running,
             message: None,
             bios_path: None,
-            deadline: now,
-            frame_deadline: now + frame_interval,
-            next_frame: frames + 1,
+            pacing,
             last_publish: now,
             epoch: now,
             epoch_frames: frames,
@@ -144,10 +145,11 @@ impl Worker {
 
     fn reset_pacing(&mut self) {
         let now = Instant::now();
-        self.deadline = now;
-        self.frame_deadline =
-            now + Duration::from_secs_f64(1.0 / self.machine.bus.gpu.nominal_fps());
-        self.next_frame = self.machine.bus.gpu.frames + 1;
+        self.pacing = FramePacing::new(
+            now,
+            self.machine.bus.gpu.frames,
+            self.machine.bus.gpu.nominal_fps(),
+        );
         self.epoch = now;
         self.epoch_frames = self.machine.bus.gpu.frames;
         self.count = 0;
@@ -190,7 +192,6 @@ impl Worker {
     }
 
     /// Returns true when the frontend should close after receiving the final snapshot.
-    #[allow(clippy::too_many_lines)] // Keep session command transitions together.
     fn apply(&mut self, command: Command) -> bool {
         if matches!(command, Command::SetRenderer(_)) {
             // Also acknowledge a request rejected by the card-flush guard below.
@@ -220,19 +221,7 @@ impl Worker {
                 self.update_input();
             }
             Command::SetCpuMode(mode) => self.select_cpu(mode),
-            Command::SetRenderer(mode) => {
-                match self.machine.bus.gpu.set_renderer(mode) {
-                    Ok(()) => {
-                        self.renderer = mode;
-                        self.message = None;
-                    }
-                    Err(error) => {
-                        self.message = Some(format!("Cannot switch GPU renderer: {error}"));
-                        self.running = false;
-                    }
-                }
-                self.reset_pacing();
-            }
+            Command::SetRenderer(mode) => self.select_renderer(mode),
             Command::Toggle => {
                 self.message = None;
                 self.running = !self.running;
@@ -266,39 +255,12 @@ impl Worker {
                 self.reset_pacing();
             }
             Command::FlushCards => self.message = None,
-            Command::Load { path, bios } => {
-                self.running = false;
-                self.release_input();
-                match load_path(&path, bios) {
-                    Ok(loaded) => {
-                        if self.replace_machine(loaded) && bios {
-                            self.bios_path = Some(path);
-                        }
-                        self.reset_pacing();
-                    }
-                    Err(error) => self.message = Some(error),
-                }
-            }
+            Command::Load { path, bios } => self.load_image(path, bios),
             Command::LoadDisc {
                 path,
                 bios,
                 fast_boot,
-            } => {
-                self.running = false;
-                self.release_input();
-                match load_disc(&path, bios.as_deref(), fast_boot) {
-                    Ok(loaded) => {
-                        if self.replace_machine(loaded) {
-                            if bios.is_some() {
-                                self.bios_path = bios;
-                            }
-                            self.running = fast_boot;
-                        }
-                    }
-                    Err(error) => self.message = Some(error),
-                }
-                self.reset_pacing();
-            }
+            } => self.load_disc(&path, bios, fast_boot),
             Command::RequestClose | Command::Shutdown => {
                 self.running = false;
                 self.release_input();
@@ -306,6 +268,51 @@ impl Worker {
             }
         }
         false
+    }
+
+    fn select_renderer(&mut self, mode: RendererMode) {
+        match self.machine.bus.gpu.set_renderer(mode) {
+            Ok(()) => {
+                self.renderer = mode;
+                self.message = None;
+            }
+            Err(error) => {
+                self.message = Some(format!("Cannot switch GPU renderer: {error}"));
+                self.running = false;
+            }
+        }
+        self.reset_pacing();
+    }
+
+    fn load_image(&mut self, path: PathBuf, bios: bool) {
+        self.running = false;
+        self.release_input();
+        match load_path(&path, bios) {
+            Ok(loaded) => {
+                if self.replace_machine(loaded) && bios {
+                    self.bios_path = Some(path);
+                }
+                self.reset_pacing();
+            }
+            Err(error) => self.message = Some(error),
+        }
+    }
+
+    fn load_disc(&mut self, path: &Path, bios: Option<PathBuf>, fast_boot: bool) {
+        self.running = false;
+        self.release_input();
+        match load_disc(path, bios.as_deref(), fast_boot) {
+            Ok(loaded) => {
+                if self.replace_machine(loaded) {
+                    if bios.is_some() {
+                        self.bios_path = bios;
+                    }
+                    self.running = fast_boot;
+                }
+            }
+            Err(error) => self.message = Some(error),
+        }
+        self.reset_pacing();
     }
 
     fn flush_cards(&mut self, force: bool) -> bool {
@@ -340,7 +347,8 @@ impl Worker {
                 Ok(n) => {
                     self.count += 1;
                     // The built-in demo explicitly yields at a drawn frame.
-                    if n < INSTRUCTIONS_PER_SLICE || self.machine.bus.gpu.frames >= self.next_frame
+                    if n < INSTRUCTIONS_PER_SLICE
+                        || self.pacing.frame_finished(self.machine.bus.gpu.frames)
                     {
                         frame_finished = true;
                         break;
@@ -359,18 +367,12 @@ impl Worker {
         }
         self.update_input();
         let now = Instant::now();
-        self.deadline = now;
-        if frame_finished {
-            // Preserve small scheduling jitter; discard a backlog longer than one frame.
-            self.deadline = self.frame_deadline.max(now);
-            let interval = Duration::from_secs_f64(1.0 / self.machine.bus.gpu.nominal_fps());
-            self.frame_deadline = if now.saturating_duration_since(self.frame_deadline) > interval {
-                now + interval
-            } else {
-                self.frame_deadline + interval
-            };
-            self.next_frame = self.machine.bus.gpu.frames + 1;
-        }
+        self.pacing.finish_batch(
+            now,
+            self.machine.bus.gpu.frames,
+            self.machine.bus.gpu.nominal_fps(),
+            frame_finished,
+        );
         frame_finished || !self.running
     }
 
@@ -433,6 +435,41 @@ mod tests {
     use crate::systems::ps1::{input::TurboConfig, timing::CPU_CLOCK_HZ};
 
     #[test]
+    fn failed_loads_keep_the_session_and_existing_pacing_contract() {
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        worker.machine.bus.ram[0x400] = 123;
+        worker.bios_path = Some(PathBuf::from("previous-bios.bin"));
+        let before = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        worker.pacing = FramePacing::new(before, 0, 60.0);
+        worker.apply(Command::SetButtons(0x8000));
+        worker.apply(Command::Load {
+            path: PathBuf::from("missing-transition-test.exe"),
+            bios: false,
+        });
+        assert_eq!(worker.pacing.deadline(), before);
+        assert!(!worker.running);
+        assert!(worker.message.is_some());
+        assert_eq!(worker.machine.bus.sio.buttons(), 0);
+        assert_eq!(worker.machine.bus.ram[0x400], 123);
+        worker.apply(Command::LoadDisc {
+            path: PathBuf::from("missing-transition-test.iso"),
+            bios: None,
+            fast_boot: true,
+        });
+        assert!(worker.pacing.deadline() > before);
+        assert!(!worker.running);
+        assert!(worker.message.is_some());
+        assert_eq!(worker.machine.bus.ram[0x400], 123);
+        assert_eq!(worker.bios_path, Some(PathBuf::from("previous-bios.bin")));
+    }
+
+    #[test]
     fn turbo_reaches_sio_without_clearing_audio_and_survives_session_reset() {
         let audio = AudioBuffer::default();
         let mut worker = Worker::new(
@@ -444,11 +481,11 @@ mod tests {
         );
         audio.push([[123, -123]; 128]);
         let queued = audio.stats().queued_frames;
-        let deadline = worker.frame_deadline;
+        let pacing = worker.pacing;
         worker.apply(Command::SetTurbo(TurboConfig::new(0x8000, 10).unwrap()));
         worker.apply(Command::SetButtons(0x8020));
         assert_eq!(audio.stats().queued_frames, queued);
-        assert_eq!(worker.frame_deadline, deadline);
+        assert_eq!(worker.pacing, pacing);
         assert_eq!(worker.machine.bus.sio.buttons(), 0x8020);
         worker.machine.bus.tick(CPU_CLOCK_HZ / 20).unwrap();
         worker.apply(Command::SetButtons(0x8020));
@@ -532,8 +569,7 @@ mod tests {
             SnapshotMode::Display,
         );
         worker.message = Some("Previous notification".into());
-        let deadline = worker.deadline;
-        let frame_deadline = worker.frame_deadline;
+        let pacing = worker.pacing;
         let pc = worker.machine.cpu.pc;
         for mode in [SnapshotMode::Debug, SnapshotMode::Display] {
             let queued = audio.stats().queued_frames;
@@ -552,8 +588,7 @@ mod tests {
             assert!(worker.running);
             assert_eq!(worker.message.as_deref(), Some("Previous notification"));
             assert_eq!(worker.machine.cpu.pc, pc);
-            assert_eq!(worker.deadline, deadline);
-            assert_eq!(worker.frame_deadline, frame_deadline);
+            assert_eq!(worker.pacing, pacing);
             assert_eq!(audio.stats().queued_frames, queued + new_samples as usize);
         }
     }
