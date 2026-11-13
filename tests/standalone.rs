@@ -478,6 +478,40 @@ fn cue_rejects_invalid_paths_indices_and_unbounded_extents() {
 }
 
 #[test]
+fn cue_reports_text_errors_before_opening_missing_sources() {
+    let fixture = Fixture::new();
+    for (index, (text, expected)) in [
+        (
+            "FILE missing.bin BINARY\nBOGUS",
+            "Unsupported CUE directive BOGUS",
+        ),
+        ("FILE missing.bin BINARY", "CUE has no tracks"),
+        (
+            "FILE missing.bin BINARY\nTRACK 02 AUDIO",
+            "CUE tracks must be consecutive, starting at 01",
+        ),
+        (
+            "FILE missing.bin BINARY\nTRACK 01 AUDIO\nINDEX 01 bad:00:00:00",
+            "CUE time must be MM:SS:FF",
+        ),
+        (
+            "FILE missing.bin BINARY\nTRACK 01 AUDIO\nINDEX 01 bad:00:00",
+            "Invalid CUE time",
+        ),
+        (
+            "FILE missing.bin BINARY\nTRACK 01 AUDIO\nINDEX 01 00:60:00",
+            "CUE time is out of range",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = fixture.image(&format!("syntax-{index}.cue"), text.as_bytes());
+        assert_eq!(DiscImage::open(&path).unwrap_err().to_string(), expected);
+    }
+}
+
+#[test]
 fn delayed_commands_wait_for_interrupt_ack_and_irq_latches() {
     let fixture = Fixture::new();
     let path = fixture.image("data.iso", &vec![0; 2048]);
