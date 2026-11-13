@@ -29,6 +29,7 @@ Eidoryn (CLI / GPUI)
 | `src/systems/ps1/media.rs` | BIOS/EXE 读取、校验与 PS1 会话构建 |
 | `src/systems/ps1/card_file.rs` | PS1 卡文件锁、批量同步和原子替换 |
 | `src/systems/ps1/runner/` | PS1 命令、会话线程、持久化边界、快照与调试状态 |
+| `src/systems/ps1/runner/pacing.rs` | 私有帧节奏状态；显式接收时间、帧计数和目标帧率，不处理会话、统计或 I/O |
 | `src/desktop/` | GPUI 生命周期、窗口、Material 组件、音量、主题、CRT 合成和操作；PS1 调试面板明确放在 `ps1_inspector.rs` |
 | `src/main.rs`、`src/app.rs` | 进程入口、退出码与共享产品标识 |
 | `src/cli/args.rs` | 手写参数解析、默认配置和兼容性校验；不访问文件系统 |
