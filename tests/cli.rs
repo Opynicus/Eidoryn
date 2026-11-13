@@ -280,6 +280,36 @@ fn exported_guest_program_loads_through_exe_path() {
 }
 
 #[test]
+fn standalone_exports_never_overwrite_existing_files() {
+    let directory = TempDirectory::new();
+    for (option, bytes) in [
+        ("--export-demo", eidoryn_psx::demo::executable()),
+        (
+            "--export-disc-test",
+            eidoryn_psx::demo::disc_probe_executable(),
+        ),
+    ] {
+        let path = directory.0.join(format!("{option}.exe"));
+        let export = || cli().arg(option).arg(&path).output().unwrap();
+        assert!(export().status.success());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(!export().status.success());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn headless_defaults_to_120_slices() {
+    let output = cli().arg("--headless").output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("slices=120 "));
+}
+
+#[test]
 fn headless_failure_keeps_diagnostics_and_exports_last_frame() {
     let directory = TempDirectory::new();
     let path = directory.0.join("fault.exe");

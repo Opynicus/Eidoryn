@@ -30,7 +30,9 @@ Eidoryn (CLI / GPUI)
 | `src/systems/ps1/card_file.rs` | PS1 卡文件锁、批量同步和原子替换 |
 | `src/systems/ps1/runner/` | PS1 命令、会话线程、持久化边界、快照与调试状态 |
 | `src/desktop/` | GPUI 生命周期、窗口、Material 组件、音量、主题、CRT 合成和操作；PS1 调试面板明确放在 `ps1_inspector.rs` |
-| `src/main.rs`、`src/app.rs` | CLI 分派与共享产品标识 |
+| `src/main.rs`、`src/app.rs` | 进程入口、退出码与共享产品标识 |
+| `src/cli/args.rs` | 手写参数解析、默认配置和兼容性校验；不访问文件系统 |
+| `src/cli/mod.rs`、`headless.rs` | 启动分派、独立检查/导出，以及无窗口执行与输出 |
 | `src/lib.rs` | 应用模块入口和历史 `eidoryn_psx` API 兼容重导出 |
 
 ## API 兼容与后续核心接入

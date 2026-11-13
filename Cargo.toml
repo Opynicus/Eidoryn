@@ -35,6 +35,11 @@ serde_json = { version = "1.0", optional = true }
 # GPUI's old xattr dependency still requires the ENOATTR alias on Linux.
 libc = { version = "=0.2.186", optional = true }
 
+[patch.crates-io]
+# Fix the private proc_macro re-export in GPUI's transitive dependency.
+# https://github.com/GnomedDev/proc-macro-error-2/pull/14
+proc-macro-error2 = { git = "https://github.com/GnomedDev/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }
+
 [profile.dev]
 debug = 0
 
