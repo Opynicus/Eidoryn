@@ -36,45 +36,53 @@ impl Desktop {
         if !self.debugger_enabled {
             return page.child(
                 card(p)
-                    .p_6()
+                    .px_6()
+                    .py_12()
+                    .items_center()
+                    .text_center()
                     .gap_3()
-                    .child(div().text_lg().child(self.tr(Text::DebuggerOff)))
-                    .child(label(p, self.tr(Text::DebuggerOffHint))),
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .font(self.fonts.semibold())
+                            .child(self.tr(Text::DebuggerOff)),
+                    )
+                    .child(label(p, self.tr(Text::DebuggerOffHint)).max_w(px(420.))),
             );
         }
         if self.snapshot.mode != SnapshotMode::Debug {
             return page.child(
                 card(p)
-                    .p_6()
+                    .px_6()
+                    .py_12()
+                    .items_center()
                     .child(label(p, self.tr(Text::DebuggerLoading))),
             );
         }
-        let stacked = window.viewport_size().width < px(1120.);
-        let instructions = div()
-            .flex_1()
+        let stacked = window.viewport_size().width < px(1000.);
+        let instructions = self.disassembly(cx).flex_1().min_w_0();
+        let details = div()
             .min_w_0()
             .flex()
             .flex_col()
             .gap_4()
-            .child(self.disassembly(cx))
-            .child(self.gpu_details());
-        let registers = self
-            .registers()
-            .when(!stacked, |element| element.w(px(310.)).flex_shrink_0());
+            .child(self.registers())
+            .child(self.gpu_details())
+            .when(!stacked, |element| element.w(px(300.)).flex_shrink_0());
         page.child(if stacked {
             div()
                 .flex()
                 .flex_col()
                 .gap_4()
                 .child(instructions)
-                .child(registers)
+                .child(details)
         } else {
             div()
                 .flex()
                 .items_start()
-                .gap_4()
+                .gap_5()
                 .child(instructions)
-                .child(registers)
+                .child(details)
         })
     }
 
@@ -95,12 +103,12 @@ impl Desktop {
                         div()
                             .text_xs()
                             .font(self.fonts.bold())
-                            .text_color(rgb(p.primary))
+                            .text_color(rgb(p.muted))
                             .child(self.tr(Text::DebugEyebrow)),
                     )
                     .child(
                         div()
-                            .text_2xl()
+                            .text_size(px(26.))
                             .font(self.fonts.semibold())
                             .child(self.tr(Text::DebugWorkspace)),
                     )
@@ -168,19 +176,21 @@ impl Desktop {
         let p = &self.themes.active().palette;
         card(p)
             .debug_selector(|| "debug-instructions".into())
-            .p_4()
-            .gap_3()
-            .child(heading(
-                &self.fonts,
-                p,
-                self.tr(Text::Instructions),
-                "MIPS I",
-            ))
+            .overflow_hidden()
+            .child(
+                heading(&self.fonts, p, self.tr(Text::Instructions), "MIPS I")
+                    .p_4()
+                    .border_b_1()
+                    .border_color(rgb(p.border)),
+            )
             .child(
                 div()
                     .flex()
                     .gap_3()
-                    .px_3()
+                    .px_4()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(rgb(p.border))
                     .text_xs()
                     .text_color(rgb(p.muted))
                     .child(div().w(px(16.)))
@@ -188,50 +198,49 @@ impl Desktop {
                     .child(div().w(px(88.)).child(self.tr(Text::Opcode)))
                     .child(self.tr(Text::Instruction)),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .font(self.fonts.mono())
-                    .children(self.snapshot.disassembly.iter().enumerate().map(
-                        |(index, (address, word, instruction))| {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .px_3()
-                                .py_2()
-                                .rounded_md()
-                                .text_xs()
-                                .bg(rgb(if index == 0 { p.tonal } else { p.surface }))
-                                .text_color(rgb(if index == 0 { p.on_tonal } else { p.muted }))
-                                .child(
-                                    div()
-                                        .w(px(16.))
-                                        .text_color(rgb(p.primary))
-                                        .child(if index == 0 { "›" } else { " " }),
-                                )
-                                .child(div().w(px(88.)).child(format!("{address:08X}")))
-                                .child(div().w(px(88.)).child(word.map_or_else(
+            .child(div().flex().flex_col().font(self.fonts.mono()).children(
+                self.snapshot.disassembly.iter().enumerate().map(
+                    |(index, (address, word, instruction))| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .px_4()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(rgb(p.border))
+                            .text_xs()
+                            .bg(rgb(if index == 0 { p.tonal } else { p.surface }))
+                            .text_color(rgb(if index == 0 { p.on_tonal } else { p.muted }))
+                            .child(
+                                div()
+                                    .w(px(16.))
+                                    .text_color(rgb(p.primary))
+                                    .child(if index == 0 { "›" } else { " " }),
+                            )
+                            .child(div().w(px(88.)).child(format!("{address:08X}")))
+                            .child(div().w(px(88.)).child(
+                                word.map_or_else(
                                     || "--------".into(),
                                     |word| format!("{word:08X}"),
-                                )))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(instruction.clone()),
-                                )
-                        },
-                    )),
-            )
+                                ),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(instruction.clone()),
+                            )
+                    },
+                ),
+            ))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap_2()
+                    .p_4()
                     .child(
                         action(
                             &self.fonts,
@@ -262,19 +271,22 @@ impl Desktop {
         let p = &self.themes.active().palette;
         let cpu = &self.snapshot.cpu;
         card(p)
+            .debug_selector(|| "debug-registers".into())
             .p_4()
             .gap_3()
             .child(heading(&self.fonts, p, self.tr(Text::Registers), "R3000A"))
             .child(
                 div()
                     .p_3()
-                    .rounded_lg()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(p.border))
                     .bg(rgb(p.surface_variant))
                     .child(label(p, self.tr(Text::ProgramCounter)))
                     .child(
                         div()
                             .mt_1()
-                            .text_xl()
+                            .text_size(px(18.))
                             .font(self.fonts.mono())
                             .text_color(rgb(p.primary))
                             .child(format!("{:08X}", cpu.pc)),
@@ -296,7 +308,9 @@ impl Desktop {
                                     .flex()
                                     .justify_between()
                                     .gap_2()
-                                    .py_1()
+                                    .py(px(7.))
+                                    .border_b_1()
+                                    .border_color(rgb(p.border))
                                     .text_xs()
                                     .child(
                                         div()
@@ -324,6 +338,7 @@ impl Desktop {
     fn gpu_details(&self) -> gpui::Div {
         let p = &self.themes.active().palette;
         card(p)
+            .debug_selector(|| "debug-gpu".into())
             .p_4()
             .gap_3()
             .child(heading(

@@ -84,7 +84,7 @@ impl Desktop {
         // are also validated by GPUI's view cache, not just the key above.
         AnyView::from(sidebar).cached(
             StyleRefinement::default()
-                .w(if compact { px(76.) } else { px(218.) })
+                .w(if compact { px(72.) } else { px(224.) })
                 .h_full()
                 .flex_shrink_0(),
         )

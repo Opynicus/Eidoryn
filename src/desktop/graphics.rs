@@ -128,14 +128,14 @@ impl Desktop {
             .into_iter()
             .enumerate()
             .map(|(index, (filter, name))| {
-                button(
-                    fonts,
-                    p,
-                    ("crt-choice", index),
-                    name,
-                    self.crt_filter() == filter,
-                )
-                .on_click(cx.listener(move |view, _, _, cx| view.set_crt_filter(filter, cx)))
+                button(fonts, p, ("crt-choice", index), name, false)
+                    .when(self.crt_filter() == filter, |button| {
+                        button
+                            .bg(rgb(p.tonal))
+                            .border_color(rgb(p.primary))
+                            .text_color(rgb(p.on_tonal))
+                    })
+                    .on_click(cx.listener(move |view, _, _, cx| view.set_crt_filter(filter, cx)))
             }),
         )
     }
@@ -270,13 +270,14 @@ fn switch(
             div()
                 .w(px(36.))
                 .h(px(20.))
-                .px(px(3.))
+                .px(px(2.))
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .rounded_full()
                 .bg(rgb(if enabled { p.primary } else { p.border }))
                 .when(enabled, gpui::Styled::justify_end)
-                .child(div().size(px(14.)).rounded_full().bg(rgb(if enabled {
+                .child(div().size(px(16.)).rounded_full().bg(rgb(if enabled {
                     p.on_primary
                 } else {
                     p.text

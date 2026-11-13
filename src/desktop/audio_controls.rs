@@ -1,4 +1,4 @@
-//! Material volume control shared by the inspector and game views.
+//! Volume control shared by the inspector and game views.
 use super::{
     Desktop,
     components::{button, icon_button},
@@ -75,8 +75,8 @@ impl Desktop {
             )
             .child(
                 div()
-                    .w(px(36.))
-                    .text_xs()
+                    .w(px(32.))
+                    .text_size(px(11.))
                     .text_color(rgb(p.muted))
                     .child(format!("{}%", self.audio.volume)),
             )
@@ -85,7 +85,7 @@ impl Desktop {
     fn volume_slider(&self, cx: &Context<Self>) -> impl IntoElement {
         let p = &self.themes.active().palette;
         let active = rgb(if self.audio.muted { p.muted } else { p.primary });
-        let inactive = rgb(p.tonal);
+        let inactive = rgb(p.border);
         let fraction = f32::from(self.audio.volume) / 100.0;
         let dragging = self.audio.dragging;
         let down = cx.weak_entity();
@@ -95,23 +95,23 @@ impl Desktop {
             |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
             move |bounds, hitbox, window, _| {
                 let track = Bounds::new(
-                    point(bounds.left() + px(8.), bounds.top() + px(17.)),
-                    size(bounds.size.width - px(16.), px(6.)),
+                    point(bounds.left() + px(8.), bounds.top() + px(16.)),
+                    size(bounds.size.width - px(16.), px(4.)),
                 );
                 let thumb = track.left() + track.size.width * fraction;
-                window.paint_quad(fill(track, inactive).corner_radii(px(3.)));
+                window.paint_quad(fill(track, inactive).corner_radii(px(2.)));
                 window.paint_quad(
                     fill(
-                        Bounds::new(track.origin, size(thumb - track.left(), px(6.))),
+                        Bounds::new(track.origin, size(thumb - track.left(), px(4.))),
                         active,
                     )
-                    .corner_radii(px(3.)),
+                    .corner_radii(px(2.)),
                 );
                 let radius = if dragging { px(9.) } else { px(7.) };
                 window.paint_quad(
                     fill(
                         Bounds::new(
-                            point(thumb - radius, track.top() + px(3.) - radius),
+                            point(thumb - radius, track.top() + px(2.) - radius),
                             size(radius * 2., radius * 2.),
                         ),
                         active,
@@ -161,8 +161,8 @@ impl Desktop {
                 });
             },
         )
-        .w(px(104.))
-        .h(px(40.))
+        .w(px(90.))
+        .h(px(36.))
     }
 
     fn set_volume_at(&mut self, x: Pixels, track: Bounds<Pixels>, cx: &mut Context<Self>) {
