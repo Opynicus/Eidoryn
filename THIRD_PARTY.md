@@ -5,8 +5,11 @@ loader, CUE parser, GTE, MDEC, SIO/digital pad, memory-card protocol/persistence
 SPU voices/ADSR/reverb, XA/CDDA decoding, timers and MIPS test programs are implemented locally. No third-party emulator
 core, emulator adapter, or vendored emulator source is used.
 The application now depends on local `eidoryn-ps1` (hardware) and `eidoryn-host`
-(audio, filters, themes) crates. Both build with only the Rust standard library
-when their optional features are disabled; neither introduces new external libraries.
+(audio, filters, themes) crates. With optional features disabled, `eidoryn-host`
+uses only the Rust standard library. `eidoryn-ps1` uses smallvec 1.16.4
+(MIT/Apache-2.0, `union` feature) for private CD-ROM command parameters and delayed
+responses. The inline capacities are 16 and 8 bytes; larger values can still use
+heap storage. Existing sector and FIFO buffers retain their reusable capacities.
 
 The optional `vulkan` feature uses wgpu 29.0.4 for safe Vulkan resource and compute
 submission APIs, pollster 0.4.0 for initialization, and bytemuck 1.25.2 for safe

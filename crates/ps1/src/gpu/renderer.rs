@@ -59,6 +59,15 @@ pub enum RendererMode {
 }
 
 impl RendererMode {
+    /// Stable identifier used by CLI arguments and saved preferences.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Serial => "serial",
+            Self::Threaded => "threaded",
+            Self::Vulkan => "vulkan",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Serial => "Serial",

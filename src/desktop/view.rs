@@ -235,7 +235,7 @@ impl Desktop {
                         .pt_4()
                         .text_xs()
                         .text_color(rgb(p.muted))
-                        .child(format!("Eidoryn  ·  v{}", app::VERSION)),
+                        .child(concat!("Eidoryn  ·  v", env!("CARGO_PKG_VERSION"))),
                 )
             })
     }

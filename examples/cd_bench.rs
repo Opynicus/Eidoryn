@@ -52,6 +52,7 @@ fn acknowledge(cd: &mut CdRom) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cdrom_bytes={}", std::mem::size_of::<CdRom>());
     let fixture = Fixture::new()?;
     let disc = DiscImage::open(&fixture.0.join("raw.bin"))?;
     let cooked = DiscImage::open(&fixture.0.join("cooked.iso"))?;
@@ -71,6 +72,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             black_box(checksum)
         );
         assert_eq!(checksum, 16_000_000); // No disc: shell-open status bit.
+
+        let start = Instant::now();
+        let mut checksum = 0_u64;
+        for _ in 0..1_000_000 {
+            cd.write(2, 0x80);
+            cd.write(1, 0x0e); // Setmode transfers a parameter buffer to the command.
+            cd.tick(COMMAND_CLOCKS);
+            checksum += u64::from(cd.read(1));
+            acknowledge(&mut cd);
+        }
+        println!(
+            "parameters round={round} count=1000000 elapsed_ms={:.3} checksum={}",
+            start.elapsed().as_secs_f64() * 1000.0,
+            black_box(checksum)
+        );
+        assert_eq!(checksum, 16_000_000);
+
+        let start = Instant::now();
+        let mut checksum = 0_u64;
+        for _ in 0..1_000_000 {
+            cd.write(1, 0x1a); // GetID holds an eight-byte completion behind INT3.
+            cd.tick(COMMAND_CLOCKS);
+            checksum += u64::from(cd.read(1));
+            acknowledge(&mut cd);
+            cd.tick(COMMAND_CLOCKS * 2);
+            for _ in 0..8 {
+                checksum += u64::from(cd.read(1));
+            }
+            acknowledge(&mut cd);
+        }
+        println!(
+            "completions round={round} count=1000000 elapsed_ms={:.3} checksum={}",
+            start.elapsed().as_secs_f64() * 1000.0,
+            black_box(checksum)
+        );
+        assert_eq!(checksum, 88_000_000);
 
         let mut cd = CdRom::default();
         cd.insert(disc.clone());
