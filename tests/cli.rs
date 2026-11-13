@@ -40,6 +40,66 @@ fn help_does_not_require_display_server() {
 }
 
 #[test]
+fn validation_preserves_error_precedence_and_has_no_file_side_effects() {
+    let directory = TempDirectory::new();
+    for (args, expected) in [
+        (
+            vec!["--inspect-disc", "missing.iso", "--export-demo", "out.exe"],
+            "--inspect-disc is a standalone operation",
+        ),
+        (
+            vec!["--export-demo", "out.exe", "--headless", "--frames", "1"],
+            "EXE export is a standalone operation",
+        ),
+        (
+            vec!["--inspect-disc", "missing.iso", "--card1", "card.mcd"],
+            "--no-memory-cards cannot be combined with --card1/--card2",
+        ),
+        (
+            vec!["--frames", "1", "--fast-boot"],
+            "--frames, --dump-frame and --dump-audio require --headless",
+        ),
+        (
+            vec!["--headless", "--fullscreen", "--debugger"],
+            "--fullscreen and --game-view require a desktop window",
+        ),
+        (
+            vec!["--headless", "--exe", "a", "--bios", "b", "--disc", "c"],
+            "Choose only one of --exe and --bios",
+        ),
+        (
+            vec!["--headless", "--fast-boot", "--exe", "a", "--bios", "b"],
+            "--fast-boot requires --disc",
+        ),
+    ] {
+        let output = cli().current_dir(&directory.0).args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("eidoryn: {expected}\n")
+        );
+        assert!(output.stdout.is_empty());
+    }
+    assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 0);
+}
+
+#[test]
+fn help_short_circuits_only_after_preceding_arguments_are_parsed() {
+    for args in [
+        vec!["--help", "--unknown"],
+        vec!["--frames", "1", "--help"],
+        vec!["--export-demo", "unused.exe", "--help"],
+    ] {
+        assert!(cli().args(args).output().unwrap().status.success());
+    }
+    let output = cli().args(["--volume", "bad", "--help"]).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "eidoryn: --volume expects 0..100\n"
+    );
+}
+
+#[test]
 fn invalid_options_fail_without_opening_a_window() {
     for args in [
         vec!["--unknown"],
