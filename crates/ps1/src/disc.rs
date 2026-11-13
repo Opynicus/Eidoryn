@@ -255,12 +255,10 @@ impl DiscImage {
     }
 
     fn find(&self, path: &str) -> Result<Option<Entry>, EmuError> {
-        let path = path.replace('\\', "/");
-        let components: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
-        if components.is_empty()
-            || components.len() > 16
-            || components.iter().any(|s| matches!(*s, "." | ".."))
-        {
+        let components = path.split(['/', '\\']).filter(|part| !part.is_empty());
+        let count = components.clone().count();
+        // Validate the complete path before any directory reads, preserving error priority.
+        if !(1..=16).contains(&count) || components.clone().any(|part| matches!(part, "." | "..")) {
             return Err(invalid("Invalid ISO file path"));
         }
         let mut current = self.root()?;
@@ -314,28 +312,31 @@ impl DiscImage {
 
     /// Host-assisted homebrew boot, explicitly bypassing BIOS initialization.
     pub fn boot_executable(&self) -> Result<Vec<u8>, EmuError> {
-        let path = if let Some(config) = self.find("SYSTEM.CNF;1")? {
+        if let Some(config) = self.find("SYSTEM.CNF;1")? {
             let bytes = self.extent(&config, 4096)?;
-            let text =
-                std::str::from_utf8(&bytes).map_err(|_| invalid("Invalid SYSTEM.CNF text"))?;
-            let boot = text
-                .lines()
-                .filter_map(|line| line.split_once('='))
-                .find(|(key, _)| key.trim().eq_ignore_ascii_case("BOOT"))
-                .map(|(_, value)| value.trim().trim_matches('"'))
-                .ok_or_else(|| invalid("SYSTEM.CNF has no BOOT entry"))?;
-            let (device, file) = boot
-                .split_once(':')
-                .ok_or_else(|| invalid("BOOT must use cdrom:"))?;
-            if !device.eq_ignore_ascii_case("cdrom") {
-                return Err(invalid("Unsupported BOOT device"));
-            }
-            file.to_owned()
+            self.read_file(boot_path(&bytes)?, RAM_SIZE + 0x800)
         } else {
-            "PSX.EXE;1".into()
-        };
-        self.read_file(&path, RAM_SIZE + 0x800)
+            self.read_file("PSX.EXE;1", RAM_SIZE + 0x800)
+        }
     }
+}
+
+/// Borrow the boot filename from the bounded configuration buffer.
+fn boot_path(config: &[u8]) -> Result<&str, EmuError> {
+    let text = std::str::from_utf8(config).map_err(|_| invalid("Invalid SYSTEM.CNF text"))?;
+    let boot = text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case("BOOT"))
+        .map(|(_, value)| value.trim().trim_matches('"'))
+        .ok_or_else(|| invalid("SYSTEM.CNF has no BOOT entry"))?;
+    let (device, file) = boot
+        .split_once(':')
+        .ok_or_else(|| invalid("BOOT must use cdrom:"))?;
+    if !device.eq_ignore_ascii_case("cdrom") {
+        return Err(invalid("Unsupported BOOT device"));
+    }
+    Ok(file)
 }
 
 struct Entry {
@@ -428,6 +429,32 @@ fn bitwise_edc(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn boot_config_preserves_first_entry_quoting_and_errors() {
+        for (config, expected) in [
+            ("BOOT = cdrom:\\TEST.EXE;1\r\n", "\\TEST.EXE;1"),
+            (
+                " boot = \"CDROM:/dir/test.exe;1\" \nBOOT=cdrom:second.exe",
+                "/dir/test.exe;1",
+            ),
+            ("BOOT=cdrom:", ""),
+        ] {
+            assert_eq!(super::boot_path(config.as_bytes()).unwrap(), expected);
+        }
+        for (config, expected) in [
+            (&b"\xff"[..], "Invalid SYSTEM.CNF text"),
+            (&b"TCB=4"[..], "SYSTEM.CNF has no BOOT entry"),
+            (&b"BOOT=TEST.EXE"[..], "BOOT must use cdrom:"),
+            (&b"BOOT=host:TEST.EXE"[..], "Unsupported BOOT device"),
+            (
+                &b"BOOT=bad\nBOOT=cdrom:valid.exe"[..],
+                "BOOT must use cdrom:",
+            ),
+        ] {
+            assert_eq!(super::boot_path(config).unwrap_err().to_string(), expected);
+        }
+    }
+
     #[test]
     fn cd_edc_check_vector() {
         assert_eq!(super::edc(b"123456789"), 0x6ec2_edc4);
