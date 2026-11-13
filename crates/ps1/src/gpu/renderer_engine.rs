@@ -15,6 +15,13 @@ pub(super) enum Engine {
     Vulkan(Box<super::vulkan::VulkanRenderer>),
 }
 
+#[cfg_attr(
+    not(feature = "vulkan"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "Vulkan operations can fail; keep the same renderer API in software-only builds"
+    )
+)]
 impl Engine {
     pub(super) fn new(mode: RendererMode, error: &Arc<OnceLock<String>>) -> io::Result<Self> {
         if mode == RendererMode::Vulkan {

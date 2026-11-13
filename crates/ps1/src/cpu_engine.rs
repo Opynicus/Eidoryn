@@ -68,6 +68,13 @@ impl Execution {
             ))
         }
     }
+    #[cfg_attr(
+        not(feature = "jit"),
+        expect(
+            clippy::unused_self,
+            reason = "JIT statistics require per-engine state"
+        )
+    )]
     pub(crate) fn stats(&self) -> CpuStats {
         #[cfg(feature = "jit")]
         if let Some(cache) = &self.cache {
@@ -75,6 +82,14 @@ impl Execution {
         }
         CpuStats::default()
     }
+    #[cfg_attr(
+        not(feature = "jit"),
+        expect(
+            clippy::unused_self,
+            clippy::unnecessary_wraps,
+            reason = "The optional JIT uses engine state and can fail; keep a common execution API"
+        )
+    )]
     pub(crate) fn try_run(
         &mut self,
         cpu: &mut Cpu,

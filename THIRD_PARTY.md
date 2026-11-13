@@ -22,6 +22,12 @@ are recorded in Cargo.lock and retain their own licenses. This project keeps
 its existing GPL-3.0-only package license; LICENSE-MIT preserves the original
 prototype's notice.
 
+GPUI's transitive `proc-macro-error2` 2.0.1 dependency and its attribute crate are
+pinned to commit `53ff94b61c678593158db1a3d50269c6f0de0db7` via Cargo's patch table.
+The source change makes the `proc_macro` re-export public to fix Rust's future
+incompatibility warning; see [upstream PR #14](https://github.com/GnomedDev/proc-macro-error-2/pull/14).
+Both crates retain their MIT/Apache-2.0 licenses.
+
 The optional `jit` feature uses the local `eidoryn-jit-runtime` crate, an original
 MIPS-integer-to-x86-64 emitter and safe native execution API. Its only external
 library is memmap2 0.9.12 for anonymous RW-to-RX executable mappings (MIT/Apache-2.0).
