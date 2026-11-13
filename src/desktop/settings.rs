@@ -163,7 +163,7 @@ mod tests {
     fn cli_overrides_saved_preferences_without_rewriting_them() {
         let path =
             std::env::temp_dir().join(format!("eidoryn-startup-{}.json", std::process::id()));
-        let saved = Preferences {
+        let mut saved = Preferences {
             theme: "ocean".into(),
             language: Some("zh-CN".into()),
             crt: "classic".into(),
@@ -173,6 +173,10 @@ mod tests {
             clean_fullscreen: true,
             ..Preferences::default()
         };
+        saved
+            .keybindings
+            .rebind(eidoryn_psx::keybindings::PadButton::Cross, "j")
+            .unwrap();
         saved.save(&path).unwrap();
         let mut machine = Machine::demo();
         let startup = load_at(&mut machine, &Options::default(), Some(path.clone())).unwrap();
@@ -181,6 +185,7 @@ mod tests {
         assert_eq!(startup.crt, CrtFilter::Classic);
         assert_eq!(startup.volume, 42);
         assert!(startup.muted && startup.clean_fullscreen);
+        assert_eq!(startup.preferences.keybindings, saved.keybindings);
         assert_eq!(machine.bus.gpu.renderer_mode(), RendererMode::Threaded);
         let options = Options {
             theme: Some("forest".into()),

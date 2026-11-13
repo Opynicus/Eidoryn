@@ -1,6 +1,7 @@
 //! Desktop preferences. CLI overrides are applied in memory, never saved implicitly.
 use crate::{
     i18n::Language,
+    keybindings::KeyBindings,
     systems::ps1::{gpu::RendererMode, input::TurboConfig},
     video_filter::CrtFilter,
 };
@@ -24,6 +25,7 @@ pub struct Preferences {
     pub clean_fullscreen: bool,
     pub turbo_buttons: u16,
     pub turbo_hz: u8,
+    pub keybindings: KeyBindings,
 }
 
 impl Default for Preferences {
@@ -39,6 +41,7 @@ impl Default for Preferences {
             clean_fullscreen: false,
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
+            keybindings: KeyBindings::default(),
         }
     }
 }
@@ -70,6 +73,7 @@ impl Preferences {
         self.crt.parse::<CrtFilter>()?;
         self.renderer.parse::<RendererMode>()?;
         self.turbo()?;
+        self.keybindings.validate()?;
         if self.volume > 100 || self.theme.is_empty() {
             return Err("Volume must be 0..100 and theme must not be empty".into());
         }
@@ -157,12 +161,19 @@ mod tests {
             turbo_hz: 15,
             ..Preferences::default()
         };
+        settings
+            .keybindings
+            .rebind(crate::keybindings::PadButton::Cross, "j")
+            .unwrap();
         settings.save(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap(), settings);
         settings.volume = 101;
         assert!(settings.save(&path).is_err());
         assert_eq!(Preferences::load(&path).unwrap().volume, 42);
         settings.volume = 42;
+        std::fs::write(&path, b"{\"keybindings\":{\"cross\":\"z\"}}").unwrap();
+        assert!(Preferences::load(&path).is_err());
+        settings.save(&path).unwrap();
         settings.turbo_hz = 0;
         assert!(settings.save(&path).is_err());
         assert_eq!(Preferences::load(&path).unwrap().turbo_hz, 15);
@@ -170,6 +181,10 @@ mod tests {
         assert!(Preferences::load(&path).is_err());
         std::fs::write(&path, b"{\"theme\":\"forest\"}").unwrap();
         assert_eq!(Preferences::load(&path).unwrap().volume, 75);
+        assert_eq!(
+            Preferences::load(&path).unwrap().keybindings,
+            KeyBindings::default()
+        );
         assert_eq!(
             Preferences::load(&path).unwrap().turbo().unwrap(),
             TurboConfig::default()

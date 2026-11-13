@@ -51,6 +51,7 @@ impl Render for Desktop {
                 |root| root.font(self.fonts.normal()),
             )
             .track_focus(&self.focus)
+            .capture_key_down(cx.listener(Self::capture_binding))
             .on_key_down(cx.listener(Self::key))
             .on_key_up(cx.listener(Self::key_up))
             .on_click(cx.listener(|view, event, window, _| {
@@ -512,6 +513,7 @@ impl Desktop {
                             button(&self.fonts, p, id, self.tr(title), self.settings_tab == tab)
                                 .debug_selector(move || id.into())
                                 .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.rebinding = None;
                                     view.settings_tab = tab;
                                     cx.notify();
                                 }))

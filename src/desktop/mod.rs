@@ -197,6 +197,8 @@ fn open_window(
                             themes: startup.themes,
                             settings_tab: SettingsTab::Graphics,
                             pressed_buttons: 0,
+                            rebinding: None,
+                            keybindings_draft: None,
                             probe,
                             _subscriptions: subscriptions,
                         }
@@ -244,6 +246,8 @@ struct Desktop {
     game_view: bool,
     page: WorkspacePage,
     pressed_buttons: u16,
+    rebinding: Option<eidoryn_psx::keybindings::PadButton>,
+    keybindings_draft: Option<eidoryn_psx::keybindings::KeyBindings>,
     probe: Option<probe::Probe>,
     themes: ThemeCatalog,
     settings_tab: SettingsTab,
