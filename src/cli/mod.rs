@@ -172,7 +172,6 @@ fn launch(options: SessionOptions) -> Result<(), String> {
                     renderer,
                     clean_fullscreen,
                     auto_run,
-                    bios_path,
                     bios: bios_path,
                     fullscreen,
                     game_view,
