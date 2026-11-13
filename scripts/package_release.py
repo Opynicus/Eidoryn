@@ -19,19 +19,12 @@ with tempfile.TemporaryDirectory() as temporary:
     stage = pathlib.Path(temporary) / name
     stage.mkdir()
     shutil.copy2(args.binary, stage / args.binary.name)
-    for filename in ['README.md', 'README.zh-CN.md', 'LICENSE', 'LICENSE-MIT', 'THIRD_PARTY.md']:
-        shutil.copy2(root / filename, stage / filename)
-    for directory in ['assets', 'plugins']:
-        shutil.copytree(root / directory, stage / directory)
-    (stage / 'docs').mkdir()
-    shutil.copy2(root / 'docs' / 'ARCHITECTURE.md', stage / 'docs' / 'ARCHITECTURE.md')
-    (stage / 'BUILD.txt').write_text(
-        f'Eidoryn {args.label}\n'
-        'Experimental project developed with extensive AI assistance. '
-        'Hardware accuracy and game compatibility are still under active development.\n'
-        'No BIOS, games or saves included. CLI packages have no desktop UI.\n'
-        'Desktop packages are experimental and unsigned. JIT supports Linux x86-64 only.\n'
-        'Launch from this directory to discover bundled themes.\n', encoding='utf-8')
+    (stage / 'assets').mkdir()
+    shutil.copy2(root / 'assets' / 'eidoryn.png', stage / 'assets' / 'eidoryn.png')
+    (stage / 'plugins' / 'themes').mkdir(parents=True)
+    for theme in (root / 'plugins' / 'themes').glob('*.json'):
+        if theme.is_file():
+            shutil.copy2(theme, stage / 'plugins' / 'themes' / theme.name)
     if args.binary.suffix == '.exe':
         archive = args.output / (name + '.zip')
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
