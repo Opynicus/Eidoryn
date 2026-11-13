@@ -12,20 +12,44 @@ pub struct Theme {
     pub palette: Palette,
 }
 
+struct BuiltinTheme {
+    id: &'static str,
+    name: &'static str,
+    palette: Palette,
+}
+
+static BUILTINS: [BuiltinTheme; 4] = [
+    BuiltinTheme {
+        id: "lavender",
+        name: "Lavender",
+        palette: Palette::LAVENDER,
+    },
+    BuiltinTheme {
+        id: "midnight",
+        name: "Midnight",
+        palette: Palette::MIDNIGHT,
+    },
+    BuiltinTheme {
+        id: "ocean",
+        name: "Ocean",
+        palette: Palette::OCEAN,
+    },
+    BuiltinTheme {
+        id: "forest",
+        name: "Forest",
+        palette: Palette::FOREST,
+    },
+];
+
 pub fn builtins() -> Vec<Theme> {
-    [
-        ("lavender", "Lavender", Palette::LAVENDER),
-        ("midnight", "Midnight", Palette::MIDNIGHT),
-        ("ocean", "Ocean", Palette::OCEAN),
-        ("forest", "Forest", Palette::FOREST),
-    ]
-    .into_iter()
-    .map(|(id, name, palette)| Theme {
-        id: id.into(),
-        name: name.into(),
-        palette,
-    })
-    .collect()
+    BUILTINS
+        .iter()
+        .map(|theme| Theme {
+            id: theme.id.into(),
+            name: theme.name.into(),
+            palette: theme.palette,
+        })
+        .collect()
 }
 
 pub struct ThemeCatalog {

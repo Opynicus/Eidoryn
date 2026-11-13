@@ -11,7 +11,7 @@ Eidoryn (CLI / GPUI)
 └── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
-`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认仅依赖标准库。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认也仅依赖标准库。Vulkan/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`vulkan`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
+`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认依赖标准库和用于 CD-ROM 短参数、延迟响应的 smallvec。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认仅依赖标准库。Vulkan/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`vulkan`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
 
 | 位置 | 职责 |
 | --- | --- |
@@ -76,4 +76,4 @@ PCM 按设备时钟在核心生成，工作线程独立排入 `AudioBuffer`，�
 
 快照中的像素和尺寸未变化时，窗口复用已有纹理，运行中的调试/状态信息最多每 100 ms 触发一次重绘。新的视频帧、暂停和关闭立即刷新，避免静态全屏画面仍被状态计数强制每帧重绘。软件三角形边缘权重按整数增量推进；恒定颜色和原色纹理跳过无效插值，保留逐像素输出等价性。视频转换按行处理，RGB24 直接解包连续 VRAM 半字，RGB15 展开三个颜色通道；没有改动游戏指令、设备时序或绘图命令。相关像素等价性测试位于 `tests/display.rs`，转换基准位于 `examples/display_probe.rs`。
 
-新增 UI 元素使用 `Palette` 语义字段；新增主题无需改硬件核心。`theme` 和 JSON 依赖随 `desktop` 特性启用，关闭所有默认特性后的软件核心仍只依赖标准库。原 `runner::load_path/load_disc` 入口继续重导出，新的调用方使用 `systems::ps1::media`。
+新增 UI 元素使用 `Palette` 语义字段；新增主题无需改硬件核心。`theme` 和 JSON 依赖随 `desktop` 特性启用，关闭所有默认特性后的软件核心依赖标准库和 smallvec。原 `runner::load_path/load_disc` 入口继续重导出，新的调用方使用 `systems::ps1::media`。

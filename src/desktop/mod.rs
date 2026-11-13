@@ -316,7 +316,7 @@ impl Desktop {
                 probe.receive(&snapshot);
             }
             if let Some(mode) = self.graphics.receive(&snapshot) {
-                self.preferences.renderer = mode.label().to_ascii_lowercase();
+                mode.id().clone_into(&mut self.preferences.renderer);
                 self.save_preferences();
             }
             if snapshot.bios_path.is_some() {

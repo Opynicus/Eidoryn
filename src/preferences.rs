@@ -146,6 +146,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rendering_ids_preserve_json_values_and_parse_back() {
+        for (renderer, renderer_id) in [
+            (RendererMode::Serial, "serial"),
+            (RendererMode::Threaded, "threaded"),
+            (RendererMode::Vulkan, "vulkan"),
+        ] {
+            for (crt, crt_id) in [
+                (CrtFilter::Off, "off"),
+                (CrtFilter::Soft, "soft"),
+                (CrtFilter::Classic, "classic"),
+            ] {
+                let mut settings = Preferences::default();
+                renderer.id().clone_into(&mut settings.renderer);
+                crt.id().clone_into(&mut settings.crt);
+                let json = serde_json::to_value(&settings).unwrap();
+                assert_eq!(json["renderer"], renderer_id);
+                assert_eq!(json["crt"], crt_id);
+                let restored: Preferences = serde_json::from_value(json).unwrap();
+                restored.validate().unwrap();
+                assert_eq!(restored.renderer(), renderer);
+                assert_eq!(restored.crt(), crt);
+            }
+        }
+    }
+
+    #[test]
     fn preferences_round_trip_and_reject_invalid_updates() {
         let path =
             std::env::temp_dir().join(format!("eidoryn-settings-{}.json", std::process::id()));

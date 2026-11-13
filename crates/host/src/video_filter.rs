@@ -11,6 +11,15 @@ pub enum CrtFilter {
 }
 
 impl CrtFilter {
+    /// Stable identifier used by CLI arguments and saved preferences.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Soft => "soft",
+            Self::Classic => "classic",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Off => "Off",

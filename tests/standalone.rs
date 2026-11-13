@@ -614,6 +614,54 @@ fn drive_errors_are_guest_interrupts_and_do_not_panic() {
 }
 
 #[test]
+fn pending_cd_commands_own_parameters_and_clones_keep_independent_fifos() {
+    let mut original = Bus::default();
+    issue(&mut original, 0x19, &[0x20]);
+    // These bytes belong to the next command, not the command already in flight.
+    original.write8(0x1f80_1802, 0x20).unwrap();
+    let mut cloned = original.clone();
+    original.write8(0x1f80_1800, 1).unwrap();
+    original.write8(0x1f80_1803, 0x40).unwrap(); // Clear only the original input FIFO.
+    for drive in [&mut original, &mut cloned] {
+        drive.tick(COMMAND_CLOCKS).unwrap();
+        assert_eq!(response(drive, 3), [0x95, 0x05, 0x16, 0xc1]);
+        ack(drive);
+        issue(drive, 0x19, &[]);
+        drive.tick(COMMAND_CLOCKS).unwrap();
+    }
+    assert_eq!(response(&mut original, 5), [0x11, 0x20]);
+    assert_eq!(response(&mut cloned, 3), [0x95, 0x05, 0x16, 0xc1]);
+
+    ack(&mut original);
+    original.write8(0x1f80_1800, 0).unwrap();
+    for _ in 0..17 {
+        original.write8(0x1f80_1802, 0x20).unwrap();
+    }
+    assert_eq!(original.read8(0x1f80_1800).unwrap() & 0x18, 0);
+    issue(&mut original, 1, &[]);
+    // Issuing a command empties the input FIFO even when its parameter count is invalid.
+    assert_eq!(original.read8(0x1f80_1800).unwrap() & 0x18, 0x18);
+    original.tick(COMMAND_CLOCKS).unwrap();
+    assert_eq!(response(&mut original, 5), [0x11, 0x20]);
+}
+
+#[test]
+fn delayed_cd_responses_survive_irq_blocking_and_independent_clones() {
+    let mut original = Bus::default();
+    issue(&mut original, 0x1a, &[]);
+    original.tick(COMMAND_CLOCKS).unwrap();
+    assert_eq!(response(&mut original, 3), [0x10]);
+    original.tick(COMMAND_CLOCKS * 2).unwrap();
+    let mut cloned = original.clone();
+    for drive in [&mut original, &mut cloned] {
+        assert_eq!(response(drive, 3), Vec::<u8>::new()); // Completion waits for the acknowledgement.
+        ack(drive);
+        drive.tick(1).unwrap();
+        assert_eq!(response(drive, 5), [8, 0x40, 0, 0, 0, 0, 0, 0]);
+    }
+}
+
+#[test]
 fn iso_boot_reader_checks_directory_extents_and_read_bounds() {
     let fixture = Fixture::new();
     let exe = demo::executable();

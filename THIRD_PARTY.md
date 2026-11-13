@@ -5,18 +5,21 @@ loader, CUE parser, GTE, MDEC, SIO/digital pad, memory-card protocol/persistence
 SPU voices/ADSR/reverb, XA/CDDA decoding, timers and MIPS test programs are implemented locally. No third-party emulator
 core, emulator adapter, or vendored emulator source is used.
 The application now depends on local `eidoryn-ps1` (hardware) and `eidoryn-host`
-(audio, filters, themes) crates. Both build with only the Rust standard library
-when their optional features are disabled; neither introduces new external libraries.
+(audio, filters, themes) crates. With optional features disabled, `eidoryn-host`
+uses only the Rust standard library. `eidoryn-ps1` uses smallvec 1.16.5
+(MIT/Apache-2.0, `union` feature) for private CD-ROM command parameters and delayed
+responses. The inline capacities are 16 and 8 bytes; larger values can still use
+heap storage. Existing sector and FIFO buffers retain their reusable capacities.
 
-The optional `vulkan` feature uses wgpu 29.0.4 for safe Vulkan resource and compute
-submission APIs, pollster 0.4.0 for initialization, and bytemuck 1.25.2 for safe
+The optional `vulkan` feature uses wgpu 30.0.2 for safe Vulkan resource and compute
+submission APIs, pollster 1.0.1 for initialization, and bytemuck 1.25.2 for safe
 integer-slice byte views. These are general-purpose libraries; PS1 command
 encoding, dependency tracking, rasterization and scanout are implemented here.
-API reference: https://docs.rs/wgpu/29.0.4/wgpu/ . The default build includes `desktop`, `vulkan` and `jit`;
+API reference: https://docs.rs/wgpu/30.0.2/wgpu/ . The default build includes `desktop`, `vulkan` and `jit`;
 runtime CPU/renderer selections are independent.
 
 The desktop frontend uses GPUI 0.2.2, image, serde and serde_json (theme manifests),
-and CPAL 0.16.0 for host audio-device access (not PS1 sound emulation),
+and CPAL 0.18.2 for host audio-device access (not PS1 sound emulation),
 with libc pinned for GPUI's older xattr dependency. Their transitive dependencies and exact versions
 are recorded in Cargo.lock and retain their own licenses. This project keeps
 its existing GPL-3.0-only package license; LICENSE-MIT preserves the original

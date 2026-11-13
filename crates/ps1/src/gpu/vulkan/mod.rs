@@ -360,7 +360,11 @@ impl VulkanRenderer {
                 .recv_timeout(WAIT)
                 .map_err(|e| format!("Vulkan map callback: {e}"))?
                 .map_err(|e| format!("Vulkan readback: {e}"))?;
-            let mapped = self.staging.slice(..bytes).get_mapped_range();
+            let mapped = self
+                .staging
+                .slice(..bytes)
+                .get_mapped_range()
+                .map_err(|e| format!("Vulkan readback: {e}"))?;
             // Convert while mapped: callers allocate only their final output,
             // rather than copying the complete readback through a Vec<u32>.
             Ok(convert(&mapped))

@@ -12,6 +12,30 @@ use eidoryn_psx::{
 };
 use gpui::{Context, KeyDownEvent, Window, div, prelude::*, rgb};
 
+const BINDINGS: [(PadButton, &str); PadButton::ALL.len()] = [
+    (PadButton::Up, "binding-4"),
+    (PadButton::Down, "binding-6"),
+    (PadButton::Left, "binding-7"),
+    (PadButton::Right, "binding-5"),
+    (PadButton::Cross, "binding-14"),
+    (PadButton::Square, "binding-15"),
+    (PadButton::Triangle, "binding-12"),
+    (PadButton::Circle, "binding-13"),
+    (PadButton::Start, "binding-3"),
+    (PadButton::Select, "binding-0"),
+    (PadButton::L1, "binding-10"),
+    (PadButton::R1, "binding-11"),
+    (PadButton::L2, "binding-8"),
+    (PadButton::R2, "binding-9"),
+];
+
+const TURBO_CHOICES: [(u8, &str, &str); TURBO_RATES.len()] = [
+    (5, "turbo-rate-5", "5 Hz"),
+    (10, "turbo-rate-10", "10 Hz"),
+    (15, "turbo-rate-15", "15 Hz"),
+    (20, "turbo-rate-20", "20 Hz"),
+];
+
 impl Desktop {
     pub(super) fn capture_binding(
         &mut self,
@@ -115,8 +139,7 @@ impl Desktop {
                     .grid()
                     .grid_cols(2)
                     .gap_2()
-                    .children(PadButton::ALL.into_iter().map(|pad| {
-                        let id = format!("binding-{}", pad as u8);
+                    .children(BINDINGS.into_iter().map(|(pad, id)| {
                         let waiting = self.rebinding == Some(pad);
                         let key = if waiting {
                             self.tr(Text::BindingPrompt).into()
@@ -126,7 +149,7 @@ impl Desktop {
                         button(
                             &self.fonts,
                             p,
-                            gpui::ElementId::Name(id.clone().into()),
+                            id,
                             format!("{} · {key}", pad.name()),
                             waiting,
                         )
@@ -135,7 +158,7 @@ impl Desktop {
                         .when(bindings.conflict(pad).is_some(), |button| {
                             button.border_color(rgb(p.error))
                         })
-                        .debug_selector(move || id.clone())
+                        .debug_selector(move || id.into())
                         .on_click(cx.listener(
                             move |view, _, window, cx| {
                                 view.release_buttons(cx);
@@ -239,18 +262,12 @@ impl Desktop {
                     .flex()
                     .flex_wrap()
                     .gap_2()
-                    .children(TURBO_RATES.into_iter().map(|hz| {
-                        button(
-                            &self.fonts,
-                            p,
-                            gpui::ElementId::Name(format!("turbo-rate-{hz}").into()),
-                            format!("{hz} Hz"),
-                            self.preferences.turbo_hz == hz,
-                        )
-                        .debug_selector(move || format!("turbo-rate-{hz}"))
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.set_turbo(view.preferences.turbo_buttons, hz, cx);
-                        }))
+                    .children(TURBO_CHOICES.into_iter().map(|(hz, id, text)| {
+                        button(&self.fonts, p, id, text, self.preferences.turbo_hz == hz)
+                            .debug_selector(move || id.into())
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.set_turbo(view.preferences.turbo_buttons, hz, cx);
+                            }))
                     })),
             )
             .child(label(p, self.tr(Text::TurboRateHint)))
@@ -266,5 +283,23 @@ impl Desktop {
                     cx.listener(|view, _, _, cx| view.set_turbo(0, view.preferences.turbo_hz, cx)),
                 ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_descriptors_keep_existing_order_ids_and_rates() {
+        assert_eq!(BINDINGS.map(|(pad, _)| pad), PadButton::ALL);
+        for (pad, id) in BINDINGS {
+            assert_eq!(id, format!("binding-{}", pad as u8));
+        }
+        assert_eq!(TURBO_CHOICES.map(|(hz, _, _)| hz), TURBO_RATES);
+        for (hz, id, text) in TURBO_CHOICES {
+            assert_eq!(id, format!("turbo-rate-{hz}"));
+            assert_eq!(text, format!("{hz} Hz"));
+        }
     }
 }

@@ -81,7 +81,7 @@ impl Desktop {
 
     pub(super) fn set_crt_filter(&mut self, filter: CrtFilter, cx: &mut Context<Self>) {
         self.crt.filter = filter;
-        self.preferences.crt = filter.label().to_ascii_lowercase();
+        filter.id().clone_into(&mut self.preferences.crt);
         self.save_preferences();
         cx.notify();
     }

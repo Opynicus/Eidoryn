@@ -1,4 +1,4 @@
-use super::{Theme, builtins};
+use super::{BUILTINS, Theme};
 use serde::Deserialize;
 use std::{collections::BTreeMap, io::Read, path::Path};
 
@@ -60,11 +60,10 @@ fn parse(bytes: &[u8]) -> Result<Theme, String> {
     {
         return Err("Theme name must contain 1–32 visible characters".into());
     }
-    let builtin = builtins();
-    if builtin.iter().any(|theme| theme.id == manifest.id) {
+    if BUILTINS.iter().any(|theme| theme.id == manifest.id) {
         return Err("Theme plugin id must differ from built-in theme ids".into());
     }
-    let mut palette = builtin
+    let mut palette = BUILTINS
         .iter()
         .find(|theme| theme.id == manifest.base)
         .ok_or_else(|| format!("Unknown base theme: {}", manifest.base))?

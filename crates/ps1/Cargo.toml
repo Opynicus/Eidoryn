@@ -12,9 +12,10 @@ vulkan = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 jit = ["dep:eidoryn-jit-runtime"]
 
 [dependencies]
+smallvec = { version = "=1.16.5", features = ["union"] }
 eidoryn-jit-runtime = { path = "../jit-runtime", optional = true }
-wgpu = { version = "=29.0.4", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"], optional = true }
-pollster = { version = "=0.4.0", optional = true }
+wgpu = { version = "=30.0.2", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"], optional = true }
+pollster = { version = "=1.0.1", optional = true }
 bytemuck = { version = "=1.25.2", optional = true }
 
 [lints]

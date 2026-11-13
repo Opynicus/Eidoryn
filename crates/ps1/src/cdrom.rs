@@ -7,6 +7,7 @@ use crate::{
     spu::StereoFrame,
     timing::CPU_CLOCK_HZ,
 };
+use smallvec::SmallVec;
 use std::collections::VecDeque;
 
 pub const COMMAND_CLOCKS: u32 = 2000;
@@ -15,13 +16,14 @@ pub const SECTOR_CLOCKS: u32 = CPU_CLOCK_HZ / 75;
 #[derive(Clone)]
 struct Command {
     opcode: u8,
-    parameters: Vec<u8>,
+    parameters: SmallVec<[u8; 16]>,
     clocks: u32,
 }
 #[derive(Clone)]
 struct Response {
     interrupt: u8,
-    bytes: Vec<u8>,
+    // Current completions use at most eight bytes; longer responses can still spill to the heap.
+    bytes: SmallVec<[u8; 8]>,
 }
 
 #[derive(Clone, Default)]
@@ -30,7 +32,8 @@ pub struct CdRom {
     disc: Option<DiscImage>,
     region: Option<DiscRegion>,
     index: u8,
-    parameters: Vec<u8>,
+    // The register accepts at most sixteen bytes, transferred to each command.
+    parameters: SmallVec<[u8; 16]>,
     response: VecDeque<u8>,
     irq_enable: u8,
     irq_flags: u8,
@@ -221,8 +224,14 @@ impl CdRom {
         self.last_error_code = Some(code);
         self.respond(5, &[self.status() | 1, code]);
     }
-    fn finish_later(&mut self, interrupt: u8, bytes: Vec<u8>) {
-        self.completion = Some((COMMAND_CLOCKS * 2, Response { interrupt, bytes }));
+    fn finish_later(&mut self, interrupt: u8, bytes: &[u8]) {
+        self.completion = Some((
+            COMMAND_CLOCKS * 2,
+            Response {
+                interrupt,
+                bytes: SmallVec::from_slice(bytes),
+            },
+        ));
     }
 
     /// CPU clocks until a command, completion, or sector may have an effect.
@@ -405,7 +414,7 @@ impl CdRom {
                     self.location = target;
                     self.reported_location = target;
                 }
-                self.finish_later(2, vec![self.status()]);
+                self.finish_later(2, &[self.status()]);
             }
             0x0b | 0x0c => {
                 self.muted = opcode == 0x0b;
@@ -477,7 +486,7 @@ impl CdRom {
                 if let Some(region) = self.region {
                     self.finish_later(
                         2,
-                        vec![
+                        &[
                             self.status(),
                             0,
                             0x20,
@@ -493,7 +502,7 @@ impl CdRom {
                     let mode2 = disc.tracks().any(|t| t.kind == TrackKind::Mode2);
                     self.finish_later(
                         5,
-                        vec![
+                        &[
                             self.status() | 8,
                             0x80 | (u8::from(audio) << 4),
                             u8::from(mode2) << 5,
@@ -505,7 +514,7 @@ impl CdRom {
                         ],
                     );
                 } else {
-                    self.finish_later(5, vec![8, 0x40, 0, 0, 0, 0, 0, 0]);
+                    self.finish_later(5, &[8, 0x40, 0, 0, 0, 0, 0, 0]);
                 }
             }
             _ => self.error(0x40),
@@ -522,7 +531,7 @@ impl CdRom {
             self.motor = false;
             self.play_completion = Some(Response {
                 interrupt: 4,
-                bytes: vec![self.status()],
+                bytes: SmallVec::from_slice(&[self.status()]),
             });
             return;
         };
@@ -530,7 +539,7 @@ impl CdRom {
             self.playing = false;
             self.play_completion = Some(Response {
                 interrupt: 4,
-                bytes: vec![self.status()],
+                bytes: SmallVec::from_slice(&[self.status()]),
             });
             return;
         }
@@ -587,7 +596,7 @@ impl CdRom {
                 self.last_error_code = Some(0x80);
                 self.play_completion = Some(Response {
                     interrupt: 5,
-                    bytes: vec![self.status() | 1, 0x80],
+                    bytes: SmallVec::from_slice(&[self.status() | 1, 0x80]),
                 });
             }
         }

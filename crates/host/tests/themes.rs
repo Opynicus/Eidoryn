@@ -96,7 +96,10 @@ fn plugin_file_limits_and_discovery_report_errors_without_losing_valid_themes() 
     std::fs::write(fixture.0.join("notes.txt"), b"ignored").unwrap();
     assert_eq!(catalog.discover(&fixture.0).len(), 1);
     assert_eq!(catalog.themes().len(), 5);
-    assert!(catalog.discover(&fixture.0.join("missing")).is_empty());
+    assert_eq!(
+        catalog.discover(&fixture.0.join("missing")),
+        Vec::<String>::new()
+    );
     let path = fixture.0.join("oversize.json");
     std::fs::write(&path, vec![b' '; 65_537]).unwrap();
     assert!(catalog.load_plugin(&path).unwrap_err().contains("64 KiB"));

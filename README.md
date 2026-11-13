@@ -97,7 +97,7 @@ cargo run --locked --release --no-default-features -- --headless --no-memory-car
 cargo test --locked --workspace
 ```
 
-With default features disabled, the core and CLI use only the Rust standard library. `--frames` counts execution slices, not video frames.
+With default features disabled, the core and CLI use the Rust standard library and smallvec for short CD-ROM command buffers. `--frames` counts execution slices, not video frames.
 
 </details>
 
