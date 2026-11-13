@@ -639,6 +639,48 @@ fn iso_boot_reader_checks_directory_extents_and_read_bounds() {
 }
 
 #[test]
+fn iso_paths_preserve_separators_versions_and_validation_order() {
+    let fixture = Fixture::new();
+    let exe = demo::executable();
+    let disc = DiscImage::open(&fixture.image("paths.iso", &iso(&exe))).unwrap();
+    for path in ["TEST.EXE;1", "test.exe", "\\TEST.EXE;1", "//\\test.exe//\\"] {
+        assert_eq!(disc.read_file(path, 65536).unwrap(), exe);
+    }
+    assert!(
+        disc.read_file("TEST.EXE;2", 65536)
+            .unwrap_err()
+            .to_string()
+            .contains("ISO file not found")
+    );
+    // Validate the whole path before touching the volume descriptor or a missing parent.
+    let invalid_volume = DiscImage::open(&fixture.image("empty.iso", &[0; 2048])).unwrap();
+    let too_deep = ["missing"; 17].join("/");
+    for path in [
+        "",
+        "/\\/",
+        ".",
+        "missing/../TEST.EXE",
+        "missing\\.\\TEST.EXE",
+        &too_deep,
+    ] {
+        assert!(
+            invalid_volume
+                .read_file(path, 65536)
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid ISO file path")
+        );
+    }
+    let max_depth = ["missing"; 16].join("/");
+    assert!(
+        disc.read_file(&max_depth, 65536)
+            .unwrap_err()
+            .to_string()
+            .contains("ISO file not found")
+    );
+}
+
+#[test]
 fn raw_bin_mode1_and_mode2_payload_offsets_are_distinct() {
     let fixture = Fixture::new();
     let cooked = fixture.image("cooked.iso", &vec![0x4b; 2048]);

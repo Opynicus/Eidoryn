@@ -22,18 +22,18 @@ struct CueTrack {
 }
 
 fn position(text: &str) -> Result<u32, EmuError> {
-    let parts: Vec<_> = text.split(':').collect();
-    if parts.len() != 3 {
+    let mut parts = text.split(':');
+    let (Some(minutes), Some(seconds), Some(frames), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return Err(invalid("CUE time must be MM:SS:FF"));
-    }
-    let n = parts
-        .iter()
-        .map(|s| s.parse::<u32>().map_err(|_| invalid("Invalid CUE time")))
-        .collect::<Result<Vec<_>, _>>()?;
-    if n[0] > 99 || n[1] >= 60 || n[2] >= 75 {
+    };
+    let parse = |part: &str| part.parse::<u32>().map_err(|_| invalid("Invalid CUE time"));
+    let (minutes, seconds, frames) = (parse(minutes)?, parse(seconds)?, parse(frames)?);
+    if minutes > 99 || seconds >= 60 || frames >= 75 {
         return Err(invalid("CUE time is out of range"));
     }
-    Ok(n[0] * 4500 + n[1] * 75 + n[2])
+    Ok(minutes * 4500 + seconds * 75 + frames)
 }
 
 fn filename(text: &str) -> Result<PathBuf, EmuError> {
@@ -62,7 +62,6 @@ fn filename(text: &str) -> Result<PathBuf, EmuError> {
     Ok(path)
 }
 
-#[allow(clippy::too_many_lines)] // Parse declarations, validate all extents, then publish the image.
 pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
     let file = File::open(path).map_err(|e| invalid(format!("{}: {e}", path.display())))?;
     if !file
@@ -79,93 +78,7 @@ pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
     if text.len() > 65_536 {
         return Err(invalid("CUE exceeds 64 KiB"));
     }
-    let mut paths = Vec::new();
-    let mut tracks: Vec<CueTrack> = Vec::new();
-    let mut current_file = None;
-    for (line_number, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (directive, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-        let args: Vec<_> = rest.split_whitespace().collect();
-        let fail = || {
-            invalid(format!(
-                "Invalid CUE {} at line {}",
-                directive,
-                line_number + 1
-            ))
-        };
-        match directive.to_ascii_uppercase().as_str() {
-            "REM" | "TITLE" | "PERFORMER" | "SONGWRITER" | "CATALOG" | "ISRC" => {}
-            "FILE" => {
-                paths.push(
-                    path.parent()
-                        .unwrap_or(Path::new("."))
-                        .join(filename(rest.trim())?),
-                );
-                current_file = Some(paths.len() - 1);
-            }
-            "TRACK" => {
-                if args.len() != 2 || tracks.len() >= 99 {
-                    return Err(fail());
-                }
-                let number: u8 = args[0].parse().map_err(|_| fail())?;
-                if usize::from(number) != tracks.len() + 1 {
-                    return Err(invalid("CUE tracks must be consecutive, starting at 01"));
-                }
-                let kind = match args[1].to_ascii_uppercase().as_str() {
-                    "MODE1/2352" => TrackKind::Mode1,
-                    "MODE2/2352" => TrackKind::Mode2,
-                    "AUDIO" => TrackKind::Audio,
-                    _ => {
-                        return Err(invalid(
-                            "CUE supports MODE1/2352, MODE2/2352 and AUDIO tracks",
-                        ));
-                    }
-                };
-                tracks.push(CueTrack {
-                    file: current_file.ok_or_else(fail)?,
-                    number,
-                    kind,
-                    ..CueTrack::default()
-                });
-            }
-            "INDEX" | "PREGAP" => {
-                let track = tracks.last_mut().ok_or_else(fail)?;
-                if Some(track.file) != current_file {
-                    return Err(fail());
-                }
-                if directive.eq_ignore_ascii_case("PREGAP") {
-                    if args.len() != 1 || track.pregap.is_some() {
-                        return Err(fail());
-                    }
-                    track.pregap = Some(position(args[0])?);
-                } else {
-                    if args.len() != 2 {
-                        return Err(fail());
-                    }
-                    let slot = match args[0] {
-                        "00" if track.index1.is_none() => &mut track.index0,
-                        "01" => &mut track.index1,
-                        _ => {
-                            return Err(invalid(
-                                "Only ordered CUE INDEX 00 and INDEX 01 are supported",
-                            ));
-                        }
-                    };
-                    if slot.is_some() {
-                        return Err(fail());
-                    }
-                    *slot = Some(position(args[1])?);
-                }
-            }
-            _ => return Err(invalid(format!("Unsupported CUE directive {directive}"))),
-        }
-    }
-    if tracks.is_empty() {
-        return Err(invalid("CUE has no tracks"));
-    }
+    let CueSheet { paths, tracks } = CueSheet::parse(&text, path)?;
     let mut sources = Vec::new();
     for (index, source) in paths.iter().enumerate() {
         if !tracks.iter().any(|t| t.file == index) {
@@ -242,4 +155,147 @@ pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
         tracks: result,
         sectors: cursor,
     })
+}
+
+/// Parsed declarations; file sizes and track extents are validated when opening the image.
+struct CueSheet {
+    paths: Vec<PathBuf>,
+    tracks: Vec<CueTrack>,
+}
+
+impl CueSheet {
+    fn parse(text: &str, path: &Path) -> Result<Self, EmuError> {
+        let mut paths = Vec::new();
+        let mut tracks: Vec<CueTrack> = Vec::new();
+        let mut current_file = None;
+        for (line_number, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let (directive, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+            let args: Vec<_> = rest.split_whitespace().collect();
+            let fail = || {
+                invalid(format!(
+                    "Invalid CUE {} at line {}",
+                    directive,
+                    line_number + 1
+                ))
+            };
+            match directive.to_ascii_uppercase().as_str() {
+                "REM" | "TITLE" | "PERFORMER" | "SONGWRITER" | "CATALOG" | "ISRC" => {}
+                "FILE" => {
+                    paths.push(
+                        path.parent()
+                            .unwrap_or(Path::new("."))
+                            .join(filename(rest.trim())?),
+                    );
+                    current_file = Some(paths.len() - 1);
+                }
+                "TRACK" => {
+                    if args.len() != 2 || tracks.len() >= 99 {
+                        return Err(fail());
+                    }
+                    let number: u8 = args[0].parse().map_err(|_| fail())?;
+                    if usize::from(number) != tracks.len() + 1 {
+                        return Err(invalid("CUE tracks must be consecutive, starting at 01"));
+                    }
+                    let kind = match args[1].to_ascii_uppercase().as_str() {
+                        "MODE1/2352" => TrackKind::Mode1,
+                        "MODE2/2352" => TrackKind::Mode2,
+                        "AUDIO" => TrackKind::Audio,
+                        _ => {
+                            return Err(invalid(
+                                "CUE supports MODE1/2352, MODE2/2352 and AUDIO tracks",
+                            ));
+                        }
+                    };
+                    tracks.push(CueTrack {
+                        file: current_file.ok_or_else(fail)?,
+                        number,
+                        kind,
+                        ..CueTrack::default()
+                    });
+                }
+                "INDEX" | "PREGAP" => {
+                    let track = tracks.last_mut().ok_or_else(fail)?;
+                    if Some(track.file) != current_file {
+                        return Err(fail());
+                    }
+                    if directive.eq_ignore_ascii_case("PREGAP") {
+                        if args.len() != 1 || track.pregap.is_some() {
+                            return Err(fail());
+                        }
+                        track.pregap = Some(position(args[0])?);
+                    } else {
+                        if args.len() != 2 {
+                            return Err(fail());
+                        }
+                        let slot = match args[0] {
+                            "00" if track.index1.is_none() => &mut track.index0,
+                            "01" => &mut track.index1,
+                            _ => {
+                                return Err(invalid(
+                                    "Only ordered CUE INDEX 00 and INDEX 01 are supported",
+                                ));
+                            }
+                        };
+                        if slot.is_some() {
+                            return Err(fail());
+                        }
+                        *slot = Some(position(args[1])?);
+                    }
+                }
+                _ => return Err(invalid(format!("Unsupported CUE directive {directive}"))),
+            }
+        }
+        if tracks.is_empty() {
+            return Err(invalid("CUE has no tracks"));
+        }
+        Ok(Self { paths, tracks })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declarations_can_be_parsed_without_opening_bin_files() {
+        let sheet = CueSheet::parse(
+            "\u{feff}FILE \"missing data.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:02:00\n FILE audio.bin BINARY\n TRACK 02 AUDIO\n PREGAP 00:01:00\n INDEX 01 00:00:00\n",
+            Path::new("media/game.cue"),
+        ).unwrap();
+        assert_eq!(
+            sheet.paths,
+            [
+                PathBuf::from("media/missing data.bin"),
+                PathBuf::from("media/audio.bin")
+            ]
+        );
+        assert_eq!(sheet.tracks.len(), 2);
+        assert_eq!(sheet.tracks[0].kind, TrackKind::Mode2);
+        assert_eq!(sheet.tracks[0].index1, Some(150));
+        assert_eq!(sheet.tracks[1].file, 1);
+        assert_eq!(sheet.tracks[1].kind, TrackKind::Audio);
+        assert_eq!(sheet.tracks[1].pregap, Some(75));
+    }
+
+    #[test]
+    fn time_parser_preserves_format_numeric_and_range_error_precedence() {
+        assert_eq!(position("00:00:00").unwrap(), 0);
+        assert_eq!(position("99:59:74").unwrap(), 449_999);
+        for (text, expected) in [
+            ("x:0", "CUE time must be MM:SS:FF"),
+            ("x:0:0:0", "CUE time must be MM:SS:FF"),
+            ("00::00", "Invalid CUE time"),
+            ("100:x:0", "Invalid CUE time"),
+            ("4294967296:0:0", "Invalid CUE time"),
+            ("100:0:0", "CUE time is out of range"),
+            ("00:60:00", "CUE time is out of range"),
+            ("00:00:75", "CUE time is out of range"),
+        ] {
+            assert_eq!(position(text).unwrap_err(), invalid(expected));
+        }
+    }
 }
