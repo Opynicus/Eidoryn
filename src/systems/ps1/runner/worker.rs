@@ -1,5 +1,5 @@
 //! PlayStation session scheduling and transitions. No frontend dependencies.
-use super::{Command, SharedSnapshot, Snapshot, SnapshotMode};
+use super::{Command, SharedSnapshot, Snapshot, SnapshotMode, pacing::FramePacing};
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
@@ -10,7 +10,7 @@ use crate::systems::ps1::{
 };
 use eidoryn_host::audio::AudioBuffer;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -31,7 +31,7 @@ pub(super) fn run(
     let mut worker = Worker::new(machine, auto_run, store, audio, mode);
     loop {
         let command = if worker.running {
-            match receiver.recv_timeout(worker.deadline.saturating_duration_since(Instant::now())) {
+            match receiver.recv_timeout(worker.pacing.wait_duration(Instant::now())) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -90,9 +90,7 @@ struct Worker {
     running: bool,
     message: Option<String>,
     bios_path: Option<PathBuf>,
-    deadline: Instant,
-    frame_deadline: Instant,
-    next_frame: u64,
+    pacing: FramePacing,
     last_publish: Instant,
     epoch: Instant,
     epoch_frames: u64,
@@ -114,7 +112,7 @@ impl Worker {
         machine.bus.spu.drain_audio().for_each(drop);
         let now = Instant::now();
         let frames = machine.bus.gpu.frames;
-        let frame_interval = Duration::from_secs_f64(1.0 / machine.bus.gpu.nominal_fps());
+        let pacing = FramePacing::new(now, frames, machine.bus.gpu.nominal_fps());
         let mut input = PadInput::default();
         input.set_buttons(machine.bus.sio.buttons(), machine.bus.elapsed_cycles());
         Self {
@@ -128,9 +126,7 @@ impl Worker {
             running,
             message: None,
             bios_path: None,
-            deadline: now,
-            frame_deadline: now + frame_interval,
-            next_frame: frames + 1,
+            pacing,
             last_publish: now,
             epoch: now,
             epoch_frames: frames,
@@ -144,10 +140,11 @@ impl Worker {
 
     fn reset_pacing(&mut self) {
         let now = Instant::now();
-        self.deadline = now;
-        self.frame_deadline =
-            now + Duration::from_secs_f64(1.0 / self.machine.bus.gpu.nominal_fps());
-        self.next_frame = self.machine.bus.gpu.frames + 1;
+        self.pacing = FramePacing::new(
+            now,
+            self.machine.bus.gpu.frames,
+            self.machine.bus.gpu.nominal_fps(),
+        );
         self.epoch = now;
         self.epoch_frames = self.machine.bus.gpu.frames;
         self.count = 0;
@@ -189,8 +186,54 @@ impl Worker {
         self.reset_pacing();
     }
 
+    fn select_renderer(&mut self, mode: RendererMode) {
+        match self.machine.bus.gpu.set_renderer(mode) {
+            Ok(()) => {
+                self.renderer = mode;
+                self.message = None;
+            }
+            Err(error) => {
+                self.message = Some(format!("Cannot switch GPU renderer: {error}"));
+                self.running = false;
+            }
+        }
+        self.reset_pacing();
+    }
+
+    fn load_image(&mut self, path: PathBuf, bios: bool) {
+        self.running = false;
+        self.release_input();
+        match load_path(&path, bios) {
+            Ok(loaded) => {
+                if self.replace_machine(loaded) && bios {
+                    self.bios_path = Some(path);
+                }
+                self.reset_pacing();
+            }
+            // A read/validation failure retains the previous pacing and statistics.
+            Err(error) => self.message = Some(error),
+        }
+    }
+
+    fn load_disc(&mut self, path: &Path, bios: Option<PathBuf>, fast_boot: bool) {
+        self.running = false;
+        self.release_input();
+        match load_disc(path, bios.as_deref(), fast_boot) {
+            Ok(loaded) => {
+                if self.replace_machine(loaded) {
+                    if bios.is_some() {
+                        self.bios_path = bios;
+                    }
+                    self.running = fast_boot;
+                }
+            }
+            Err(error) => self.message = Some(error),
+        }
+        // Unlike an image read failure, a failed disc load resets timing too.
+        self.reset_pacing();
+    }
+
     /// Returns true when the frontend should close after receiving the final snapshot.
-    #[allow(clippy::too_many_lines)] // Keep session command transitions together.
     fn apply(&mut self, command: Command) -> bool {
         if matches!(command, Command::SetRenderer(_)) {
             // Also acknowledge a request rejected by the card-flush guard below.
@@ -220,19 +263,7 @@ impl Worker {
                 self.update_input();
             }
             Command::SetCpuMode(mode) => self.select_cpu(mode),
-            Command::SetRenderer(mode) => {
-                match self.machine.bus.gpu.set_renderer(mode) {
-                    Ok(()) => {
-                        self.renderer = mode;
-                        self.message = None;
-                    }
-                    Err(error) => {
-                        self.message = Some(format!("Cannot switch GPU renderer: {error}"));
-                        self.running = false;
-                    }
-                }
-                self.reset_pacing();
-            }
+            Command::SetRenderer(mode) => self.select_renderer(mode),
             Command::Toggle => {
                 self.message = None;
                 self.running = !self.running;
@@ -266,39 +297,12 @@ impl Worker {
                 self.reset_pacing();
             }
             Command::FlushCards => self.message = None,
-            Command::Load { path, bios } => {
-                self.running = false;
-                self.release_input();
-                match load_path(&path, bios) {
-                    Ok(loaded) => {
-                        if self.replace_machine(loaded) && bios {
-                            self.bios_path = Some(path);
-                        }
-                        self.reset_pacing();
-                    }
-                    Err(error) => self.message = Some(error),
-                }
-            }
+            Command::Load { path, bios } => self.load_image(path, bios),
             Command::LoadDisc {
                 path,
                 bios,
                 fast_boot,
-            } => {
-                self.running = false;
-                self.release_input();
-                match load_disc(&path, bios.as_deref(), fast_boot) {
-                    Ok(loaded) => {
-                        if self.replace_machine(loaded) {
-                            if bios.is_some() {
-                                self.bios_path = bios;
-                            }
-                            self.running = fast_boot;
-                        }
-                    }
-                    Err(error) => self.message = Some(error),
-                }
-                self.reset_pacing();
-            }
+            } => self.load_disc(&path, bios, fast_boot),
             Command::RequestClose | Command::Shutdown => {
                 self.running = false;
                 self.release_input();
@@ -340,7 +344,8 @@ impl Worker {
                 Ok(n) => {
                     self.count += 1;
                     // The built-in demo explicitly yields at a drawn frame.
-                    if n < INSTRUCTIONS_PER_SLICE || self.machine.bus.gpu.frames >= self.next_frame
+                    if n < INSTRUCTIONS_PER_SLICE
+                        || self.pacing.frame_reached(self.machine.bus.gpu.frames)
                     {
                         frame_finished = true;
                         break;
@@ -359,18 +364,12 @@ impl Worker {
         }
         self.update_input();
         let now = Instant::now();
-        self.deadline = now;
-        if frame_finished {
-            // Preserve small scheduling jitter; discard a backlog longer than one frame.
-            self.deadline = self.frame_deadline.max(now);
-            let interval = Duration::from_secs_f64(1.0 / self.machine.bus.gpu.nominal_fps());
-            self.frame_deadline = if now.saturating_duration_since(self.frame_deadline) > interval {
-                now + interval
-            } else {
-                self.frame_deadline + interval
-            };
-            self.next_frame = self.machine.bus.gpu.frames + 1;
-        }
+        self.pacing.finish_batch(
+            now,
+            self.machine.bus.gpu.frames,
+            self.machine.bus.gpu.nominal_fps(),
+            frame_finished,
+        );
         frame_finished || !self.running
     }
 
@@ -433,6 +432,92 @@ mod tests {
     use crate::systems::ps1::{input::TurboConfig, timing::CPU_CLOCK_HZ};
 
     #[test]
+    fn failed_loads_preserve_their_distinct_timing_and_clear_audio() {
+        for (command, resets) in [
+            (
+                Command::Load {
+                    path: PathBuf::new(),
+                    bios: false,
+                },
+                false,
+            ),
+            (
+                Command::LoadDisc {
+                    path: PathBuf::new(),
+                    bios: None,
+                    fast_boot: true,
+                },
+                true,
+            ),
+        ] {
+            let audio = AudioBuffer::default();
+            let mut worker = Worker::new(
+                Machine::demo(),
+                true,
+                CardStore::default(),
+                Some(audio.clone()),
+                SnapshotMode::Display,
+            );
+            let previous = Instant::now() + Duration::from_secs(60);
+            worker.pacing = FramePacing::new(previous, 5, 50.0);
+            worker.epoch = previous;
+            worker.epoch_frames = 5;
+            worker.machine.bus.gpu.frames = 7;
+            worker.count = 12;
+            worker.rate = 30.0;
+            worker.video_fps = 50.0;
+            worker.bios_path = Some("previous.bin".into());
+            worker.apply(Command::SetButtons(0x8000));
+            let pacing = worker.pacing;
+            let pc = worker.machine.cpu.pc;
+            audio.set_playing(true);
+            audio.push([[123, -123]; 128]);
+            worker
+                .machine
+                .bus
+                .spu
+                .tick(crate::systems::ps1::spu::SAMPLE_CLOCKS * 16)
+                .unwrap();
+
+            assert!(!worker.apply(command));
+            assert!(!worker.running);
+            assert!(worker.message.is_some());
+            assert_eq!(worker.machine.cpu.pc, pc);
+            assert_eq!(worker.machine.bus.sio.buttons(), 0);
+            assert_eq!(worker.bios_path, Some("previous.bin".into()));
+            assert_eq!(audio.stats().queued_frames, 0);
+            assert_eq!(worker.machine.bus.spu.drain_audio().count(), 0);
+            if resets {
+                assert_ne!(worker.epoch, previous);
+                assert_eq!(worker.pacing.wait_duration(worker.epoch), Duration::ZERO);
+                assert!(!worker.pacing.frame_reached(7));
+                assert!(worker.pacing.frame_reached(8));
+                assert_eq!(
+                    (
+                        worker.epoch_frames,
+                        worker.count,
+                        worker.rate,
+                        worker.video_fps
+                    ),
+                    (7, 0, 0.0, 0.0)
+                );
+            } else {
+                assert_eq!(worker.pacing, pacing);
+                assert_eq!(worker.epoch, previous);
+                assert_eq!(
+                    (
+                        worker.epoch_frames,
+                        worker.count,
+                        worker.rate,
+                        worker.video_fps
+                    ),
+                    (5, 12, 30.0, 50.0)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn turbo_reaches_sio_without_clearing_audio_and_survives_session_reset() {
         let audio = AudioBuffer::default();
         let mut worker = Worker::new(
@@ -444,11 +529,11 @@ mod tests {
         );
         audio.push([[123, -123]; 128]);
         let queued = audio.stats().queued_frames;
-        let deadline = worker.frame_deadline;
+        let pacing = worker.pacing;
         worker.apply(Command::SetTurbo(TurboConfig::new(0x8000, 10).unwrap()));
         worker.apply(Command::SetButtons(0x8020));
         assert_eq!(audio.stats().queued_frames, queued);
-        assert_eq!(worker.frame_deadline, deadline);
+        assert_eq!(worker.pacing, pacing);
         assert_eq!(worker.machine.bus.sio.buttons(), 0x8020);
         worker.machine.bus.tick(CPU_CLOCK_HZ / 20).unwrap();
         worker.apply(Command::SetButtons(0x8020));
@@ -532,8 +617,7 @@ mod tests {
             SnapshotMode::Display,
         );
         worker.message = Some("Previous notification".into());
-        let deadline = worker.deadline;
-        let frame_deadline = worker.frame_deadline;
+        let pacing = worker.pacing;
         let pc = worker.machine.cpu.pc;
         for mode in [SnapshotMode::Debug, SnapshotMode::Display] {
             let queued = audio.stats().queued_frames;
@@ -552,8 +636,7 @@ mod tests {
             assert!(worker.running);
             assert_eq!(worker.message.as_deref(), Some("Previous notification"));
             assert_eq!(worker.machine.cpu.pc, pc);
-            assert_eq!(worker.deadline, deadline);
-            assert_eq!(worker.frame_deadline, frame_deadline);
+            assert_eq!(worker.pacing, pacing);
             assert_eq!(audio.stats().queued_frames, queued + new_samples as usize);
         }
     }
