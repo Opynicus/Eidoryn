@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn time_positions_keep_component_bounds_and_error_priority() {
-        for (text, expected) in [("00:00:00", 0), ("01:02:03", 4653), ("99:59:74", 449999)] {
+        for (text, expected) in [("00:00:00", 0), ("01:02:03", 4653), ("99:59:74", 449_999)] {
             assert_eq!(position(text).unwrap(), expected);
         }
         for (text, expected) in [
