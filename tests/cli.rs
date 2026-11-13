@@ -108,7 +108,7 @@ fn invalid_options_fail_without_opening_a_window() {
     ] {
         let output = cli().args(args).output().unwrap();
         assert!(!output.status.success());
-        assert!(!output.stderr.is_empty());
+        assert_ne!(output.stderr, Vec::<u8>::new());
     }
 }
 

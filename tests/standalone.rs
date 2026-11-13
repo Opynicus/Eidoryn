@@ -654,7 +654,7 @@ fn delayed_cd_responses_survive_irq_blocking_and_independent_clones() {
     original.tick(COMMAND_CLOCKS * 2).unwrap();
     let mut cloned = original.clone();
     for drive in [&mut original, &mut cloned] {
-        assert!(response(drive, 3).is_empty()); // Completion waits for the acknowledgement.
+        assert_eq!(response(drive, 3), Vec::<u8>::new()); // Completion waits for the acknowledgement.
         ack(drive);
         drive.tick(1).unwrap();
         assert_eq!(response(drive, 5), [8, 0x40, 0, 0, 0, 0, 0, 0]);

@@ -30,10 +30,12 @@ impl AudioOutput {
             cpal::SampleFormat::F64 => build::<f64>(&device, &config, buffer, &error),
             cpal::SampleFormat::I8 => build::<i8>(&device, &config, buffer, &error),
             cpal::SampleFormat::I16 => build::<i16>(&device, &config, buffer, &error),
+            cpal::SampleFormat::I24 => build::<cpal::I24>(&device, &config, buffer, &error),
             cpal::SampleFormat::I32 => build::<i32>(&device, &config, buffer, &error),
             cpal::SampleFormat::I64 => build::<i64>(&device, &config, buffer, &error),
             cpal::SampleFormat::U8 => build::<u8>(&device, &config, buffer, &error),
             cpal::SampleFormat::U16 => build::<u16>(&device, &config, buffer, &error),
+            cpal::SampleFormat::U24 => build::<cpal::U24>(&device, &config, buffer, &error),
             cpal::SampleFormat::U32 => build::<u32>(&device, &config, buffer, &error),
             cpal::SampleFormat::U64 => build::<u64>(&device, &config, buffer, &error),
             format => return Err(format!("Unsupported audio output format: {format}")),
@@ -44,7 +46,7 @@ impl AudioOutput {
         Ok(Self {
             _stream: stream,
             error,
-            sample_rate: config.sample_rate.0,
+            sample_rate: config.sample_rate,
         })
     }
 
@@ -60,11 +62,11 @@ fn build<T: SizedSample + FromSample<f32>>(
     error: &Arc<Mutex<Option<String>>>,
 ) -> Result<cpal::Stream, String> {
     let channels = usize::from(config.channels);
-    let rate = config.sample_rate.0;
+    let rate = config.sample_rate;
     let error = Arc::clone(error);
     device
         .build_output_stream(
-            config,
+            *config,
             move |samples: &mut [T], _| buffer.render(samples, channels, rate, T::from_sample),
             move |failure| {
                 if let Ok(mut slot) = error.lock() {
@@ -74,4 +76,30 @@ fn build<T: SizedSample + FromSample<f32>>(
             None,
         )
         .map_err(|e| format!("Cannot open audio: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpal::Sample;
+
+    #[test]
+    fn pcm24_callbacks_preserve_levels_and_silence() {
+        let buffer = AudioBuffer::default();
+        buffer.set_volume(100);
+        buffer.set_playing(true);
+        buffer.push(std::iter::repeat_n([16_384, -16_384], 2048));
+        let mut signed = [cpal::I24::from_sample(0.0); 2];
+        let mut unsigned = [cpal::U24::from_sample(0.0); 2];
+        buffer.render(&mut signed, 2, 48_000, cpal::I24::from_sample);
+        buffer.render(&mut unsigned, 2, 48_000, cpal::U24::from_sample);
+        assert_eq!(signed.map(cpal::I24::inner), [4_194_304, -4_194_304]);
+        assert_eq!(unsigned.map(cpal::U24::inner), [12_582_912, 4_194_304]);
+
+        buffer.set_playing(false);
+        buffer.render(&mut signed, 2, 48_000, cpal::I24::from_sample);
+        buffer.render(&mut unsigned, 2, 48_000, cpal::U24::from_sample);
+        assert_eq!(signed.map(cpal::I24::inner), [0; 2]);
+        assert_eq!(unsigned.map(cpal::U24::inner), [8_388_608; 2]);
+    }
 }

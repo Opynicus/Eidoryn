@@ -200,8 +200,8 @@ mod tests {
     #[test]
     fn catalogs_are_complete_and_locale_parsing_is_predictable() {
         for &key in ALL_TEXT {
-            assert!(!Language::En.text(key).trim().is_empty());
-            assert!(!Language::ZhCn.text(key).trim().is_empty());
+            assert_ne!(Language::En.text(key).trim(), "");
+            assert_ne!(Language::ZhCn.text(key).trim(), "");
         }
         assert_eq!("en".parse::<Language>().unwrap(), Language::En);
         assert_eq!("zh-CN".parse::<Language>().unwrap(), Language::ZhCn);
