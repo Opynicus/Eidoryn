@@ -1,4 +1,5 @@
 use super::*;
+use eidoryn_psx::keybindings::{KeyBindings, PadButton};
 use gpui::{TestAppContext, VisualTestContext};
 
 #[gpui::test]
@@ -178,6 +179,8 @@ fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Deskto
         themes,
         settings_tab: SettingsTab::Graphics,
         pressed_buttons: 0,
+        rebinding: None,
+        keybindings_draft: None,
         probe: None,
         _subscriptions: Vec::new(),
     }
@@ -325,6 +328,7 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
 #[gpui::test]
 fn turbo_settings_persist_and_input_releases_at_ui_boundaries(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(desktop);
+    cx.simulate_resize(size(px(1280.), px(1400.)));
     let path = view.read_with(cx, |v, _| v.preferences_path.clone().unwrap());
     let _cleanup = TestConfig(path.clone());
     cx.simulate_keystrokes("z");
@@ -357,7 +361,10 @@ fn turbo_settings_persist_and_input_releases_at_ui_boundaries(cx: &mut TestAppCo
     // A key-up after losing focus is harmless; another press/release still works.
     press_keys(cx, "z");
     assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
-    press_keys(cx, "f8 tab tab tab tab enter tab tab enter");
+    press_keys(cx, "f8 tab tab tab tab enter");
+    // Skip fourteen bindings and their three actions to reach the turbo controls.
+    press_keys(cx, &"tab ".repeat(19));
+    press_keys(cx, "enter");
     assert_eq!(
         view.read_with(cx, |v, _| v.settings_tab),
         SettingsTab::Controller
@@ -368,6 +375,253 @@ fn turbo_settings_persist_and_input_releases_at_ui_boundaries(cx: &mut TestAppCo
             .unwrap()
             .turbo_buttons,
         0
+    );
+}
+
+#[gpui::test]
+fn f5_toggles_execution_without_space_pausing_the_game(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    for (index, (keys, running)) in [
+        ("space", false),
+        ("f5", true),
+        ("space", true),
+        ("tab f5", false),
+        ("escape f5", true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        press_keys(cx, keys);
+        // Acknowledge all preceding key commands before checking the worker's state.
+        let mode = if index % 2 == 0 {
+            SnapshotMode::Debug
+        } else {
+            SnapshotMode::Display
+        };
+        view.read_with(cx, |v, _| {
+            v.runner.send(Command::SetSnapshotMode(mode)).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(snapshot) = view.read_with(cx, |v, _| v.runner.take_snapshot())
+                && snapshot.mode == mode
+            {
+                assert_eq!(snapshot.running, running, "after {keys}");
+                view.update(cx, |v, _| v.snapshot.running = snapshot.running);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "worker did not acknowledge {keys}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+#[gpui::test]
+fn custom_bindings_persist_drive_input_and_reset(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let path = view.read_with(cx, |v, _| v.preferences_path.clone().unwrap());
+    let _cleanup = TestConfig(path.clone());
+    cx.simulate_resize(size(px(1280.), px(1000.)));
+    cx.simulate_keystrokes("z");
+    press_keys(cx, "f8 tab tab tab tab enter");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    cx.run_until_parked();
+    let square = cx.debug_bounds("binding-15").unwrap();
+    cx.simulate_click(square.center(), gpui::Modifiers::none());
+    assert_eq!(
+        view.read_with(cx, |v, _| v.rebinding),
+        Some(PadButton::Square)
+    );
+    press_keys(cx, "space");
+    assert_eq!(view.read_with(cx, |v, _| v.rebinding), None);
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    assert_eq!(
+        eidoryn_psx::preferences::Preferences::load(&path)
+            .unwrap()
+            .keybindings,
+        KeyBindings::default()
+    );
+    cx.run_until_parked();
+    let apply = cx.debug_bounds("bindings-apply").unwrap();
+    cx.simulate_click(apply.center(), gpui::Modifiers::none());
+    let saved = eidoryn_psx::preferences::Preferences::load(&path).unwrap();
+    assert_eq!(saved.keybindings.key(PadButton::Square), "space");
+    press_keys(cx, "escape");
+    cx.simulate_keystrokes("z");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    cx.simulate_keystrokes("space up");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0x8010);
+    // Releasing a held key still works if modifiers changed in the meantime.
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("ctrl-space").unwrap(),
+    });
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0x0010);
+    press_keys(cx, "f8 tab tab tab tab enter");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    cx.run_until_parked();
+    let reset = cx.debug_bounds("bindings-reset").unwrap();
+    cx.simulate_click(reset.center(), gpui::Modifiers::none());
+    assert_eq!(
+        eidoryn_psx::preferences::Preferences::load(&path)
+            .unwrap()
+            .keybindings,
+        saved.keybindings
+    );
+    cx.run_until_parked();
+    let apply = cx.debug_bounds("bindings-apply").unwrap();
+    cx.simulate_click(apply.center(), gpui::Modifiers::none());
+    assert_eq!(
+        eidoryn_psx::preferences::Preferences::load(&path)
+            .unwrap()
+            .keybindings,
+        KeyBindings::default()
+    );
+    press_keys(cx, "escape");
+    cx.simulate_keystrokes("space");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    cx.simulate_keystrokes("z");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0x8000);
+    view.update(cx, Desktop::stop_input);
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+}
+
+#[gpui::test]
+fn binding_capture_handles_cancel_and_keyboard_activation(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _subscriptions = view.update_in(cx, |view, window, cx| {
+        let subscriptions = [
+            cx.on_blur(&view.focus, window, |view, _, cx| {
+                view.stop_input(cx);
+            }),
+            cx.observe_window_activation(window, |view, window, cx| {
+                if !window.is_window_active() {
+                    view.stop_input(cx);
+                }
+            }),
+        ];
+        window.activate_window();
+        subscriptions
+    });
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    cx.simulate_resize(size(px(1280.), px(1000.)));
+    press_keys(cx, "f8 tab tab tab tab enter tab enter");
+    assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
+    for key in ["f5", "tab", "f8", "f11", "f12", "ctrl-r", "shift-j"] {
+        press_keys(cx, key);
+        assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
+        assert!(view.read_with(cx, |v, _| v.graphics.open));
+        assert!(!view.read_with(cx, |v, _| v.clean_fullscreen));
+    }
+    press_keys(cx, "escape");
+    assert!(view.read_with(cx, |v, _| v.graphics.open));
+    assert_eq!(view.read_with(cx, |v, _| v.rebinding), None);
+    assert!(view.read_with(cx, |v, _| v.preferences.keybindings
+        == KeyBindings::default()));
+
+    // Free Enter, then bind it using the key-up that also activates focused UI controls.
+    for (selector, key) in [("binding-3", "j"), ("binding-14", "enter")] {
+        cx.run_until_parked();
+        let binding = cx.debug_bounds(selector).unwrap();
+        cx.simulate_click(binding.center(), gpui::Modifiers::none());
+        press_keys(cx, key);
+        assert_eq!(view.read_with(cx, |v, _| v.rebinding), None);
+        assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    }
+    cx.run_until_parked();
+    let apply = cx.debug_bounds("bindings-apply").unwrap();
+    cx.simulate_click(apply.center(), gpui::Modifiers::none());
+    assert_eq!(
+        view.read_with(cx, |v, _| v
+            .preferences
+            .keybindings
+            .key(PadButton::Cross)
+            .to_owned()),
+        "enter"
+    );
+    let up = cx.debug_bounds("binding-4").unwrap();
+    cx.simulate_click(up.center(), gpui::Modifiers::none());
+    cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("w").unwrap(),
+        is_held: true,
+    });
+    assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
+    cx.deactivate_window();
+    assert_eq!(view.read_with(cx, |v, _| v.rebinding), None);
+    cx.update(|window, _| window.activate_window());
+    press_keys(cx, "escape");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0x4000);
+    press_keys(cx, "enter");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+}
+
+#[gpui::test]
+fn duplicate_bindings_remain_drafts_until_confirmed(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let path = view.read_with(cx, |v, _| v.preferences_path.clone().unwrap());
+    let _cleanup = TestConfig(path.clone());
+    cx.simulate_resize(size(px(1280.), px(1400.)));
+    press_keys(cx, "f8 tab tab tab tab enter");
+    cx.run_until_parked();
+    let cross = cx.debug_bounds("binding-14").unwrap();
+    cx.simulate_click(cross.center(), gpui::Modifiers::none());
+    press_keys(cx, "z");
+    assert_eq!(view.read_with(cx, |v, _| v.rebinding), None);
+    assert!(view.read_with(
+        cx,
+        |v, _| v.keybindings_draft.as_ref().unwrap().key(PadButton::Cross) == "z"
+    ));
+    assert!(cx.debug_bounds("bindings-conflict").is_some());
+
+    // Saving another setting must not write unconfirmed or conflicting bindings.
+    let turbo = cx.debug_bounds("turbo-square").unwrap();
+    cx.simulate_click(turbo.center(), gpui::Modifiers::none());
+    let before = std::fs::read(&path).unwrap();
+    let apply = cx.debug_bounds("bindings-apply").unwrap();
+    cx.simulate_click(apply.center(), gpui::Modifiers::none());
+    assert!(view.read_with(cx, |v, _| v.notice.is_some()));
+    assert!(view.read_with(cx, |v, _| v.preferences.keybindings
+        == KeyBindings::default()));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // Complete the swap without assigning either button to an intermediate key.
+    cx.run_until_parked();
+    let square = cx.debug_bounds("binding-15").unwrap();
+    cx.simulate_click(square.center(), gpui::Modifiers::none());
+    press_keys(cx, "x");
+    cx.run_until_parked();
+    let apply = cx.debug_bounds("bindings-apply").unwrap();
+    cx.simulate_click(apply.center(), gpui::Modifiers::none());
+    assert!(view.read_with(cx, |v, _| v.notice.is_none()
+        && v.keybindings_draft.is_none()));
+    let saved = eidoryn_psx::preferences::Preferences::load(&path).unwrap();
+    assert_eq!(saved.keybindings.key(PadButton::Cross), "z");
+    assert_eq!(saved.keybindings.key(PadButton::Square), "x");
+    assert_eq!(saved.turbo_buttons, 0x8000);
+    press_keys(cx, "escape");
+    cx.simulate_keystrokes("x");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0x8000);
+    press_keys(cx, "x z");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+
+    // Reset and discard also leave the last confirmed map intact.
+    press_keys(cx, "f8 tab tab tab tab enter");
+    cx.run_until_parked();
+    let reset = cx.debug_bounds("bindings-reset").unwrap();
+    cx.simulate_click(reset.center(), gpui::Modifiers::none());
+    let cancel = cx.debug_bounds("bindings-cancel").unwrap();
+    cx.simulate_click(cancel.center(), gpui::Modifiers::none());
+    assert!(view.read_with(cx, |v, _| v.keybindings_draft.is_none()));
+    cx.simulate_click(reset.center(), gpui::Modifiers::none());
+    press_keys(cx, "escape");
+    assert!(view.read_with(cx, |v, _| v.keybindings_draft.is_none()));
+    assert_eq!(
+        eidoryn_psx::preferences::Preferences::load(&path).unwrap(),
+        saved
     );
 }
 

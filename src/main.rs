@@ -90,7 +90,7 @@ fn run() -> Result<(), String> {
                     --bios PATH         512 KiB BIOS (provide your own)\n\
                     --disc PATH         CUE/BIN or ISO; requires --bios or --fast-boot\n\
                     --fast-boot         Load EXE from disc; skips BIOS, homebrew only\n\n\
-                    Keys: Space = run/pause; F9 = slice; F10 = instruction; Ctrl+R = reset.\n\
+                    Keys: F5 = run/pause; F9 = slice; F10 = instruction; Ctrl+R = reset.\n\
                     F6 = game/inspector view; F7 = cycle CRT; F8 = graphics settings.\n\
                     F11 = fullscreen; Esc = leave fullscreen.\n\
                     Pad: arrows; X/Z/S/D = cross/square/triangle/circle; Enter = start.\n\

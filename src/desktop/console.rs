@@ -278,7 +278,7 @@ impl Desktop {
             .text_color(rgb(p.muted))
             .children(
                 [
-                    ("Space", self.tr(Text::RunPause)),
+                    ("F5", self.tr(Text::RunPause)),
                     ("F6", self.tr(Text::GameView)),
                     ("F7", "CRT"),
                     ("F8", self.tr(Text::Graphics)),

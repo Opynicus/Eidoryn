@@ -5,6 +5,9 @@ use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
 
 impl Desktop {
     pub(super) fn stop_input(&mut self, cx: &mut Context<Self>) {
+        if self.rebinding.take().is_some() {
+            cx.notify();
+        }
         if self.audio.dragging {
             self.persist_volume();
         }
@@ -69,10 +72,10 @@ impl Desktop {
         }
     }
     pub(super) fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(button) = pad_button(&event.keystroke.key)
-            && self.pressed_buttons & button != 0
+        if let Some(button) = self.preferences.keybindings.button(&event.keystroke.key)
+            && self.pressed_buttons & button.mask() != 0
         {
-            self.pressed_buttons &= !button;
+            self.pressed_buttons &= !button.mask();
             self.command(Command::SetButtons(self.pressed_buttons), cx);
         }
     }
@@ -209,7 +212,7 @@ impl Desktop {
                     self.move_focus(false, window, cx);
                     return;
                 }
-                "f6" | "f7" | "f8" | "f9" | "f10" | "f11" => {}
+                "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" => {}
                 "r" if event.keystroke.modifiers.control => {}
                 _ => return, // Enter/Space activate the focused control on key-up.
             }
@@ -218,14 +221,14 @@ impl Desktop {
         if !modifiers.control
             && !modifiers.alt
             && !modifiers.platform
-            && let Some(button) = pad_button(&event.keystroke.key)
+            && let Some(button) = self.preferences.keybindings.button(&event.keystroke.key)
         {
-            self.pressed_buttons |= button;
+            self.pressed_buttons |= button.mask();
             self.command(Command::SetButtons(self.pressed_buttons), cx);
             return;
         }
         match event.keystroke.key.as_str() {
-            "space" => self.command(Command::Toggle, cx),
+            "f5" => self.command(Command::Toggle, cx),
             "f10" => self.command(Command::Step, cx),
             "f9" => self.command(Command::Slice, cx),
             "f6" => self.toggle_view(window, cx),
@@ -273,6 +276,8 @@ impl Desktop {
         }
         self.game_view = false;
         self.page = page;
+        self.rebinding = None;
+        self.keybindings_draft = None;
         self.graphics.open = false;
         window.focus(&self.focus);
         cx.notify();
@@ -280,6 +285,8 @@ impl Desktop {
 
     pub(super) fn open_settings(&mut self, appearance: bool, cx: &mut Context<Self>) {
         self.release_buttons(cx);
+        self.rebinding = None;
+        self.keybindings_draft = None;
         self.graphics.open = true;
         self.settings_tab = if appearance {
             SettingsTab::Appearance
@@ -290,6 +297,8 @@ impl Desktop {
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rebinding = None;
+        self.keybindings_draft = None;
         self.graphics.open = false;
         window.focus(&self.focus);
         cx.notify();
@@ -316,25 +325,4 @@ impl Desktop {
         self.save_preferences();
         cx.notify();
     }
-}
-
-fn pad_button(key: &str) -> Option<u16> {
-    let bit = match key {
-        "backspace" => 0, // Select
-        "enter" => 3,     // Start
-        "up" => 4,
-        "right" => 5,
-        "down" => 6,
-        "left" => 7,
-        "a" => 8,
-        "f" => 9,
-        "q" => 10,
-        "e" => 11, // L2, R2, L1, R1
-        "s" => 12,
-        "d" => 13,
-        "x" => 14,
-        "z" => 15, // Triangle, Circle, Cross, Square
-        _ => return None,
-    };
-    Some(1 << bit)
 }

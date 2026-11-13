@@ -103,7 +103,7 @@ With default features disabled, the core and CLI use only the Rust standard libr
 
 ## Controls
 
-| Keyboard | PS1 controller |
+| Default keyboard key | PS1 controller |
 | --- | --- |
 | Arrow keys | D-pad |
 | `X` / `Z` / `S` / `D` | Cross / Square / Triangle / Circle |
@@ -111,11 +111,13 @@ With default features disabled, the core and CLI use only the Rust standard libr
 | `Q` / `E` | L1 / R1 |
 | `A` / `F` | L2 / R2 |
 
+Open **Settings (F8) → Controller → Keyboard bindings**, select a controller button, then press its new keyboard key. All 14 digital controller buttons can be remapped. Duplicate keys are allowed while editing and are highlighted, so you can swap bindings directly. Click **Confirm changes** to validate, apply, and save the completed mapping; unresolved duplicates prevent confirmation. The game keeps using the last confirmed mapping until then. **Esc** cancels capture; **Reset keyboard bindings** stages the defaults above for confirmation without changing turbo settings. **Discard changes** or closing settings abandons unconfirmed edits. Tab, Esc, F5–F12, and modifier combinations remain reserved for interface shortcuts. Space can be bound to a controller button.
+
 Open **Settings (F8) → Controller** to enable turbo for individual action or shoulder buttons. Hold the corresponding keyboard key to repeat; release to stop. Choose 5, 10, 15, or 20 presses per second. Turbo is off by default, and button/rate choices are saved. Directions, Start, and Select keep their normal behavior.
 
 | Shortcut | Action |
 | --- | --- |
-| `Space` | Run / pause |
+| `F5` | Run / pause |
 | `F6` / `F7` / `F8` | Toggle game view / CRT filter / graphics settings |
 | `F11` / `Esc` | Toggle fullscreen / exit fullscreen |
 | `F12` | Show or hide fullscreen controls |
