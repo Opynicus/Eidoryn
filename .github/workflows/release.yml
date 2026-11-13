@@ -1,4 +1,4 @@
-name: Linux Desktop Release
+name: Desktop Release
 on:
   push:
     tags: ['v*']
@@ -54,9 +54,46 @@ jobs:
           name: linux-x86_64-${{ matrix.backend }}
           path: dist/*
           if-no-files-found: error
+  windows:
+    name: Windows x86_64 MSVC
+    needs: ci
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        shell: bash
+        run: rustup toolchain install 1.100.0 --profile minimal && rustup default 1.100.0
+      - name: Windows shader compiler
+        shell: pwsh
+        run: |
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" |
+            Sort-Object { [version] $_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          if (-not $fxc) { throw "Windows SDK fxc.exe was not found" }
+          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc-release
+      - name: Build
+        run: cargo build --locked --release --bin eidoryn --no-default-features --features desktop,vulkan
+      - name: Original demo smoke test
+        run: ./target/release/eidoryn.exe --headless --no-memory-cards --frames 120
+      - name: Package
+        env:
+          PACKAGE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        run: python scripts/package_release.py --label "${env:PACKAGE_VERSION}-windows-x86_64" --binary target/release/eidoryn.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/*
+          if-no-files-found: error
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -66,29 +103,40 @@ jobs:
           pattern: linux-x86_64-*
           path: dist
           merge-multiple: true
-      - name: Publish Wayland and X11 packages
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist
+      - name: Publish Wayland, X11 and Windows packages
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
           cd dist
           files=()
-          for backend in wayland x11; do
-            archive="Eidoryn-${RELEASE_TAG}-linux-x86_64-${backend}.tar.gz"
+          for suffix in linux-x86_64-wayland.tar.gz linux-x86_64-x11.tar.gz windows-x86_64.zip; do
+            archive="Eidoryn-${RELEASE_TAG}-${suffix}"
+            test -f "$archive"
             sha256sum --check --strict "${archive}.sha256"
             files+=("$archive" "${archive}.sha256")
           done
           cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Temporary UI test release from the refactor/desktop-ui-redesign branch. This is not a main-branch release and is not marked as the latest release.
+
           Experimental project developed with extensive AI assistance. Hardware accuracy and game compatibility are still under active development.
+
+          This release refreshes the native desktop interface with a black-and-gray Midnight theme, compact navigation, an integrated game display and controls, and updated settings and debugger layouts. Existing keyboard-binding confirmation, shortcuts, themes and memory-card behavior are preserved.
 
           Experimental, unsigned Linux x86-64 desktop packages. Choose the Wayland archive for a Wayland session, or the X11 archive for an X11 session. Each build enables only its named GPUI window backend. Requires Ubuntu 24.04 or a compatible newer glibc and the corresponding Wayland/XCB, xkbcommon, fontconfig, FreeType and ALSA runtime libraries.
 
-          Both variants must pass tests, the release build and the original headless demo smoke test before publishing. SHA-256 sidecars accompany both archives. Vulkan rendering requires a supported physical GPU and driver; software rendering remains the default. JIT is optional at runtime. No BIOS, games, saves or gameplay test artifacts are distributed.
+          The experimental, unsigned Windows x86-64 ZIP is built natively with MSVC and includes the desktop interface. Extract the complete archive and run eidoryn.exe from its directory. Windows desktop gameplay, input and audio have not been manually validated; the automated Windows check runs the original headless demo. JIT is available only in the Linux builds.
 
-          Windows, macOS and standalone CLI packages are not published by this workflow. Automated headless checks do not verify desktop gameplay or full game compatibility.
+          All three variants must pass tests, the release build and the original headless demo smoke test before publishing. SHA-256 sidecars accompany all archives. Vulkan rendering requires a supported physical GPU and driver; software rendering remains the default. No BIOS, games, saves or gameplay test artifacts are distributed.
+
+          macOS and standalone CLI packages are not published by this workflow. Automated headless checks do not verify desktop gameplay or full game compatibility.
           NOTES
-          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --verify-tag --title "Eidoryn $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease
-          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+          gh release create "$RELEASE_TAG" "${files[@]}" --verify-tag --target "$RELEASE_COMMIT" --title "Eidoryn $RELEASE_TAG (UI test)" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease --latest=false

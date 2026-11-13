@@ -47,7 +47,7 @@ Save states, CHD images, and disc swapping are not supported. Memory-card saves 
 - Vulkan rendering requires a physical Vulkan-capable GPU and driver. The default software renderer does not require Vulkan hardware.
 - Bring your own BIOS and game images; they are not supplied by this project.
 
-The [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) currently publishes Linux x86-64 Wayland and X11 desktop archives with SHA-256 checksums to [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases). Choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. Pushes to `main` and pull requests validate both builds; only `v*` tags publish a release. Other platforms remain available to build from source.
+This UI redesign branch produces temporary test releases for Linux x86-64 Wayland, Linux x86-64 X11, and Windows x86-64, with SHA-256 checksums. These prereleases are built from the test branch and do not replace the latest release. On Linux, choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. On Windows, extract the full ZIP and run `eidoryn.exe` from its directory. Windows desktop display, input, and audio still need hands-on validation; native CI covers compilation, tests, and the headless demo. See [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) for available test packages.
 
 ### Build and launch
 
@@ -65,6 +65,14 @@ The default Linux build includes Wayland and X11. To reproduce either release va
 cargo build --locked --release --bin eidoryn --no-default-features --features wayland,vulkan,jit
 cargo build --locked --release --bin eidoryn --no-default-features --features x11,vulkan,jit
 ```
+
+The Windows test package uses a native MSVC build with Windows SDK `fxc.exe` available through `GPUI_FXC_PATH`:
+
+```powershell
+cargo build --locked --release --bin eidoryn --no-default-features --features desktop,vulkan
+```
+
+Windows packages do not enable the Linux-only experimental JIT.
 
 ### Interface language
 
