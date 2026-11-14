@@ -8,7 +8,7 @@ fn video_updates_reuse_sidebar_but_ui_changes_invalidate_it(cx: &mut TestAppCont
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1280.), px(900.)));
     cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let sidebar = view.read_with(cx, |view, _| view.sidebar.clone().unwrap());
     let initial = sidebar.read_with(cx, |sidebar, _| sidebar.renders);
     assert!(initial > 0);
@@ -18,7 +18,7 @@ fn video_updates_reuse_sidebar_but_ui_changes_invalidate_it(cx: &mut TestAppCont
             cx.notify();
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
     assert_eq!(sidebar.read_with(cx, |sidebar, _| sidebar.renders), initial);
 
@@ -34,7 +34,7 @@ fn video_updates_reuse_sidebar_but_ui_changes_invalidate_it(cx: &mut TestAppCont
             cx.notify();
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.renders) > before);
     }
     let before = sidebar.read_with(cx, |sidebar, _| sidebar.renders);
@@ -124,7 +124,7 @@ fn debugger_is_optional_and_hidden_views_release_display_resources(cx: &mut Test
         view.read_with(cx, |v, _| v.snapshot_mode),
         SnapshotMode::Display
     );
-    // GPUI 0.2.2 retains historical debug_bounds entries after controls disappear.
+    assert!(cx.debug_bounds("debug-instructions").is_none());
     assert_eq!(
         view.read_with(cx, |v, _| v.snapshot.disassembly.capacity()),
         0
@@ -136,7 +136,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
     let machine = Machine::from_exe(&eidoryn_psx::demo::executable(), "UI test").unwrap();
     let snapshot = Snapshot::capture_with_mode(&machine, false, None, 0., SnapshotMode::Display);
     let focus = cx.focus_handle();
-    window.focus(&focus);
+    window.focus(&focus, cx);
     let mut themes = ThemeCatalog::default();
     themes.select("midnight").unwrap();
     Desktop {
@@ -286,7 +286,7 @@ fn console_cards_fit_and_reflow_across_window_sizes(cx: &mut TestAppContext) {
                 cx.notify();
             });
             cx.run_until_parked();
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             let [display, stage, transport, session, memory] = [
                 "display-card",
                 "display-stage",
@@ -343,7 +343,7 @@ fn debugger_columns_keep_details_readable(cx: &mut TestAppContext) {
                 cx.notify();
             });
             cx.run_until_parked();
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             let [instructions, registers, gpu] =
                 ["debug-instructions", "debug-registers", "debug-gpu"].map(|selector| {
                     let bounds = cx.debug_bounds(selector).expect("debugger card is visible");
@@ -755,10 +755,11 @@ impl Drop for TestConfig {
 }
 
 fn press_keys(cx: &mut VisualTestContext, keys: &str) {
+    let os = cx.read(|cx| cx.platform_info().os);
     for key in keys.split_whitespace() {
         cx.simulate_keystrokes(key);
         cx.simulate_event(gpui::KeyUpEvent {
-            keystroke: gpui::Keystroke::parse(key).unwrap(),
+            keystroke: gpui::Keystroke::parse_with_os(key, os).unwrap(),
         });
     }
 }

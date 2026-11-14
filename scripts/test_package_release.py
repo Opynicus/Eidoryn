@@ -16,7 +16,7 @@ class ReleasePackageTest(unittest.TestCase):
     def test_desktop_archives_include_only_runtime_files(self):
         binary_bytes = b'Eidoryn packaging fixture\x00\xff'
         theme = 'plugins/themes/ember.json'
-        notices = ('licenses/gpui/LICENSE-APACHE', 'licenses/gpui/SOURCE')
+        notices = ('THIRD_PARTY.md',)
         with tempfile.TemporaryDirectory() as temporary:
             work = pathlib.Path(temporary)
             # Adjacent build inputs and local media must not enter the package.

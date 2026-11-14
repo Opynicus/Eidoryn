@@ -2,8 +2,8 @@
 use super::{Desktop, WorkspacePage};
 use eidoryn_psx::{i18n::Language, theme::Palette};
 use gpui::{
-    AnyView, Context, Render, StyleRefinement, Subscription, WeakEntity, Window, div, prelude::*,
-    px,
+    AnyView, Context, Render, StyleRefinement, Subscription, ViewElement, WeakEntity, Window, div,
+    prelude::*, px,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,11 @@ impl Render for Sidebar {
 }
 
 impl Desktop {
-    pub(super) fn cached_sidebar(&mut self, compact: bool, cx: &mut Context<Self>) -> AnyView {
+    pub(super) fn cached_sidebar(
+        &mut self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> ViewElement<AnyView> {
         let sidebar = if let Some(sidebar) = &self.sidebar {
             if sidebar.read(cx).compact != compact {
                 // The cached wrapper changes width in this draw, which already

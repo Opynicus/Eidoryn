@@ -58,9 +58,9 @@ impl Render for Desktop {
             .capture_key_down(cx.listener(Self::capture_binding))
             .on_key_down(cx.listener(Self::key))
             .on_key_up(cx.listener(Self::key_up))
-            .on_click(cx.listener(|view, event, window, _| {
+            .on_click(cx.listener(|view, event, window, cx| {
                 if matches!(event, gpui::ClickEvent::Mouse(_)) {
-                    window.focus(&view.focus);
+                    window.focus(&view.focus, cx);
                 }
             }))
             .child(body);

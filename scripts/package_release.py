@@ -9,10 +9,7 @@ import zipfile
 
 
 RUNTIME_FILES = ('plugins/themes/ember.json',)
-NOTICE_FILES = (
-    'licenses/gpui/LICENSE-APACHE',
-    'licenses/gpui/SOURCE',
-)
+NOTICE_FILES = ('THIRD_PARTY.md',)
 
 
 parser = argparse.ArgumentParser()

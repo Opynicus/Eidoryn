@@ -182,7 +182,7 @@ impl Desktop {
         if key == "f12" {
             self.toggle_clean_fullscreen(cx);
             if !self.graphics.open {
-                window.focus(&self.focus);
+                window.focus(&self.focus, cx);
             }
             return;
         }
@@ -200,7 +200,7 @@ impl Desktop {
         if !self.focus.is_focused(window) {
             match key {
                 "escape" => {
-                    window.focus(&self.focus);
+                    window.focus(&self.focus, cx);
                     cx.notify();
                     return;
                 }
@@ -238,12 +238,12 @@ impl Desktop {
             }
             "f11" => {
                 window.toggle_fullscreen();
-                window.focus(&self.focus);
+                window.focus(&self.focus, cx);
                 cx.notify();
             }
             "escape" if window.is_fullscreen() => {
                 window.toggle_fullscreen();
-                window.focus(&self.focus);
+                window.focus(&self.focus, cx);
                 cx.notify();
             }
             "escape" if self.game_view => {
@@ -261,7 +261,7 @@ impl Desktop {
         } else {
             self.game_view = !self.game_view;
         }
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
@@ -279,7 +279,7 @@ impl Desktop {
         self.rebinding = None;
         self.keybindings_draft = None;
         self.graphics.open = false;
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
@@ -300,7 +300,7 @@ impl Desktop {
         self.rebinding = None;
         self.keybindings_draft = None;
         self.graphics.open = false;
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
@@ -308,9 +308,9 @@ impl Desktop {
         // The drawer is modal: skip background tab stops, including on wraparound.
         for _ in 0..128 {
             if backwards {
-                window.focus_prev();
+                window.focus_prev(cx);
             } else {
-                window.focus_next();
+                window.focus_next(cx);
             }
             if !self.graphics.open || self.settings_focus.contains_focused(window, cx) {
                 break;

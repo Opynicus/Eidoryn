@@ -181,7 +181,7 @@ impl Desktop {
                                 view.rebinding = Some(pad);
                                 view.notice = None;
                                 // Capture Enter/Space without activating the focused button again.
-                                window.focus(&view.focus);
+                                window.focus(&view.focus, cx);
                                 cx.notify();
                             }))
                     })),

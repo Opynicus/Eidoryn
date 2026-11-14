@@ -260,7 +260,7 @@ impl Desktop {
                 )
                 .on_click(cx.listener(|view, _, window, cx| {
                     window.toggle_fullscreen();
-                    window.focus(&view.focus);
+                    window.focus(&view.focus, cx);
                     cx.notify();
                 }))
             } else {
