@@ -10,7 +10,7 @@ license = "GPL-3.0-only"
 name = "eidoryn_psx"
 
 [workspace]
-members = ["crates/ps1", "crates/host", "crates/jit-runtime"]
+members = ["crates/ps1", "crates/host", "crates/jit-runtime", "vendor/gpui"]
 default-members = ["."]
 resolver = "3"
 
@@ -40,6 +40,9 @@ serde_json = { version = "1.0", optional = true }
 libc = { version = "=0.2.186", optional = true }
 
 [patch.crates-io]
+# GPUI 0.2.2 dereferences a Windows file-drop handle as a pointer.
+# Keep the native fix reproducible for local builds and release packages.
+gpui = { path = "vendor/gpui" }
 # Fix the private proc_macro re-export in GPUI's transitive dependency.
 # https://github.com/GnomedDev/proc-macro-error-2/pull/14
 proc-macro-error2 = { git = "https://github.com/GnomedDev/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }

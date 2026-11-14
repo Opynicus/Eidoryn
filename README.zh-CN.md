@@ -110,10 +110,12 @@ cargo run --locked --release -- \
 
 ```bash
 cargo run --locked --release --no-default-features -- --headless --no-memory-cards --frames 120
-cargo test --locked --workspace
+cargo test --locked --workspace --exclude gpui
 ```
 
 无默认特性的核心与命令行仅使用 Rust 标准库。`--frames` 表示执行切片数，而不是视频帧数。
+
+GPUI 依赖的 Windows 原生文件拖放回归测试见[补丁说明](vendor/gpui/EIDORYN_PATCHES.md)。
 
 </details>
 

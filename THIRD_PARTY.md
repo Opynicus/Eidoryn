@@ -31,6 +31,12 @@ are recorded in Cargo.lock and retain their own licenses. This project keeps
 its existing GPL-3.0-only package license; LICENSE-MIT preserves the original
 prototype's notice.
 
+GPUI 0.2.2 is vendored under `vendor/gpui` (Apache-2.0) with a Windows native
+file-drop fix: `STGMEDIUM.hGlobal` is passed directly as an `HDROP`, and the
+storage medium is released on every extraction path. The upstream license is
+preserved in `vendor/gpui/LICENSE-APACHE`; provenance, local changes and native
+regression-test instructions are in `vendor/gpui/EIDORYN_PATCHES.md`.
+
 GPUI's transitive `proc-macro-error2` 2.0.1 dependency and its attribute crate are
 pinned to commit `53ff94b61c678593158db1a3d50269c6f0de0db7` via Cargo's patch table.
 The source change makes the `proc_macro` re-export public to fix Rust's future

@@ -9,6 +9,10 @@ import zipfile
 
 
 RUNTIME_FILES = ('plugins/themes/ember.json',)
+NOTICE_FILES = (
+    ('vendor/gpui/LICENSE-APACHE', 'licenses/gpui/LICENSE-APACHE'),
+    ('vendor/gpui/EIDORYN_PATCHES.md', 'licenses/gpui/EIDORYN_PATCHES.md'),
+)
 
 
 parser = argparse.ArgumentParser()
@@ -27,6 +31,10 @@ with tempfile.TemporaryDirectory() as temporary:
         destination = stage / filename
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / filename, destination)
+    for source, filename in NOTICE_FILES:
+        destination = stage / filename
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / source, destination)
     if args.binary.suffix == '.exe':
         archive = args.output / (name + '.zip')
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
