@@ -478,7 +478,21 @@ fn turbo_settings_persist_and_input_releases_at_ui_boundaries(cx: &mut TestAppCo
 
 #[gpui::test]
 fn f5_toggles_execution_without_space_pausing_the_game(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(desktop);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = desktop(window, cx);
+        // The built-in demo yields after each drawn frame. Loading its EXE
+        // instead can rasterize a whole 20,000-instruction slice before the
+        // worker can receive the next key command or acknowledgement barrier.
+        view.runner = Runner::with_snapshot_mode(
+            Machine::demo(),
+            false,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        )
+        .unwrap();
+        view
+    });
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     for (index, (keys, running)) in [
         ("space", false),
