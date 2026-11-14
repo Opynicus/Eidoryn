@@ -1,3 +1,9 @@
+// Desktop releases start without a console; debug and headless builds keep it.
+#![cfg_attr(
+    all(target_os = "windows", feature = "desktop", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use eidoryn_psx::app::BINARY_NAME;
 
 mod cli;

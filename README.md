@@ -74,6 +74,8 @@ cargo build --locked --release --bin eidoryn --no-default-features --features de
 
 Windows packages do not enable the Linux-only experimental JIT.
 
+On Windows, the desktop uses the native title bar and hides the extra workspace top bar. Release desktop builds start without a console window; debug builds and builds without `desktop` retain the console. For interactive CLI output, use a headless build (`--no-default-features`). To capture output from the desktop release in PowerShell and wait for it to finish, pipe it to `Out-Host`, for example `./target/release/eidoryn.exe --help | Out-Host`.
+
 ### Interface language
 
 Choose **Settings → Appearance → Language** to switch between **English** and **简体中文** immediately. The choice is saved for the next launch. On first launch, a Chinese locale selects Simplified Chinese; other locales use English.

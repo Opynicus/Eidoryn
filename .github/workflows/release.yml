@@ -81,7 +81,10 @@ jobs:
       - name: Build
         run: cargo build --locked --release --bin eidoryn --no-default-features --features desktop,vulkan
       - name: Original demo smoke test
-        run: ./target/release/eidoryn.exe --headless --no-memory-cards --frames 120
+        # A pipeline makes PowerShell wait for the Windows GUI executable.
+        run: |
+          ./target/release/eidoryn.exe --headless --no-memory-cards --frames 120 | Out-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package
         env:
           PACKAGE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
