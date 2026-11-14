@@ -132,7 +132,7 @@ fn debugger_is_optional_and_hidden_views_release_display_resources(cx: &mut Test
     assert!(view.read_with(cx, |v, _| v.image.is_none()));
 }
 
-fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Desktop {
+pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Desktop {
     let machine = Machine::from_exe(&eidoryn_psx::demo::executable(), "UI test").unwrap();
     let snapshot = Snapshot::capture_with_mode(&machine, false, None, 0., SnapshotMode::Display);
     let focus = cx.focus_handle();
@@ -156,7 +156,8 @@ fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Deskto
             SnapshotMode::Display,
         )
         .unwrap(),
-        graphics: graphics::GraphicsControls::new(snapshot.renderer, false),
+        graphics: graphics::GraphicsControls::new(snapshot.renderer, false)
+            .with_backends(Vec::new()),
         snapshot,
         image: None,
         icon: OnceCell::new(),

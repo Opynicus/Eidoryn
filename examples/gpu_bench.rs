@@ -46,13 +46,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let modes = [
         RendererMode::Serial,
         RendererMode::Threaded,
+        #[cfg(all(feature = "dx12", target_os = "windows"))]
+        RendererMode::Dx12,
+        #[cfg(feature = "vulkan")]
         RendererMode::Vulkan,
+        #[cfg(feature = "opengl")]
+        RendererMode::OpenGl,
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        RendererMode::Metal,
     ];
-    let mut times: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
+    let mut times = vec![Vec::new(); modes.len()];
     let mut expected = None;
     for round in 0..3 {
-        let order = if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] };
-        for index in order {
+        for offset in 0..modes.len() {
+            let index = if round % 2 == 0 {
+                offset
+            } else {
+                modes.len() - 1 - offset
+            };
             let mut gpu = base.clone();
             gpu.set_renderer(modes[index])?;
             if round == 0 {
@@ -85,13 +96,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    for (mode, values) in modes.into_iter().zip(&mut times) {
+    for (mode, values) in modes.iter().zip(&mut times) {
         values.sort_by(f64::total_cmp);
         println!("{} median raster_ms/frame={:.3}", mode.label(), values[1]);
     }
-    println!(
-        "Vulkan/serial raster speedup={:.2}x; all final VRAM matches",
-        times[0][1] / times[2][1]
-    );
+    for (mode, values) in modes.iter().zip(&times).skip(1) {
+        println!(
+            "{}/serial raster speedup={:.2}x; all final VRAM matches",
+            mode.label(),
+            times[0][1] / values[1]
+        );
+    }
     Ok(())
 }

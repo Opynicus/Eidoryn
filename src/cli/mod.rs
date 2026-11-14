@@ -21,6 +21,10 @@ pub(super) fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), S
         return Ok(());
     };
     options.validate()?;
+    if options.list_renderers {
+        list_renderers();
+        return Ok(());
+    }
     if let Some(path) = &options.inspect {
         return inspect_disc(path);
     }
@@ -28,6 +32,31 @@ pub(super) fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), S
         return export_executable(path, options.export_disc_test);
     }
     launch(options)
+}
+
+fn list_renderers() {
+    let backends = eidoryn_psx::systems::ps1::gpu::hardware_backends();
+    println!("serial: available (CPU software rasterizer)");
+    println!("threaded: available (CPU software rasterizer on a worker thread)");
+    println!(
+        "hardware: {} (automatic platform preference)",
+        if backends.iter().any(|backend| backend.device.is_some()) {
+            "available"
+        } else {
+            "unavailable"
+        }
+    );
+    for backend in backends {
+        if let Some(device) = backend.device {
+            println!("{}: available ({device})", backend.mode.id());
+        } else {
+            println!(
+                "{}: unavailable ({})",
+                backend.mode.id(),
+                backend.reason.as_deref().unwrap_or("No supported device")
+            );
+        }
+    }
 }
 
 fn inspect_disc(path: &Path) -> Result<(), String> {
@@ -95,7 +124,7 @@ fn launch(options: Options) -> Result<(), String> {
             .set_renderer(options.renderer.unwrap_or_default())
             .map_err(|error| format!("Cannot start GPU renderer: {error}"))?;
     }
-    if machine.bus.gpu.renderer_mode() == eidoryn_psx::systems::ps1::gpu::RendererMode::Vulkan {
+    if machine.bus.gpu.renderer_mode().is_hardware() {
         eprintln!("Renderer: {}", machine.bus.gpu.renderer_device());
     }
     machine

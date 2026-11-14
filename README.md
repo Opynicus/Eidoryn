@@ -21,7 +21,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 ## Features
 
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
-- **Graphics and performance options:** serial and multithreaded software rendering, optional Vulkan acceleration, enlarged and fullscreen views, and a CRT display filter.
+- **Graphics and performance options:** serial and multithreaded software rendering, optional wgpu hardware acceleration with runtime backend detection, enlarged and fullscreen views, and a CRT display filter.
 - **Desktop experience:** English and Simplified Chinese, keyboard navigation, four built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
 - **Media and saves:** ISO, BIN, and multi-track CUE/BIN images; two memory-card slots with automatic persistence.
 - **Debugging tools:** An optional debugger with CPU registers, disassembly, single stepping, and execution slices; an experimental JIT and a headless CLI. Enable the debugger in its workspace or start with `--debugger`.
@@ -32,7 +32,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 | --- | --- |
 | Emulated systems | PlayStation (PS1) is in development; other systems are not implemented. |
 | Host platforms | Linux x86-64 has been used for development and testing. Windows and macOS headless CLI builds have passed CI smoke tests; their desktop interfaces still need hands-on runtime validation. |
-| Rendering | Serial software rendering is the default. Multithreaded software rendering and Vulkan can be selected in **Settings → Graphics / F8** when included in the build. |
+| Rendering | Software rendering is the default. **Settings → Graphics / F8** offers optional hardware acceleration and detects usable backends. Windows automatic selection prefers DirectX 12, then Vulkan, then OpenGL. |
 | CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
 | Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
@@ -44,7 +44,7 @@ Save states, CHD images, and disc swapping are not supported. Memory-card saves 
 
 - Rust **1.95 or newer** and Cargo. A release build is recommended for running games.
 - The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for the Linux build dependencies.
-- Vulkan rendering requires a physical Vulkan-capable GPU and driver. The default software renderer does not require Vulkan hardware.
+- Hardware rendering requires a physical GPU and driver with compute shader support. Windows supports DirectX 12, Vulkan and OpenGL 4.3+; older devices without a compatible hardware backend can use software rendering.
 - Bring your own BIOS and game images; they are not supplied by this project.
 
 This UI redesign branch produces temporary test releases for Linux x86-64 Wayland, Linux x86-64 X11, and Windows x86-64, with SHA-256 checksums. These prereleases are built from the test branch and do not replace the latest release. On Linux, choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. On Windows, extract the full ZIP and run `eidoryn.exe` from its directory. Windows desktop display, input, and audio still need hands-on validation; native CI covers compilation, tests, and the headless demo. See [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) for available test packages.
@@ -69,10 +69,16 @@ cargo build --locked --release --bin eidoryn --no-default-features --features x1
 The Windows test package uses a native MSVC build with Windows SDK `fxc.exe` available through `GPUI_FXC_PATH`:
 
 ```powershell
-cargo build --locked --release --bin eidoryn --no-default-features --features desktop,vulkan
+cargo build --locked --release --bin eidoryn --no-default-features --features desktop,dx12,vulkan,opengl
 ```
 
 Windows packages do not enable the Linux-only experimental JIT.
+
+Enable **Settings → Graphics / F8 → Hardware acceleration**, or pass `--renderer hardware` for automatic selection. The settings panel probes devices and shader initialization in the background; unavailable backends remain disabled with a reason. `--renderer dx12`, `vulkan`, `opengl`, or `metal` requests a specific backend. Windows prefers DirectX 12, Linux prefers Vulkan, and macOS prefers Metal; unavailable automatic candidates are tried in order. Explicit selections fail without silently changing to another API, preserving the active session.
+
+Use `./target/release/eidoryn.exe --list-renderers | Out-Host` in PowerShell to list detected backends and any unavailability reasons.
+
+The `hardware` build feature includes all four wgpu backends; individual `dx12`, `vulkan`, `opengl`, and `metal` features remain available. Backends also require platform and driver support. All share the integer compute rasterizer: drawing, texture lookup, blending and display conversion run on the GPU, then frames are read back for the desktop UI. Performance depends on the game and driver. wgpu 30 has no native DirectX 11 backend; older Windows GPUs can use OpenGL if compute support is available, or software rendering. Metal and non-Windows runtime behavior need validation on their respective platforms.
 
 On Windows, the desktop uses the native title bar and hides the extra workspace top bar. Release desktop builds start without a console window; debug builds and builds without `desktop` retain the console. For interactive CLI output, use a headless build (`--no-default-features`). To capture output from the desktop release in PowerShell and wait for it to finish, pipe it to `Out-Host`, for example `./target/release/eidoryn.exe --help | Out-Host`.
 

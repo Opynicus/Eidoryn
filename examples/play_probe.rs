@@ -4,7 +4,7 @@
 //! `video SLICES PREFIX` (live/latched frame trace), `pace SECONDS` (host audio with the desktop feature), `flush`, `quit`.
 //! `window-probe SECONDS HEX_MASK CSV` measures desktop delivery during repeated input.
 //! `window` opens a desktop clone with in-memory cards; it leaves this session unchanged.
-//! `renderer serial|threaded|vulkan`, `render-bench STEPS [MODE]`, `render-compare SLICES [MODE]`.
+//! `renderer serial|threaded|hardware|dx12|vulkan|opengl|metal`, `render-bench STEPS [MODE]`, `render-compare SLICES [MODE]`.
 //! `cpu interpreter|jit`, `cpu-bench STEPS`, `cpu-compare SLICES`.
 //! `frame-bench FRAMES HEX_MASK PREFIX` pulses a button twice per second on three independent clones.
 //! `state`, `cd-trace PATH`, `mark`, `restore` inspect controller state and keep a temporary in-memory checkpoint.
@@ -519,7 +519,7 @@ fn main() -> Result<(), String> {
         checkpoint: None,
     };
     println!(
-        "Ready. Commands: run/until STEPS HEX_MASK [FRAME], script PATH, frame PATH, record PATH.wav, stop-record, bench STEPS, frame-bench FRAMES HEX_MASK PREFIX, renderer serial|threaded|vulkan, render-bench STEPS [MODE], render-compare SLICES [MODE], cpu interpreter|jit, cpu-bench STEPS, cpu-compare SLICES, pace SECONDS (host audio with desktop), video SLICES PREFIX, window [off|soft|classic] [graphics] (desktop), window-probe SECONDS HEX_MASK CSV (desktop), state, cd-trace PATH, mark, restore, flush, quit"
+        "Ready. Commands: run/until STEPS HEX_MASK [FRAME], script PATH, frame PATH, record PATH.wav, stop-record, bench STEPS, frame-bench FRAMES HEX_MASK PREFIX, renderer serial|threaded|hardware|dx12|vulkan|opengl|metal, render-bench STEPS [MODE], render-compare SLICES [MODE], cpu interpreter|jit, cpu-bench STEPS, cpu-compare SLICES, pace SECONDS (host audio with desktop), video SLICES PREFIX, window [off|soft|classic] [graphics] (desktop), window-probe SECONDS HEX_MASK CSV (desktop), state, cd-trace PATH, mark, restore, flush, quit"
     );
     for line in std::io::stdin().lock().lines() {
         match session.command(&line.map_err(|e| e.to_string())?) {

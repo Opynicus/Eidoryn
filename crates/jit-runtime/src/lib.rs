@@ -96,7 +96,11 @@ pub const MAX_OPERATIONS: usize = 64;
 pub struct Block {
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     executable: memmap2::Mmap,
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     count: usize,
+    // Keep Block unconstructible on hosts without a native JIT backend.
+    #[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
+    _unsupported: std::convert::Infallible,
 }
 
 impl Block {

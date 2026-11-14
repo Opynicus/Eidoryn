@@ -8,13 +8,16 @@ description = "Independent PlayStation hardware core for Eidoryn"
 
 [features]
 default = []
-vulkan = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+vulkan = ["dep:wgpu", "wgpu/vulkan", "dep:pollster", "dep:bytemuck"]
+opengl = ["dep:wgpu", "wgpu/gles", "dep:pollster", "dep:bytemuck"]
+dx12 = ["dep:wgpu", "wgpu/dx12", "dep:pollster", "dep:bytemuck"]
+metal = ["dep:wgpu", "wgpu/metal", "dep:pollster", "dep:bytemuck"]
 jit = ["dep:eidoryn-jit-runtime"]
 
 [dependencies]
 smallvec = { version = "=1.16.5", features = ["union"] }
 eidoryn-jit-runtime = { path = "../jit-runtime", optional = true }
-wgpu = { version = "=30.0.2", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"], optional = true }
+wgpu = { version = "=30.0.2", default-features = false, features = ["std", "parking_lot", "wgsl"], optional = true }
 pollster = { version = "=1.0.1", optional = true }
 bytemuck = { version = "=1.25.2", optional = true }
 

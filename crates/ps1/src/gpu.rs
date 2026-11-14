@@ -1,15 +1,21 @@
-//! Original GPU command processor, ordered software/Vulkan rendering and scanout timing.
+//! Original GPU command processor, ordered software/GPU rendering and scanout timing.
 
 use crate::{EmuError, timers::Timers};
 use std::sync::Arc;
+#[cfg(any(
+    feature = "dx12",
+    feature = "vulkan",
+    feature = "opengl",
+    feature = "metal"
+))]
+mod compute;
 mod rasterizer;
 mod renderer;
 mod renderer_engine;
-#[cfg(feature = "vulkan")]
-mod vulkan;
 use rasterizer::{DrawState, RasterCommand};
 pub use renderer::RendererMode;
 use renderer::{FrameReadback, Renderer};
+pub use renderer_engine::{RendererAvailability, hardware_backends};
 
 #[derive(Clone, Copy)]
 struct DisplaySettings {

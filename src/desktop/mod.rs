@@ -366,6 +366,10 @@ impl Desktop {
             RendererMode::Serial => Text::SerialRenderer,
             RendererMode::Threaded => Text::ThreadedRenderer,
             RendererMode::Vulkan => Text::VulkanRenderer,
+            RendererMode::OpenGl => Text::OpenGlRenderer,
+            RendererMode::Hardware => Text::HardwareRenderer,
+            RendererMode::Dx12 => Text::Dx12Renderer,
+            RendererMode::Metal => Text::MetalRenderer,
         })
     }
 
