@@ -564,6 +564,139 @@ fn readn_awaits_bfrd_then_dma3_moves_sector_and_signals_completion() {
 }
 
 #[test]
+fn restarted_read_discards_staging_but_preserves_accepted_data() {
+    let fixture = Fixture::new();
+    let image = [vec![0x31; 2048], vec![0x62; 2048], vec![0x93; 2048]].concat();
+    let path = fixture.image("restart.iso", &image);
+    for opcode in [6, 0x1b] {
+        let mut bus = bus(&path);
+        command(&mut bus, opcode, &[]);
+        bus.tick(SECTOR_CLOCKS).unwrap();
+        assert_eq!(response(&mut bus, 1), [0x22]);
+        ack(&mut bus);
+        bus.write8(0x1f80_1800, 0).unwrap();
+        bus.write8(0x1f80_1803, 0x80).unwrap();
+        assert_eq!(bus.cdrom.read_data(), 0x31);
+
+        // Acknowledge the prefetched sector without requesting its data,
+        // then pause and seek as Tekken 3 does during startup.
+        bus.tick(SECTOR_CLOCKS).unwrap();
+        assert_eq!(response(&mut bus, 1), [0x22]);
+        ack(&mut bus);
+        command(&mut bus, 9, &[]);
+        bus.tick(COMMAND_CLOCKS * 2).unwrap();
+        assert_eq!(response(&mut bus, 2), [2]);
+        ack(&mut bus);
+        command(&mut bus, 2, &[0, 2, 2]);
+        command(&mut bus, opcode, &[]);
+        bus.tick(SECTOR_CLOCKS).unwrap();
+        assert_eq!(response(&mut bus, 1), [0x22]);
+        ack(&mut bus);
+        assert_eq!(bus.cdrom.sectors_read, 3);
+        assert_eq!(bus.cdrom.data_available(), 2047);
+        for _ in 0..2047 {
+            assert_eq!(bus.cdrom.read_data(), 0x31);
+        }
+        bus.write8(0x1f80_1800, 0).unwrap();
+        bus.write8(0x1f80_1803, 0x80).unwrap();
+        assert_eq!(bus.cdrom.data_available(), 2048);
+        for _ in 0..2048 {
+            assert_eq!(bus.cdrom.read_data(), 0x93);
+        }
+    }
+}
+
+#[test]
+fn chopped_cdrom_dma_yields_cpu_windows_and_finishes_once() {
+    let fixture = Fixture::new();
+    let image: Vec<u8> = (0..2048).map(|n| (n % 251 + 1) as u8).collect();
+    let path = fixture.image("chopping.iso", &image);
+    for (dma_shift, cpu_shift) in [(0, 4), (1, 0), (7, 7)] {
+        let mut bus = bus(&path);
+        command(&mut bus, 6, &[]);
+        bus.tick(SECTOR_CLOCKS).unwrap();
+        response(&mut bus, 1);
+        ack(&mut bus);
+        bus.write8(0x1f80_1800, 0).unwrap();
+        bus.write8(0x1f80_1803, 0x80).unwrap();
+        bus.write32(0x1f80_10f0, 8 << 12).unwrap();
+        bus.write32(0x1f80_10f4, (1 << 23) | (1 << 19)).unwrap();
+        let window = 1 << dma_shift;
+        let cpu_clocks = 1 << cpu_shift;
+        let words = window * 2 + 1;
+        bus.write32(0x1f80_10b0, 0x1000).unwrap();
+        bus.write32(0x1f80_10b4, 0x0001_0000 | words).unwrap();
+        bus.write32(
+            0x1f80_10b8,
+            0x1100_0100 | (dma_shift << 16) | (cpu_shift << 20),
+        )
+        .unwrap();
+        for transferred in [window, window * 2] {
+            assert_eq!(bus.read32(0x1f80_10b0).unwrap(), 0x1000 + transferred * 4);
+            assert_eq!(
+                bus.read32(0x1f80_10b4).unwrap(),
+                0x0001_0000 | (words - transferred)
+            );
+            assert_eq!(bus.read32(0x1f80_10b8).unwrap() & 0x1100_0000, 1 << 24);
+            assert_eq!(bus.read32(0x1f80_10f4).unwrap() & (1 << 27), 0);
+            assert_eq!(
+                &bus.ram[0x1000..0x1000 + transferred as usize * 4],
+                &image[..transferred as usize * 4]
+            );
+            assert_eq!(bus.read32(0x1000 + transferred * 4).unwrap(), 0);
+            // Register writes must not bypass the CPU window.
+            bus.write8(0x1f80_1803, 0x80).unwrap();
+            bus.write32(0x1f80_10f0, 8 << 12).unwrap();
+            bus.tick(cpu_clocks - 1).unwrap();
+            assert_eq!(bus.read32(0x1f80_10b0).unwrap(), 0x1000 + transferred * 4);
+            bus.tick(1).unwrap();
+        }
+        assert_eq!(bus.read32(0x1f80_10b0).unwrap(), 0x1000 + words * 4);
+        assert_eq!(bus.read32(0x1f80_10b4).unwrap(), 0x0001_0000);
+        assert_eq!(bus.read32(0x1f80_10b8).unwrap() & 0x1100_0000, 0);
+        assert_ne!(bus.read32(0x1f80_10f4).unwrap() & (1 << 27), 0);
+        assert_eq!(
+            &bus.ram[0x1000..0x1000 + words as usize * 4],
+            &image[..words as usize * 4]
+        );
+        let remaining = bus.cdrom.data_available();
+        bus.write32(0x1f80_10f4, (1 << 27) | (1 << 23) | (1 << 19))
+            .unwrap();
+        bus.tick(cpu_clocks).unwrap();
+        assert_eq!(bus.cdrom.data_available(), remaining);
+        assert_eq!(bus.read32(0x1f80_10f4).unwrap() & (1 << 27), 0);
+    }
+}
+
+#[test]
+fn aborting_chopped_cdrom_dma_cancels_its_cpu_window() {
+    let fixture = Fixture::new();
+    let path = fixture.image("abort-chopping.iso", &[0x31; 2048]);
+    let mut bus = bus(&path);
+    command(&mut bus, 6, &[]);
+    bus.tick(SECTOR_CLOCKS).unwrap();
+    response(&mut bus, 1);
+    ack(&mut bus);
+    bus.write8(0x1f80_1800, 0).unwrap();
+    bus.write8(0x1f80_1803, 0x80).unwrap();
+    bus.write32(0x1f80_10f0, 8 << 12).unwrap();
+    bus.write32(0x1f80_10b0, 0x1000).unwrap();
+    bus.write32(0x1f80_10b4, 2).unwrap();
+    bus.write32(0x1f80_10b8, 0x1140_0100).unwrap();
+    bus.write32(0x1f80_10b8, 0).unwrap();
+    bus.tick(16).unwrap();
+    assert_eq!(bus.read32(0x1004).unwrap(), 0);
+    bus.write32(0x1f80_10b4, 2).unwrap();
+    bus.write32(0x1f80_10b8, 0x1140_0100).unwrap();
+    assert_eq!(bus.read32(0x1004).unwrap(), 0x3131_3131);
+    bus.write32(0x1f80_10b8, 0).unwrap();
+    bus.write32(0x1f80_10b4, 1).unwrap();
+    bus.write32(0x1f80_10b8, 0x1140_0100).unwrap();
+    assert_eq!(bus.read32(0x1008).unwrap(), 0x3131_3131);
+    assert_eq!(bus.read32(0x1f80_10b8).unwrap() & (1 << 24), 0);
+}
+
+#[test]
 fn raw_data_mode_and_halfword_fifo_reads_preserve_sector_header() {
     let fixture = Fixture::new();
     let path = fixture.image("disc.iso", &vec![0x5a; 2048]);

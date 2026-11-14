@@ -31,6 +31,7 @@ pub struct Bus {
     pub sio: Sio,
     pub mdec: Mdec,
     mdec_dma: [Option<MdecTransfer>; 2],
+    cdrom_dma_resume: Option<u64>,
     scratchpad: [u8; 1024],
     memory_control: [u32; 9],
     ram_size: u32,
@@ -42,8 +43,8 @@ pub struct Bus {
     dma_interrupt: u32,
     // Shared CPU-clock timeline for every device, including explicit ticks.
     elapsed_cycles: u64,
-    // Scratch storage only: cleared before each list, bounded by the existing
-    // 4096-node limit. Retain capacity across frames instead of reallocating.
+    // Scratch storage only: cleared before each list, bounded by the number of
+    // aligned RAM addresses. Retain capacity across frames instead of reallocating.
     dma_visited: HashSet<u32>,
 }
 
@@ -60,6 +61,7 @@ impl Default for Bus {
             sio: Sio::default(),
             mdec: Mdec::default(),
             mdec_dma: [None; 2],
+            cdrom_dma_resume: None,
             scratchpad: [0; 1024],
             memory_control: [0; 9],
             ram_size: 0,
@@ -459,6 +461,9 @@ impl Bus {
                         self.dma[index].control = value;
                         if index < 2 {
                             self.mdec_dma[index] = None;
+                        }
+                        if index == 3 {
+                            self.cdrom_dma_resume = None;
                         }
                     }
                     _ => {
