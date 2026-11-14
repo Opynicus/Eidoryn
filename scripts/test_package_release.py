@@ -13,18 +13,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 class ReleasePackageTest(unittest.TestCase):
-    def test_desktop_archives_include_only_distributable_files(self):
+    def test_desktop_archives_include_only_runtime_files(self):
         binary_bytes = b'Eidoryn packaging fixture\x00\xff'
-        documents = {
-            'README.md', 'README.zh-CN.md', 'LICENSE', 'LICENSE-MIT',
-            'THIRD_PARTY.md', 'docs/ARCHITECTURE.md',
-        }
-        resources = {
-            path.relative_to(ROOT).as_posix()
-            for directory in ('assets', 'plugins')
-            for path in (ROOT / directory).rglob('*')
-            if path.is_file()
-        }
+        theme = 'plugins/themes/ember.json'
         with tempfile.TemporaryDirectory() as temporary:
             work = pathlib.Path(temporary)
             # Adjacent build inputs and local media must not enter the package.
@@ -66,15 +57,10 @@ class ReleasePackageTest(unittest.TestCase):
                                 self.assertTrue(
                                     bundle.getmember(f'{package}/{binary_name}').mode & 0o111,
                                 )
-                    expected = documents | resources | {binary_name, 'BUILD.txt'}
+                    expected = {binary_name, theme}
                     self.assertEqual(set(contents), {f'{package}/{name}' for name in expected})
                     self.assertEqual(contents[f'{package}/{binary_name}'], binary_bytes)
-                    for name in documents | resources:
-                        self.assertEqual(contents[f'{package}/{name}'], (ROOT / name).read_bytes())
-                    self.assertIn(label.encode(), contents[f'{package}/BUILD.txt'])
-                    self.assertIn(
-                        b'No BIOS, games or saves included.', contents[f'{package}/BUILD.txt'],
-                    )
+                    self.assertEqual(contents[f'{package}/{theme}'], (ROOT / theme).read_bytes())
 
 
 if __name__ == '__main__':
