@@ -6,7 +6,7 @@ rust-version = "1.95"
 license = "GPL-3.0-only"
 description = "Auditable native integer-block execution boundary for Eidoryn"
 
-[dependencies]
+[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))'.dependencies]
 memmap2 = "=0.9.12"
 
 [lints.rust]
