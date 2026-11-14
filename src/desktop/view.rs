@@ -103,7 +103,10 @@ impl Desktop {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .child(self.topbar(window, cx))
+                    // Windows already provides native titlebar controls.
+                    .when(!cfg!(target_os = "windows"), |content| {
+                        content.child(self.topbar(window, cx))
+                    })
                     .child(
                         div()
                             .id("workspace-content")

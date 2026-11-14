@@ -74,6 +74,8 @@ cargo build --locked --release --bin eidoryn --no-default-features --features de
 
 Windows 包不启用仅支持 Linux 的实验性 JIT。
 
+Windows 桌面使用系统原生标题栏，并隐藏额外的工作区顶部栏。桌面 release 构建启动时不再弹出控制台；调试构建和未启用 `desktop` 的构建仍保留控制台。需要交互式命令行输出时，请使用无窗口构建（`--no-default-features`）。在 PowerShell 中读取桌面发行版的输出并等待其结束，可通过管道连接 `Out-Host`，例如 `./target/release/eidoryn.exe --help | Out-Host`。
+
 ### 界面语言
 
 在 **设置 → 外观主题 → 语言** 中选择 **English** 或 **简体中文**，界面立即切换，并保存供下次启动使用。首次启动时，中文系统语言选择简体中文，其余语言默认使用英文。
