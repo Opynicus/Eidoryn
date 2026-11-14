@@ -10,7 +10,7 @@ license = "GPL-3.0-only"
 name = "eidoryn_psx"
 
 [workspace]
-members = ["crates/ps1", "crates/host", "crates/jit-runtime", "vendor/gpui"]
+members = ["crates/ps1", "crates/host", "crates/jit-runtime"]
 default-members = ["."]
 resolver = "3"
 
@@ -31,7 +31,8 @@ ui-tests = ["desktop", "gpui/test-support"]
 [dependencies]
 eidoryn-ps1 = { path = "crates/ps1", default-features = false }
 eidoryn-host = { path = "crates/host", default-features = false }
-gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "windows-manifest"], optional = true }
+# Official Windows drag-and-drop fix (zed-industries/zed#42227).
+gpui = { git = "https://github.com/zed-industries/zed", rev = "a66dac7b3a065014e9729e25ea5ac4322014b037", default-features = false, features = ["font-kit", "windows-manifest"], optional = true }
 image = { version = "0.25", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
@@ -40,9 +41,6 @@ serde_json = { version = "1.0", optional = true }
 libc = { version = "=0.2.186", optional = true }
 
 [patch.crates-io]
-# GPUI 0.2.2 dereferences a Windows file-drop handle as a pointer.
-# Keep the native fix reproducible for local builds and release packages.
-gpui = { path = "vendor/gpui" }
 # Fix the private proc_macro re-export in GPUI's transitive dependency.
 # https://github.com/GnomedDev/proc-macro-error-2/pull/14
 proc-macro-error2 = { git = "https://github.com/GnomedDev/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }

@@ -1,0 +1,7 @@
+GPUI — Zed's GPU-accelerated UI framework
+License: Apache-2.0 (see LICENSE-APACHE in this directory)
+Upstream: https://github.com/zed-industries/zed
+Revision: a66dac7b3a065014e9729e25ea5ac4322014b037
+Windows file-drop fix: https://github.com/zed-industries/zed/pull/42227
+
+Eidoryn uses this official Git revision without local GPUI source patches.

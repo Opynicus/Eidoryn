@@ -62,7 +62,7 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Test
-        run: cargo test --locked --workspace --exclude gpui --no-default-features --features ${{ matrix.backend }},vulkan,jit,ui-tests
+        run: cargo test --locked --workspace --no-default-features --features ${{ matrix.backend }},vulkan,jit,ui-tests
   windows:
     name: Windows x86_64 MSVC
     runs-on: windows-2022
@@ -91,6 +91,4 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Test
-        run: cargo test --locked --workspace --exclude gpui --no-default-features --features desktop,dx12,vulkan,opengl,ui-tests
-      - name: Native Windows file-drop regression
-        run: cargo test --locked -p gpui --lib --no-default-features --features font-kit,windows-manifest,test-support file_drop_tests -- --test-threads=1
+        run: cargo test --locked --workspace --no-default-features --features desktop,dx12,vulkan,opengl,ui-tests

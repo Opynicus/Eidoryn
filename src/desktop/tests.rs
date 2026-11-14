@@ -660,6 +660,7 @@ fn binding_capture_handles_cancel_and_keyboard_activation(cx: &mut TestAppContex
     cx.simulate_event(gpui::KeyDownEvent {
         keystroke: gpui::Keystroke::parse("w").unwrap(),
         is_held: true,
+        prefer_character_input: false,
     });
     assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
     cx.deactivate_window();

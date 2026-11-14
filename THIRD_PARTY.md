@@ -24,18 +24,22 @@ Cargo.lock resolves gpu-allocator 0.28.0's Windows API dependency to windows 0.6
 matching wgpu-hal's DirectX 12 interface types. Other dependencies may retain older
 Windows API versions; these cannot be substituted across the allocator boundary.
 
-The desktop frontend uses GPUI 0.2.2, image, serde and serde_json (theme manifests),
+The desktop frontend uses GPUI, image, serde and serde_json (theme manifests),
 and CPAL 0.18.2 for host audio-device access (not PS1 sound emulation),
 with libc pinned for GPUI's older xattr dependency. Their transitive dependencies and exact versions
 are recorded in Cargo.lock and retain their own licenses. This project keeps
 its existing GPL-3.0-only package license; LICENSE-MIT preserves the original
 prototype's notice.
 
-GPUI 0.2.2 is vendored under `vendor/gpui` (Apache-2.0) with a Windows native
-file-drop fix: `STGMEDIUM.hGlobal` is passed directly as an `HDROP`, and the
-storage medium is released on every extraction path. The upstream license is
-preserved in `vendor/gpui/LICENSE-APACHE`; provenance, local changes and native
-regression-test instructions are in `vendor/gpui/EIDORYN_PATCHES.md`.
+GPUI (Apache-2.0) is fetched directly from the official Zed repository at commit
+[`a66dac7b3a065014e9729e25ea5ac4322014b037`](https://github.com/zed-industries/zed/commit/a66dac7b3a065014e9729e25ea5ac4322014b037).
+This source revision is newer than the crates.io 0.2.2 release and contains
+[upstream PR #42227](https://github.com/zed-industries/zed/pull/42227), which fixes
+Windows file-drop crashes by passing `STGMEDIUM.hGlobal` directly as an `HDROP`.
+The complete Git revision and Cargo.lock fix the dependency source; its package
+version label alone does not identify this fix. No GPUI source is vendored or
+patched locally. The upstream license and source notice are preserved under
+`licenses/gpui` and included in release packages.
 
 GPUI's transitive `proc-macro-error2` 2.0.1 dependency and its attribute crate are
 pinned to commit `53ff94b61c678593158db1a3d50269c6f0de0db7` via Cargo's patch table.

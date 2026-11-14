@@ -110,13 +110,13 @@ Memory cards default to `saves/card1.mcd` and `saves/card2.mcd` relative to the 
 
 ```bash
 cargo run --locked --release --no-default-features -- --headless --no-memory-cards --frames 120
-cargo test --locked --workspace --exclude gpui
+cargo test --locked --workspace
 ```
 
 With default features disabled, the core and CLI use the Rust standard library and smallvec for short CD-ROM command buffers. `--frames` counts execution slices, not video frames.
 
-Windows native file-drop regression tests for the patched GPUI dependency are
-documented in [the patch notes](vendor/gpui/EIDORYN_PATCHES.md).
+GPUI is pinned to an official Git revision containing the Windows file-drop
+crash fix; see [dependency provenance](THIRD_PARTY.md).
 
 </details>
 
