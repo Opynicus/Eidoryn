@@ -1,5 +1,9 @@
 use eidoryn_host::audio::{AudioBuffer, wav::WavWriter};
-use std::{num::NonZeroU32, path::PathBuf};
+use std::{
+    num::NonZeroU32,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 #[test]
 fn different_core_rates_resample_without_sharing_queue_state() {
@@ -33,13 +37,15 @@ fn different_core_rates_resample_without_sharing_queue_state() {
 struct TempDirectory(PathBuf);
 impl TempDirectory {
     fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "eidoryn-host-audio-{}-{}",
+            "eidoryn-host-audio-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
         Self(path)

@@ -47,7 +47,7 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 - Vulkan 模式需要支持 Vulkan 的物理显卡和驱动；默认软件模式不要求 Vulkan 硬件。
 - 启动游戏需要自行准备相应 BIOS 和镜像。项目不提供这些文件。
 
-[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)当前仅向 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) 发布 Linux x86-64 Wayland 和 X11 桌面压缩包及其 SHA-256 校验文件。请按桌面会话选择对应版本，需要 Ubuntu 24.04 或兼容的更新系统。推送到 `main` 和 PR 时验证两个版本，仅 `v*` 标签触发发布。其他平台仍可从源码构建。
+此 UI 改版分支提供 Linux x86-64 Wayland、Linux x86-64 X11 和 Windows x86-64 临时测试发行包，均附 SHA-256 校验文件。这些预发布版本从测试分支构建，不替换最新发行版。Linux 请按桌面会话选择对应压缩包，需要 Ubuntu 24.04 或兼容的更新系统；Windows 请完整解压 ZIP，再从解压目录运行 `eidoryn.exe`。Windows 桌面显示、输入及声音仍需人工实机验证，原生 CI 覆盖编译、测试和无窗口演示。可用测试包见 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases)。
 
 ### 构建与启动
 
@@ -65,6 +65,14 @@ Linux 默认构建同时包含 Wayland 和 X11。复现发布版本时，可明�
 cargo build --locked --release --bin eidoryn --no-default-features --features wayland,vulkan,jit
 cargo build --locked --release --bin eidoryn --no-default-features --features x11,vulkan,jit
 ```
+
+Windows 测试包采用原生 MSVC 构建，通过 `GPUI_FXC_PATH` 指定 Windows SDK 的 `fxc.exe`：
+
+```powershell
+cargo build --locked --release --bin eidoryn --no-default-features --features desktop,vulkan
+```
+
+Windows 包不启用仅支持 Linux 的实验性 JIT。
 
 ### 界面语言
 

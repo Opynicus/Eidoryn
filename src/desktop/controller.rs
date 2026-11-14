@@ -10,7 +10,7 @@ use eidoryn_psx::{
         runner::Command,
     },
 };
-use gpui::{Context, KeyDownEvent, Window, div, prelude::*, rgb};
+use gpui::{Context, KeyDownEvent, Window, div, prelude::*, px, rgb};
 
 const BINDINGS: [(PadButton, &str); PadButton::ALL.len()] = [
     (PadButton::Up, "binding-4"),
@@ -100,6 +100,7 @@ impl Desktop {
         cx.notify();
     }
 
+    #[allow(clippy::too_many_lines)] // Keep the binding draft, feedback and confirmation controls together.
     fn keybindings_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let bindings = self
@@ -131,7 +132,10 @@ impl Desktop {
                         format!("{}: {conflicts}", self.tr(Text::BindingConflict)),
                     )
                     .debug_selector(|| "bindings-conflict".into())
-                    .text_color(rgb(p.error)),
+                    .p_3()
+                    .rounded_md()
+                    .bg(rgb(p.error))
+                    .text_color(rgb(p.on_error)),
                 )
             })
             .child(
@@ -146,29 +150,40 @@ impl Desktop {
                         } else {
                             bindings.key(pad).to_uppercase()
                         };
-                        button(
-                            &self.fonts,
-                            p,
-                            id,
-                            format!("{} · {key}", pad.name()),
-                            waiting,
-                        )
-                        .px_2()
-                        .text_xs()
-                        .when(bindings.conflict(pad).is_some(), |button| {
-                            button.border_color(rgb(p.error))
-                        })
-                        .debug_selector(move || id.into())
-                        .on_click(cx.listener(
-                            move |view, _, window, cx| {
+                        button(&self.fonts, p, id, pad.name(), false)
+                            .min_w_0()
+                            .px_3()
+                            .h(px(40.))
+                            .justify_between()
+                            .text_xs()
+                            .when(waiting, |button| {
+                                button
+                                    .bg(rgb(p.tonal))
+                                    .border_color(rgb(p.primary))
+                                    .text_color(rgb(p.on_tonal))
+                            })
+                            .when(bindings.conflict(pad).is_some(), |button| {
+                                button
+                                    .border_color(rgb(p.on_error))
+                                    .bg(rgb(p.error))
+                                    .text_color(rgb(p.on_error))
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font(self.fonts.mono())
+                                    .child(key),
+                            )
+                            .debug_selector(move || id.into())
+                            .on_click(cx.listener(move |view, _, window, cx| {
                                 view.release_buttons(cx);
                                 view.rebinding = Some(pad);
                                 view.notice = None;
                                 // Capture Enter/Space without activating the focused button again.
                                 window.focus(&view.focus);
                                 cx.notify();
-                            },
-                        ))
+                            }))
                     })),
             )
             .child(
@@ -237,8 +252,14 @@ impl Desktop {
                                 pad.name(),
                                 self.preferences.keybindings.key(pad).to_uppercase()
                             ),
-                            self.preferences.turbo_buttons & pad.mask() != 0,
+                            false,
                         )
+                        .when(self.preferences.turbo_buttons & pad.mask() != 0, |button| {
+                            button
+                                .bg(rgb(p.tonal))
+                                .border_color(rgb(p.primary))
+                                .text_color(rgb(p.on_tonal))
+                        })
                         .debug_selector(move || id.into())
                         .on_click(cx.listener(move |view, _, _, cx| {
                             view.set_turbo(
@@ -263,7 +284,13 @@ impl Desktop {
                     .flex_wrap()
                     .gap_2()
                     .children(TURBO_CHOICES.into_iter().map(|(hz, id, text)| {
-                        button(&self.fonts, p, id, text, self.preferences.turbo_hz == hz)
+                        button(&self.fonts, p, id, text, false)
+                            .when(self.preferences.turbo_hz == hz, |button| {
+                                button
+                                    .bg(rgb(p.tonal))
+                                    .border_color(rgb(p.primary))
+                                    .text_color(rgb(p.on_tonal))
+                            })
                             .debug_selector(move || id.into())
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.set_turbo(view.preferences.turbo_buttons, hz, cx);

@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Package format tests
+        run: python3 -m unittest discover -s scripts -p test_package_release.py -v
       - name: Rust
         run: rustup toolchain install 1.100.0 --profile minimal && rustup default 1.100.0
       - name: Cache Cargo downloads
@@ -60,4 +62,33 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Test
-        run: cargo test --locked --workspace --no-default-features --features ${{ matrix.backend }},vulkan,jit
+        run: cargo test --locked --workspace --no-default-features --features ${{ matrix.backend }},vulkan,jit,ui-tests
+  windows:
+    name: Windows x86_64 MSVC
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package format tests
+        run: python -m unittest discover -s scripts -p test_package_release.py -v
+      - name: Rust
+        shell: bash
+        run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt && rustup default 1.100.0
+      - name: Windows shader compiler
+        shell: pwsh
+        run: |
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" |
+            Sort-Object { [version] $_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          if (-not $fxc) { throw "Windows SDK fxc.exe was not found" }
+          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc-test
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Test
+        run: cargo test --locked --workspace --no-default-features --features desktop,vulkan

@@ -22,6 +22,7 @@ impl Desktop {
             .child(self.language_choices(cx))
             .child(
                 div()
+                    .mt_4()
                     .text_sm()
                     .font(self.fonts.semibold())
                     .child(self.tr(Text::Theme)),
@@ -29,41 +30,48 @@ impl Desktop {
             .child(label(p, self.tr(Text::ThemeHint)))
             .child(
                 div()
-                    .flex()
-                    .flex_wrap()
+                    .grid()
+                    .grid_cols(2)
                     .gap_2()
                     .children(self.themes.themes().iter().map(|theme| {
                         let id = theme.id.clone();
                         let selected = id == self.themes.active().id;
                         let palette = theme.palette;
                         let focus_color = p.primary;
+                        let hover = p.tonal_hover;
                         div()
                             .id(SharedString::from(format!("theme-{id}")))
                             .tab_index(0)
                             .focus(move |style| style.border_color(rgb(focus_color)).border_2())
-                            .w(gpui::rems(10.))
-                            .max_w_full()
+                            .min_w_0()
                             .p_3()
                             .flex()
                             .flex_col()
                             .gap_2()
-                            .rounded_lg()
+                            .rounded(px(7.))
                             .border_1()
                             .border_color(rgb(if selected { p.primary } else { p.border }))
                             .bg(rgb(p.surface_variant))
                             .cursor_pointer()
+                            .hover(move |style| style.bg(rgb(hover)))
                             .child(
                                 div().flex().gap_1().children(
-                                    [palette.background, palette.primary, palette.success]
+                                    [palette.background, palette.primary, palette.text]
                                         .into_iter()
                                         .map(|color| {
-                                            div().size(px(19.)).rounded_md().bg(rgb(color))
+                                            div()
+                                                .size(px(16.))
+                                                .rounded(px(3.))
+                                                .border_1()
+                                                .border_color(rgb(palette.border))
+                                                .bg(rgb(color))
                                         }),
                                 ),
                             )
                             .child(
                                 div()
                                     .text_sm()
+                                    .font(self.fonts.medium())
                                     .text_color(rgb(p.text))
                                     .child(theme.name.clone()),
                             )
@@ -104,14 +112,14 @@ impl Desktop {
             .into_iter()
             .enumerate()
             .map(|(index, (language, name))| {
-                super::components::button(
-                    &self.fonts,
-                    p,
-                    ("language", index),
-                    name,
-                    self.language == language,
-                )
-                .on_click(cx.listener(move |view, _, _, cx| view.set_language(language, cx)))
+                super::components::button(&self.fonts, p, ("language", index), name, false)
+                    .when(self.language == language, |button| {
+                        button
+                            .bg(rgb(p.tonal))
+                            .border_color(rgb(p.primary))
+                            .text_color(rgb(p.on_tonal))
+                    })
+                    .on_click(cx.listener(move |view, _, _, cx| view.set_language(language, cx)))
             }),
         )
     }

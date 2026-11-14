@@ -375,6 +375,11 @@ impl CdRom {
                 self.last_error = None;
                 self.playing = false;
                 self.play_completion = None;
+                if !self.reading || self.target.is_some() {
+                    // A new read must not wait on an unrequested sector from
+                    // the previous transfer. Already accepted FIFO data stays valid.
+                    self.sector.clear();
+                }
                 if let Some(target) = self.target.take() {
                     self.audio.clear();
                     self.location = target;

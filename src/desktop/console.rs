@@ -9,26 +9,28 @@ use gpui::{Context, Window, div, prelude::*, px, rgb};
 
 impl Desktop {
     pub(super) fn console_page(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let stacked = window.viewport_size().width < px(1400.);
-        let height = (f32::from(window.viewport_size().height) - 440.).clamp(240., 390.);
+        let width = f32::from(window.viewport_size().width);
+        let stacked = width <= 1250.;
+        let content_width = (width - if stacked { 72. } else { 224. } - 72.).min(1608.);
+        let display_width = content_width - if stacked { 0. } else { 320. };
+        let height = (display_width - 34.).clamp(0., 560.) * 0.75 + 32.;
         let display = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
-            .gap_3()
-            .child(self.display_card(height))
-            .child(self.transport(false, cx))
+            .gap_4()
+            .child(self.display_card(height, cx))
             .child(self.shortcuts());
         let details = if stacked {
             div()
                 .flex()
-                .gap_4()
+                .gap_5()
                 .child(self.session_card(cx).flex_1().min_w_0())
                 .child(self.memory_card(cx).flex_1().min_w_0())
         } else {
             div()
-                .w(px(292.))
+                .w(px(300.))
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
@@ -39,20 +41,20 @@ impl Desktop {
         div()
             .flex()
             .flex_col()
-            .gap_5()
+            .gap_6()
             .child(self.console_header(cx))
             .child(if stacked {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_4()
+                    .gap_5()
                     .child(display)
                     .child(details)
             } else {
                 div()
                     .flex()
                     .items_start()
-                    .gap_4()
+                    .gap_5()
                     .child(display)
                     .child(details)
             })
@@ -73,18 +75,18 @@ impl Desktop {
                     .gap_2()
                     .child(
                         div()
-                            .text_xs()
-                            .font(self.fonts.bold())
-                            .text_color(rgb(p.primary))
+                            .text_size(px(10.))
+                            .font(self.fonts.semibold())
+                            .text_color(rgb(p.muted))
                             .child(self.tr(Text::ConsoleEyebrow)),
                     )
                     .child(
                         div()
-                            .text_2xl()
+                            .text_size(px(26.))
                             .font(self.fonts.semibold())
                             .child(self.tr(Text::Welcome)),
                     )
-                    .child(label(p, self.tr(Text::WelcomeHint))),
+                    .child(label(p, self.tr(Text::WelcomeHint)).text_size(px(13.))),
             )
             .child(
                 div()
@@ -116,32 +118,33 @@ impl Desktop {
             )
     }
 
-    fn display_card(&self, height: f32) -> gpui::Div {
+    fn display_card(&self, height: f32, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let s = &self.snapshot;
         let speed = self.tr(Text::Speed);
-        let (status, background, text) = match s.execution_state() {
-            ExecutionState::Stopped => (self.tr(Text::Stopped), p.error, p.on_error),
-            ExecutionState::Running => (self.tr(Text::Running), p.success, p.on_success),
-            ExecutionState::Paused => (self.tr(Text::Paused), p.tonal, p.on_tonal),
+        let (status, dot) = match s.execution_state() {
+            ExecutionState::Stopped => (self.tr(Text::Stopped), p.on_error),
+            ExecutionState::Running => (self.tr(Text::Running), p.on_success),
+            ExecutionState::Paused => (self.tr(Text::Paused), p.muted),
         };
         card(p)
+            .debug_selector(|| "display-card".into())
             .overflow_hidden()
             .child(
                 div()
-                    .h(px(52.))
+                    .h(px(50.))
                     .px_4()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(icon("screen", p.muted))
+                    .border_b_1()
+                    .border_color(rgb(p.border))
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(px(13.))
                             .font(self.fonts.semibold())
                             .child(self.tr(Text::Display)),
                     )
-                    .child(label(p, "DISPLAY"))
                     .child(div().flex_1())
                     .child(label(
                         p,
@@ -150,10 +153,9 @@ impl Desktop {
             )
             .child(
                 div()
-                    .mx_3()
-                    .p_3()
+                    .debug_selector(|| "display-stage".into())
+                    .p_4()
                     .h(px(height))
-                    .rounded_lg()
                     .bg(rgb(p.video_background))
                     .child(self.video()),
             )
@@ -188,23 +190,29 @@ impl Desktop {
                     )
                     .child(
                         div()
-                            .px_3()
+                            .px_2()
                             .py_1()
                             .rounded_full()
-                            .bg(rgb(background))
-                            .text_color(rgb(text))
-                            .text_xs()
-                            .child(format!("●  {status}")),
+                            .border_1()
+                            .border_color(rgb(p.border))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().size(px(7.)).rounded_full().bg(rgb(dot)))
+                            .child(label(p, status)),
                     ),
             )
+            .child(self.transport(false, cx))
     }
 
     pub(super) fn transport(&self, game: bool, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let running = self.snapshot.running;
-        card(p)
+        div()
+            .debug_selector(|| "transport".into())
             .p_3()
-            .flex_row()
+            .flex()
+            .flex_wrap()
             .items_center()
             .gap_2()
             .child(
@@ -226,6 +234,7 @@ impl Desktop {
                 icon_button(p, "transport-reset", "reset", self.tr(Text::Reset))
                     .on_click(cx.listener(|view, _, _, cx| view.command(Command::Reset, cx))),
             )
+            .child(div().w(px(1.)).h(px(24.)).mx_1().bg(rgb(p.border)))
             .child(self.crt_control(cx))
             .children(game.then(|| {
                 action(
@@ -292,8 +301,10 @@ impl Desktop {
                         .child(
                             div()
                                 .px_2()
-                                .py_1()
+                                .py(px(1.))
                                 .rounded_md()
+                                .border_1()
+                                .border_color(rgb(p.border))
                                 .bg(rgb(p.surface_variant))
                                 .child(key),
                         )
@@ -313,6 +324,7 @@ impl Desktop {
                 |name| name.to_string_lossy().into_owned(),
             );
         card(p)
+            .debug_selector(|| "session-card".into())
             .p_4()
             .gap_3()
             .child(heading(
@@ -323,21 +335,23 @@ impl Desktop {
             ))
             .child(
                 div()
-                    .p_3()
+                    .p(px(10.))
                     .flex()
                     .items_center()
                     .gap_3()
-                    .rounded_lg()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(p.border))
                     .bg(rgb(p.surface_variant))
                     .child(
                         div()
-                            .size(px(38.))
-                            .rounded_lg()
-                            .bg(rgb(p.tonal))
+                            .size(px(34.))
+                            .rounded_md()
+                            .bg(rgb(p.tonal_hover))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon("disc", p.primary)),
+                            .child(icon("disc", p.text)),
                     )
                     .child(
                         div()
@@ -394,6 +408,7 @@ impl Desktop {
     fn memory_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         card(p)
+            .debug_selector(|| "memory-card".into())
             .p_4()
             .gap_3()
             .child(heading(
@@ -433,7 +448,7 @@ impl Desktop {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .py_2()
+                    .py_3()
                     .border_t_1()
                     .border_color(rgb(p.border))
                     .child(

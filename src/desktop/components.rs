@@ -23,7 +23,7 @@ pub(super) fn action(
     let (background, foreground, hover, pressed) = if primary {
         (p.primary, p.on_primary, p.primary_hover, p.primary_pressed)
     } else {
-        (p.surface_variant, p.text, p.tonal_hover, p.tonal_pressed)
+        (p.surface, p.text, p.tonal_hover, p.tonal_pressed)
     };
     let text = text.into();
     let tooltip_text = text.clone();
@@ -31,21 +31,27 @@ pub(super) fn action(
     div()
         .id(id)
         .tab_index(0)
-        .px_4()
-        .h(px(38.))
+        .px_3()
+        .h(px(36.))
         .flex()
         .flex_shrink_0()
         .items_center()
         .justify_center()
         .gap_2()
-        .rounded_lg()
+        .rounded(px(6.))
         .cursor_pointer()
-        .text_sm()
+        .text_size(px(12.))
         .font(fonts.medium())
         .bg(rgb(background))
         .border_1()
-        .border_color(rgb(background))
-        .focus(move |style| style.border_color(rgb(palette.primary)))
+        .border_color(rgb(if primary { p.primary } else { p.border }))
+        .focus(move |style| {
+            style.border_color(rgb(if primary {
+                palette.on_primary
+            } else {
+                palette.primary
+            }))
+        })
         .tooltip(move |_, cx| tooltip(palette, tooltip_text.clone(), cx))
         .text_color(rgb(foreground))
         .hover(move |style| style.bg(rgb(hover)))
@@ -65,19 +71,20 @@ pub(super) fn icon_button(
     div()
         .id(id)
         .tab_index(0)
-        .size(px(38.))
+        .size(px(36.))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
-        .rounded_lg()
+        .rounded(px(6.))
         .border_1()
         .border_color(rgb(p.border))
         .focus(move |style| style.border_color(rgb(palette.primary)))
         .tooltip(move |_, cx| tooltip(palette, title.into(), cx))
-        .bg(rgb(p.surface_variant))
+        .bg(rgb(p.surface))
         .cursor_pointer()
         .hover(move |style| style.bg(rgb(hover)))
+        .active(move |style| style.bg(rgb(palette.tonal_pressed)))
         .child(icon(symbol, p.muted))
 }
 
@@ -105,7 +112,7 @@ impl gpui::Render for Tooltip {
             .text_color(rgb(self.palette.text))
             .border_1()
             .border_color(rgb(self.palette.border))
-            .text_sm()
+            .text_size(px(12.))
             .child(self.text.clone())
     }
 }
@@ -114,14 +121,17 @@ pub(super) fn card(p: &Palette) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .rounded_2xl()
+        .rounded(px(8.))
         .bg(rgb(p.surface))
         .border_1()
         .border_color(rgb(p.border))
 }
 
 pub(super) fn label(p: &Palette, text: impl Into<SharedString>) -> gpui::Div {
-    div().text_xs().text_color(rgb(p.muted)).child(text.into())
+    div()
+        .text_size(px(11.))
+        .text_color(rgb(p.muted))
+        .child(text.into())
 }
 
 pub(super) fn heading(
@@ -135,7 +145,7 @@ pub(super) fn heading(
         .items_center()
         .justify_between()
         .gap_3()
-        .child(div().text_sm().font(fonts.semibold()).child(title))
+        .child(div().text_size(px(13.)).font(fonts.semibold()).child(title))
         .child(label(p, detail))
 }
 

@@ -71,10 +71,21 @@ impl Bus {
         {
             return Ok(());
         }
-        if channel.control & (1 << 8) != 0 {
-            return Err(EmuError::Dma("chopping is not implemented"));
-        }
         let from_ram = channel.control & 1 != 0;
+        let chopping = channel.control & (1 << 8) != 0;
+        if chopping && (index != 3 || sync != 0 || from_ram) {
+            return Err(EmuError::Dma("chopping requires CD-ROM input"));
+        }
+        if index == 3 {
+            if self.cdrom_dma_resume.is_some_and(|resume| {
+                // Chopping CPU windows are at most 128 cycles. A larger
+                // wrapping difference denotes a deadline already in the past.
+                (1..=128).contains(&resume.wrapping_sub(self.elapsed_cycles))
+            }) {
+                return Ok(());
+            }
+            self.cdrom_dma_resume = None;
+        }
         if index < 2 {
             if sync != 1 || from_ram != (index == 0) || channel.control & 2 != 0 {
                 return Err(EmuError::Dma(
@@ -95,8 +106,12 @@ impl Bus {
             self.dma_visited.clear();
             let mut words = 0;
             loop {
-                if !self.dma_visited.insert(address) || self.dma_visited.len() > 4096 {
-                    return Err(EmuError::Dma("cyclic or oversized linked list"));
+                if !self.dma_visited.insert(address) {
+                    // No end marker was reached. Keep the channel busy so
+                    // software can abort it, but bound this atomic traversal.
+                    self.dma[index].base = address;
+                    self.gpu.dispatch_pending();
+                    return Ok(());
                 }
                 let header = self.ram_word(address);
                 for _ in 0..header >> 24 {
@@ -153,6 +168,11 @@ impl Bus {
             if index == 4 && !self.spu.dma_ready(from_ram) {
                 return Ok(());
             }
+            let count = if chopping {
+                count.min(1 << ((channel.control >> 16) & 7))
+            } else {
+                count
+            };
             let decrement = index == 6 || channel.control & 2 != 0;
             for n in 0..count {
                 if index == 6 {
@@ -186,9 +206,22 @@ impl Bus {
                     address.wrapping_add(4)
                 } & 0x1f_fffc;
             }
-            // CD-ROM burst transfers retain MADR. Existing GPU/OTC behavior is unchanged.
-            if index != 3 {
+            // Unlike ordinary CD bursts, chopping exposes the next address
+            // and remaining word count during each CPU window.
+            if index != 3 || chopping {
                 self.dma[index].base = address;
+            }
+            if chopping {
+                let remaining = block_size - count as u32;
+                self.dma[index].block = (channel.block & 0xffff_0000) | (remaining & 0xffff);
+                self.dma[index].control &= !(1 << 28);
+                if remaining != 0 {
+                    self.cdrom_dma_resume = Some(
+                        self.elapsed_cycles
+                            .wrapping_add(1 << ((channel.control >> 20) & 7)),
+                    );
+                    return Ok(());
+                }
             }
             if sync == 1 {
                 self.dma[index].block &= 0xffff;

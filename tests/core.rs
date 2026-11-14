@@ -357,30 +357,48 @@ fn gpu_dma_linked_list_reaches_gp0_and_clears_busy() {
 }
 
 #[test]
-fn dma_cycle_is_reported_instead_of_hanging() {
+fn dma_cycle_stays_busy_until_guest_aborts_without_completing() {
     let mut bus = Bus::default();
-    bus.write32(0x100, 0x100).unwrap();
+    bus.write32(0x100, 0x200).unwrap();
+    for (offset, word) in [0x0300_0300, 0x0200_00ff, 0, 0x0001_0010]
+        .into_iter()
+        .enumerate()
+    {
+        bus.write32(0x200 + offset as u32 * 4, word).unwrap();
+    }
+    bus.write32(0x300, 0x200).unwrap();
     bus.write32(0x1f80_10f0, 8 << 8).unwrap();
+    bus.write32(0x1f80_10f4, (1 << 23) | (1 << 18)).unwrap();
     bus.write32(0x1f80_10a0, 0x100).unwrap();
-    assert!(matches!(
-        bus.write32(0x1f80_10a8, 0x0100_0401),
-        Err(EmuError::Dma(_))
-    ));
-    // A failed list must not leave traversal marks in the next transfer.
-    bus.write32(0x100, 0x00ff_ffff).unwrap();
-    bus.write32(0x1f80_10a8, 0).unwrap(); // Explicitly abort the failed, still-busy channel.
+    bus.write32(0x1f80_10a8, 0x0100_0401).unwrap();
+    // Enabling another channel must not turn the active cycle into completion
+    // or prevent the guest from continuing to its DMA reset routine.
+    bus.write32(0x1f80_10f0, (8 << 8) | (8 << 24)).unwrap();
+    bus.tick(100).unwrap();
+    assert_eq!(bus.gpu.vram()[0], 31);
+    assert_eq!(bus.read32(0x1f80_10a0).unwrap(), 0x200);
+    assert_ne!(bus.read32(0x1f80_10a8).unwrap() & (1 << 24), 0);
+    assert_eq!(bus.read32(0x1f80_10f4).unwrap() & (1 << 26), 0);
+    assert_eq!(bus.read32(0x1f80_1070).unwrap() & 8, 0);
+    bus.write32(0x1f80_10a8, 0x0000_0401).unwrap();
+    assert_eq!(bus.read32(0x1f80_10a8).unwrap() & (1 << 24), 0);
+    bus.write32(0x200, 0x03ff_ffff).unwrap();
     for _ in 0..2 {
         bus.write32(0x1f80_10a0, 0x100).unwrap();
         bus.write32(0x1f80_10a8, 0x0100_0401).unwrap();
+        assert_eq!(bus.read32(0x1f80_10a0).unwrap(), 0x00ff_ffff);
         assert_eq!(bus.read32(0x1f80_10a8).unwrap() & (1 << 24), 0);
+        assert_ne!(bus.read32(0x1f80_10f4).unwrap() & (1 << 26), 0);
+        bus.write32(0x1f80_10f4, (1 << 26) | (1 << 23) | (1 << 18))
+            .unwrap();
     }
 }
 
 #[test]
-fn dma_linked_list_limit_and_ram_wrap_are_preserved_on_reuse() {
+fn dma_long_linked_lists_and_ram_wrap_are_preserved_on_reuse() {
     let mut bus = Bus::default();
     bus.write32(0x1f80_10f0, 8 << 8).unwrap();
-    for nodes in [4096, 4097, 4096] {
+    for nodes in [4096, 4187, 8192, 4096] {
         bus.write32(0x1f80_10a8, 0).unwrap();
         for n in 0..nodes {
             let next = if n + 1 == nodes {
@@ -391,8 +409,9 @@ fn dma_linked_list_limit_and_ram_wrap_are_preserved_on_reuse() {
             bus.write32(0x1000 + n * 4, next).unwrap();
         }
         bus.write32(0x1f80_10a0, 0x1000).unwrap();
-        let result = bus.write32(0x1f80_10a8, 0x0100_0401);
-        assert_eq!(result.is_ok(), nodes == 4096);
+        bus.write32(0x1f80_10a8, 0x0100_0401).unwrap();
+        assert_eq!(bus.read32(0x1f80_10a0).unwrap(), 0x00ff_ffff);
+        assert_eq!(bus.read32(0x1f80_10a8).unwrap() & (1 << 24), 0);
     }
     // Header at the final RAM word; its three GP0 payload words wrap to RAM zero.
     for (address, word) in [

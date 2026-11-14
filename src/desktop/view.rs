@@ -1,6 +1,6 @@
 use super::{
     Desktop, SettingsTab, WorkspacePage,
-    components::{action, button, icon_button, label},
+    components::{action, button, card, icon_button, label},
     icons::icon,
 };
 use eidoryn_psx::i18n::Text;
@@ -43,6 +43,7 @@ impl Render for Desktop {
             .size_full()
             .bg(rgb(p.background))
             .text_color(rgb(p.text))
+            .text_size(px(14.))
             .when(
                 !pure_video
                     || self.graphics.open
@@ -109,11 +110,13 @@ impl Desktop {
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .px(if compact { px(26.) } else { px(38.) })
-                            .py_6()
+                            .px(px(36.))
+                            .pt(px(30.))
+                            .pb(px(44.))
                             .child(
                                 div()
                                     .w_full()
+                                    .max_w(px(1608.))
                                     .mx_auto()
                                     .flex()
                                     .flex_col()
@@ -124,15 +127,17 @@ impl Desktop {
                     )
                     .child(
                         div()
-                            .h(px(30.))
-                            .px_6()
+                            .h(px(34.))
+                            .flex_shrink_0()
+                            .px(px(30.))
                             .flex()
                             .items_center()
                             .justify_between()
                             .border_t_1()
                             .border_color(rgb(p.border))
-                            .text_xs()
+                            .text_size(px(11.))
                             .text_color(rgb(p.muted))
+                            .bg(rgb(p.surface))
                             .child(format!(
                                 "{:.1} / {:.1} FPS  ·  {:.0}% {speed}  ·  {}",
                                 self.snapshot.video_fps,
@@ -140,7 +145,9 @@ impl Desktop {
                                 100. * self.snapshot.video_fps / self.snapshot.target_fps,
                                 self.renderer_label()
                             ))
-                            .child(self.tr(Text::Shortcuts)),
+                            .when(window.viewport_size().width >= px(1100.), |footer| {
+                                footer.child(self.tr(Text::Shortcuts))
+                            }),
                     ),
             )
     }
@@ -179,7 +186,7 @@ impl Desktop {
             cx.listener(|view, _, window, cx| view.show_page(WorkspacePage::Debug, window, cx)),
         );
         div()
-            .w(if compact { px(76.) } else { px(218.) })
+            .w(if compact { px(72.) } else { px(224.) })
             .h_full()
             .flex_shrink_0()
             .flex()
@@ -196,7 +203,7 @@ impl Desktop {
                     div()
                         .px_3()
                         .py_2()
-                        .text_xs()
+                        .text_size(px(11.))
                         .text_color(rgb(p.muted))
                         .child(self.tr(Text::Workspace)),
                 )
@@ -204,19 +211,20 @@ impl Desktop {
             .child(console)
             .child(game)
             .child(debug)
-            .child(div().h(px(1.)).my_4().bg(rgb(p.border)))
+            .child(div().h(px(24.)))
             .when(!compact, |element| {
                 element.child(
                     div()
                         .px_3()
                         .pb_2()
-                        .text_xs()
+                        .text_size(px(11.))
                         .text_color(rgb(p.muted))
                         .child(self.tr(Text::Platforms)),
                 )
             })
             .child(self.platform_list(compact))
             .child(div().flex_1())
+            .child(div().h(px(1.)).mb_3().bg(rgb(p.border)))
             .child(
                 nav_item(
                     p,
@@ -233,7 +241,7 @@ impl Desktop {
                     div()
                         .px_3()
                         .pt_4()
-                        .text_xs()
+                        .text_size(px(10.))
                         .text_color(rgb(p.muted))
                         .child(concat!("Eidoryn  ·  v", env!("CARGO_PKG_VERSION"))),
                 )
@@ -266,7 +274,7 @@ impl Desktop {
             .child(platform(
                 &self.fonts,
                 p,
-                "P2",
+                "PS2",
                 "PlayStation 2",
                 self.tr(Text::Unsupported),
                 compact,
@@ -295,7 +303,7 @@ impl Desktop {
                     .as_ref()
                     .map(|icon| {
                         gpui::img(std::sync::Arc::clone(icon))
-                            .size(px(38.))
+                            .size(px(34.))
                             .rounded_lg()
                     }),
             )
@@ -305,8 +313,13 @@ impl Desktop {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .child(div().text_lg().font(self.fonts.semibold()).child(app::NAME))
-                        .child(label(p, "THE PLAY SPACE")),
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font(self.fonts.semibold())
+                                .child(app::NAME),
+                        )
+                        .child(label(p, "PLAYSTATION EMULATOR").text_size(px(10.))),
                 )
             })
     }
@@ -314,18 +327,19 @@ impl Desktop {
     fn topbar(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
-            .h(px(66.))
-            .px_6()
+            .h(px(64.))
+            .px(px(30.))
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap_3()
             .border_b_1()
             .border_color(rgb(p.border))
+            .bg(rgb(p.surface))
             .child(label(p, self.tr(Text::WorkspaceCrumb)))
             .child(
                 div()
-                    .text_sm()
+                    .text_size(px(12.))
                     .font(self.fonts.medium())
                     .child(match self.page {
                         WorkspacePage::Console => self.tr(Text::Console),
@@ -333,26 +347,32 @@ impl Desktop {
                     }),
             )
             .child(div().flex_1())
-            .child(label(
-                p,
-                format!(
-                    "{}  ·  {}",
-                    self.themes.active().name,
-                    self.renderer_label()
-                ),
-            ))
             .child(
-                button(
-                    &self.fonts,
+                label(
+                    p,
+                    format!(
+                        "{}  ·  {}",
+                        self.themes.active().name,
+                        self.renderer_label()
+                    ),
+                )
+                .pr_4()
+                .border_r_1()
+                .border_color(rgb(p.border)),
+            )
+            .child(
+                icon_button(
                     p,
                     "maximize",
+                    "expand",
                     if window.is_maximized() {
                         self.tr(Text::Restore)
                     } else {
                         self.tr(Text::Maximize)
                     },
-                    false,
                 )
+                .bg(rgb(p.surface))
+                .border_color(rgb(p.surface))
                 .on_click(cx.listener(|_, _, window, cx| {
                     window.zoom_window();
                     cx.notify();
@@ -375,12 +395,15 @@ impl Desktop {
             .bg(rgb(p.video_background))
             .child(
                 div()
-                    .h(px(65.))
+                    .h(px(64.))
                     .px_6()
                     .flex_shrink_0()
                     .flex()
                     .items_center()
                     .gap_4()
+                    .bg(rgb(p.surface))
+                    .border_b_1()
+                    .border_color(rgb(p.border))
                     .child(
                         action(
                             &self.fonts,
@@ -422,9 +445,9 @@ impl Desktop {
             .child(div().flex_1().min_h_0().px_6().py_3().child(self.video()))
             .child(
                 div().px_6().pb_6().flex().justify_center().child(
-                    div()
+                    card(p)
                         .w_full()
-                        .max_w(px(920.))
+                        .max_w(px(1080.))
                         .child(self.transport(true, cx)),
                 ),
             )
@@ -440,6 +463,8 @@ impl Desktop {
                     .px_4()
                     .py_3()
                     .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(p.on_error))
                     .bg(rgb(p.error))
                     .text_color(rgb(p.on_error))
                     .text_sm()
@@ -447,6 +472,7 @@ impl Desktop {
             })
     }
 
+    #[allow(clippy::too_many_lines)] // Keep the modal shell, tabs and focus scope together.
     fn settings_drawer(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let p = &self.themes.active().palette;
         div()
@@ -457,7 +483,7 @@ impl Desktop {
             .right_0()
             .top_0()
             .bottom_0()
-            .w(gpui::rems(25.))
+            .w(px(480.))
             .max_w_full()
             .flex()
             .flex_col()
@@ -466,10 +492,13 @@ impl Desktop {
             .border_color(rgb(p.border))
             .child(
                 div()
-                    .p_5()
+                    .px_6()
+                    .py(px(22.))
                     .flex()
                     .items_center()
                     .gap_3()
+                    .border_b_1()
+                    .border_color(rgb(p.border))
                     .child(
                         div()
                             .flex_1()
@@ -478,7 +507,7 @@ impl Desktop {
                             .gap_1()
                             .child(
                                 div()
-                                    .text_lg()
+                                    .text_size(px(18.))
                                     .font(self.fonts.semibold())
                                     .child(self.tr(Text::Settings)),
                             )
@@ -492,11 +521,14 @@ impl Desktop {
             )
             .child(
                 div()
-                    .px_5()
-                    .pb_3()
+                    .mx_6()
+                    .mt(px(18.))
+                    .p_1()
                     .flex()
-                    .gap_2()
-                    .border_b_1()
+                    .gap_1()
+                    .rounded_md()
+                    .bg(rgb(p.surface_variant))
+                    .border_1()
                     .border_color(rgb(p.border))
                     .children(
                         [
@@ -510,7 +542,22 @@ impl Desktop {
                         ]
                         .into_iter()
                         .map(|(id, title, tab)| {
-                            button(&self.fonts, p, id, self.tr(title), self.settings_tab == tab)
+                            button(&self.fonts, p, id, self.tr(title), false)
+                                .flex_1()
+                                .min_w_0()
+                                .px_2()
+                                .h(px(32.))
+                                .bg(rgb(if self.settings_tab == tab {
+                                    p.tonal_hover
+                                } else {
+                                    p.surface_variant
+                                }))
+                                .border_color(rgb(p.surface_variant))
+                                .text_color(rgb(if self.settings_tab == tab {
+                                    p.text
+                                } else {
+                                    p.muted
+                                }))
                                 .debug_selector(move || id.into())
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     view.rebinding = None;
@@ -520,14 +567,14 @@ impl Desktop {
                         }),
                     ),
             )
-            .child(label(p, self.tr(Text::KeyboardHint)).px_5().py_2())
+            .child(label(p, self.tr(Text::KeyboardHint)).px_6().pt_3())
             .child(
                 div()
                     .id("settings-content")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .p_5()
+                    .p_6()
                     .child(
                         div()
                             .flex()
@@ -552,7 +599,7 @@ fn nav_item(
     compact: bool,
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
-    let hover = p.surface_variant;
+    let hover = p.tonal_hover;
     let palette = *p;
     div()
         .id(id)
@@ -562,21 +609,21 @@ fn nav_item(
         .border_color(rgb(p.surface))
         .focus(move |style| style.border_color(rgb(palette.primary)))
         .tooltip(move |_, cx| super::components::tooltip(palette, text.into(), cx))
-        .h(px(42.))
-        .px_3()
+        .h(px(40.))
+        .px(px(10.))
         .flex_shrink_0()
         .flex()
         .items_center()
         .gap_3()
-        .rounded_lg()
-        .bg(rgb(if selected { p.tonal } else { p.surface }))
+        .rounded_md()
+        .bg(rgb(if selected { p.tonal_hover } else { p.surface }))
         .text_color(rgb(if selected { p.text } else { p.muted }))
         .cursor_pointer()
         .when(compact, gpui::Styled::justify_center)
         .hover(move |style| style.bg(rgb(hover)))
-        .child(icon(symbol, if selected { p.primary } else { p.muted }))
+        .child(icon(symbol, if selected { p.text } else { p.muted }))
         .when(!compact, |element| {
-            element.child(div().text_sm().child(text))
+            element.child(div().text_size(px(12.)).child(text))
         })
 }
 
@@ -590,23 +637,25 @@ fn platform(
     selected: bool,
 ) -> gpui::Div {
     div()
-        .h(px(42.))
-        .px_3()
+        .h(px(43.))
+        .px(px(10.))
         .flex()
         .items_center()
         .gap_3()
         .when(compact, gpui::Styled::justify_center)
         .child(
             div()
-                .size(px(28.))
+                .size(px(27.))
+                .flex_shrink_0()
                 .rounded_md()
-                .bg(rgb(if selected { p.tonal } else { p.surface_variant }))
-                .text_color(rgb(if selected { p.primary } else { p.muted }))
+                .border_1()
+                .border_color(rgb(p.border))
+                .text_color(rgb(if selected { p.text } else { p.muted }))
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_xs()
-                .font(fonts.bold())
+                .text_size(px(10.))
+                .font(fonts.semibold())
                 .child(short),
         )
         .when(!compact, |element| {

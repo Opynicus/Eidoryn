@@ -270,6 +270,104 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn console_cards_fit_and_reflow_across_window_sizes(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    for width in [980., 1250., 1251., 1280., 1600.] {
+        cx.simulate_resize(size(px(width), px(1400.)));
+        for language in [
+            eidoryn_psx::i18n::Language::En,
+            eidoryn_psx::i18n::Language::ZhCn,
+        ] {
+            view.update(cx, |view, cx| {
+                view.language = language;
+                view.themes.select("midnight").unwrap();
+                cx.notify();
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+            let [display, stage, transport, session, memory] = [
+                "display-card",
+                "display-stage",
+                "transport",
+                "session-card",
+                "memory-card",
+            ]
+            .map(|selector| {
+                let bounds = cx
+                    .debug_bounds(selector)
+                    .expect("console element is visible");
+                assert!(
+                    bounds.origin.x >= px(0.) && bounds.right() <= px(width),
+                    "{selector} overflows the {width}px window in {language:?}: {bounds:?}"
+                );
+                bounds
+            });
+            let nav = cx.debug_bounds("nav-console").unwrap();
+            assert!(display.origin.x >= nav.right());
+            for child in [stage, transport] {
+                assert!(child.origin.x >= display.origin.x && child.right() <= display.right());
+                assert!(child.origin.y >= display.origin.y && child.bottom() <= display.bottom());
+            }
+            let volume = cx.debug_bounds("volume-slider").unwrap();
+            assert!(volume.origin.x >= transport.origin.x && volume.right() <= transport.right());
+            if width <= 1250. {
+                assert!(session.origin.y >= display.bottom());
+                assert_eq!(session.origin.y, memory.origin.y);
+                assert!(session.right() <= memory.origin.x);
+            } else {
+                assert!(session.origin.x >= display.right());
+                assert_eq!(session.origin.x, memory.origin.x);
+                assert!(memory.origin.y >= session.bottom());
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn debugger_columns_keep_details_readable(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    for width in [980., 1280., 1600.] {
+        cx.simulate_resize(size(px(width), px(1400.)));
+        for language in [
+            eidoryn_psx::i18n::Language::En,
+            eidoryn_psx::i18n::Language::ZhCn,
+        ] {
+            view.update(cx, |view, cx| {
+                view.language = language;
+                view.page = WorkspacePage::Debug;
+                view.debugger_enabled = true;
+                view.snapshot = Snapshot::capture(&Machine::demo(), false, None, 0.);
+                cx.notify();
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear());
+            let [instructions, registers, gpu] =
+                ["debug-instructions", "debug-registers", "debug-gpu"].map(|selector| {
+                    let bounds = cx.debug_bounds(selector).expect("debugger card is visible");
+                    assert!(
+                        bounds.origin.x >= px(0.) && bounds.right() <= px(width),
+                        "{selector} overflows the {width}px window in {language:?}: {bounds:?}"
+                    );
+                    bounds
+                });
+            assert!(
+                registers.size.width >= px(250.),
+                "registers are too narrow in the {width}px window: {registers:?}"
+            );
+            assert_eq!(registers.origin.x, gpu.origin.x);
+            assert!(gpu.origin.y >= registers.bottom());
+            if width < 1000. {
+                assert!(registers.origin.y >= instructions.bottom());
+            } else {
+                assert!(registers.origin.x >= instructions.right());
+            }
+        }
+    }
+}
+
+#[gpui::test]
 fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(desktop);
     let path = view.read_with(cx, |v, _| v.preferences_path.clone().unwrap());
@@ -380,7 +478,21 @@ fn turbo_settings_persist_and_input_releases_at_ui_boundaries(cx: &mut TestAppCo
 
 #[gpui::test]
 fn f5_toggles_execution_without_space_pausing_the_game(cx: &mut TestAppContext) {
-    let (view, cx) = cx.add_window_view(desktop);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = desktop(window, cx);
+        // The built-in demo yields after each drawn frame. Loading its EXE
+        // instead can rasterize a whole 20,000-instruction slice before the
+        // worker can receive the next key command or acknowledgement barrier.
+        view.runner = Runner::with_snapshot_mode(
+            Machine::demo(),
+            false,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        )
+        .unwrap();
+        view
+    });
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     for (index, (keys, running)) in [
         ("space", false),

@@ -2,17 +2,20 @@
 use eidoryn_host::theme::{Palette, ThemeCatalog};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "eidoryn-theme-{}-{}",
+            "eidoryn-theme-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
         Self(path)
