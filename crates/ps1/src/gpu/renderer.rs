@@ -1,4 +1,4 @@
-//! One ordered GPU worker overlaps software/Vulkan drawing with CPU interpretation.
+//! One ordered GPU worker overlaps software/hardware drawing with CPU interpretation.
 //! Bounded batches preserve texture feedback, blending and transfer ordering.
 use super::{
     DisplayFrame, DisplaySettings,
@@ -55,7 +55,11 @@ pub enum RendererMode {
     #[default]
     Serial,
     Threaded,
+    Hardware,
+    Dx12,
     Vulkan,
+    OpenGl,
+    Metal,
 }
 
 impl RendererMode {
@@ -64,7 +68,11 @@ impl RendererMode {
         match self {
             Self::Serial => "serial",
             Self::Threaded => "threaded",
+            Self::Hardware => "hardware",
+            Self::Dx12 => "dx12",
             Self::Vulkan => "vulkan",
+            Self::OpenGl => "opengl",
+            Self::Metal => "metal",
         }
     }
 
@@ -72,8 +80,16 @@ impl RendererMode {
         match self {
             Self::Serial => "Serial",
             Self::Threaded => "Threaded",
+            Self::Hardware => "Hardware (automatic)",
+            Self::Dx12 => "DirectX 12",
             Self::Vulkan => "Vulkan",
+            Self::OpenGl => "OpenGL",
+            Self::Metal => "Metal",
         }
+    }
+
+    pub const fn is_hardware(self) -> bool {
+        !matches!(self, Self::Serial | Self::Threaded)
     }
 }
 
@@ -83,8 +99,14 @@ impl FromStr for RendererMode {
         match value {
             "serial" => Ok(Self::Serial),
             "threaded" => Ok(Self::Threaded),
+            "hardware" => Ok(Self::Hardware),
+            "dx12" => Ok(Self::Dx12),
             "vulkan" => Ok(Self::Vulkan),
-            _ => Err("--renderer expects serial, threaded, or vulkan"),
+            "opengl" => Ok(Self::OpenGl),
+            "metal" => Ok(Self::Metal),
+            _ => {
+                Err("--renderer expects serial, threaded, hardware, dx12, vulkan, opengl, or metal")
+            }
         }
     }
 }
@@ -274,19 +296,20 @@ impl Worker {
         let (sender, receiver) = mpsc::sync_channel(QUEUED_BATCHES);
         let (recycle, recycled) = mpsc::channel();
         let (ready, initialized) = mpsc::sync_channel(1);
-        let error = Arc::new(OnceLock::new());
-        let status = Arc::clone(&error);
         let thread = thread::Builder::new()
             .name("eidoryn-gpu".into())
             .spawn(move || {
-                let mut engine = match Engine::new(mode, &status) {
-                    Ok(engine) => engine,
+                let (mut engine, status) = match Engine::new(mode) {
+                    Ok(initialized) => initialized,
                     Err(error) => {
                         let _ = ready.send(Err(error.to_string()));
                         return;
                     }
                 };
-                if ready.send(Ok(engine.name())).is_err() {
+                if ready
+                    .send(Ok((engine.name(), Arc::clone(&status))))
+                    .is_err()
+                {
                     return;
                 }
                 while let Ok(message) = receiver.recv() {
@@ -332,8 +355,8 @@ impl Worker {
                     }
                 }
             })?;
-        let device_name = match initialized.recv() {
-            Ok(Ok(name)) => name,
+        let (device_name, error) = match initialized.recv() {
+            Ok(Ok(initialized)) => initialized,
             result => {
                 let _ = thread.join();
                 return Err(io::Error::other(match result {

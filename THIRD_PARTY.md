@@ -1,6 +1,6 @@
 # Eidoryn dependencies and test artifacts
 
-The emulator CPU, bus, software/Vulkan GPU algorithms and shaders, DMA, disc reader, CD-ROM controller, EXE
+The emulator CPU, bus, software/wgpu GPU algorithms and shaders, DMA, disc reader, CD-ROM controller, EXE
 loader, CUE parser, GTE, MDEC, SIO/digital pad, memory-card protocol/persistence,
 SPU voices/ADSR/reverb, XA/CDDA decoding, timers and MIPS test programs are implemented locally. No third-party emulator
 core, emulator adapter, or vendored emulator source is used.
@@ -11,12 +11,18 @@ uses only the Rust standard library. `eidoryn-ps1` uses smallvec 1.16.5
 responses. The inline capacities are 16 and 8 bytes; larger values can still use
 heap storage. Existing sector and FIFO buffers retain their reusable capacities.
 
-The optional `vulkan` feature uses wgpu 30.0.2 for safe Vulkan resource and compute
+The optional `dx12`, `metal`, `vulkan` and `opengl` features use wgpu 30.0.2 for safe resource and compute
 submission APIs, pollster 1.0.1 for initialization, and bytemuck 1.25.2 for safe
 integer-slice byte views. These are general-purpose libraries; PS1 command
 encoding, dependency tracking, rasterization and scanout are implemented here.
-API reference: https://docs.rs/wgpu/30.0.2/wgpu/ . The default build includes `desktop`, `vulkan` and `jit`;
+OpenGL uses wgpu's `gles` backend (native WGL on Windows), including glow and
+glutin_wgl_sys bindings; the emulator introduces no unsafe OpenGL calls.
+API reference: https://docs.rs/wgpu/30.0.2/wgpu/ . The default build includes `desktop`, `hardware` (all four backends) and `jit`;
 runtime CPU/renderer selections are independent.
+
+Cargo.lock resolves gpu-allocator 0.28.0's Windows API dependency to windows 0.62.2,
+matching wgpu-hal's DirectX 12 interface types. Other dependencies may retain older
+Windows API versions; these cannot be substituted across the allocator boundary.
 
 The desktop frontend uses GPUI 0.2.2, image, serde and serde_json (theme manifests),
 and CPAL 0.18.2 for host audio-device access (not PS1 sound emulation),

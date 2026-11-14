@@ -151,6 +151,10 @@ mod tests {
             (RendererMode::Serial, "serial"),
             (RendererMode::Threaded, "threaded"),
             (RendererMode::Vulkan, "vulkan"),
+            (RendererMode::OpenGl, "opengl"),
+            (RendererMode::Hardware, "hardware"),
+            (RendererMode::Dx12, "dx12"),
+            (RendererMode::Metal, "metal"),
         ] {
             for (crt, crt_id) in [
                 (CrtFilter::Off, "off"),

@@ -91,6 +91,61 @@ fn defaults_and_repeated_overrides_keep_their_existing_meaning() {
 }
 
 #[test]
+fn hardware_modes_can_be_selected_for_headless_and_desktop_and_reject_duplicates() {
+    use eidoryn_psx::systems::ps1::gpu::RendererMode;
+
+    for mode in [
+        RendererMode::Hardware,
+        RendererMode::Dx12,
+        RendererMode::Vulkan,
+        RendererMode::OpenGl,
+        RendererMode::Metal,
+    ] {
+        let parsed = options(&["--headless", "--renderer", mode.id()]).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(parsed.renderer, Some(mode));
+        #[cfg(feature = "desktop")]
+        options(&["--renderer", mode.id()])
+            .unwrap()
+            .validate()
+            .unwrap();
+    }
+    assert_eq!(
+        options(&["--renderer", "opengl", "--renderer", "vulkan"]).unwrap_err(),
+        "Duplicate --renderer"
+    );
+}
+
+#[test]
+fn listing_renderers_is_standalone_and_needs_no_media_or_desktop() {
+    options(&["--list-renderers"]).unwrap().validate().unwrap();
+    options(&["--list-renderers", "--no-memory-cards"])
+        .unwrap()
+        .validate()
+        .unwrap();
+    for extra in [
+        vec!["--bios", "missing.bin"],
+        vec!["--inspect-disc", "missing.cue"],
+        vec!["--export-demo", "out.exe"],
+        vec!["--headless"],
+        vec!["--renderer", "hardware"],
+    ] {
+        let args = ["--list-renderers"]
+            .into_iter()
+            .chain(extra)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            options(&args).unwrap().validate().unwrap_err(),
+            "--list-renderers is a standalone operation"
+        );
+    }
+    assert_eq!(
+        options(&["--list-renderers", "--list-renderers"]).unwrap_err(),
+        "Duplicate --list-renderers"
+    );
+}
+
+#[test]
 fn compatibility_errors_keep_their_priority_without_opening_files() {
     for (args, expected) in [
         (

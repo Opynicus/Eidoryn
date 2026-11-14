@@ -11,13 +11,13 @@ Eidoryn (CLI / GPUI)
 └── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
-`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认依赖标准库和用于 CD-ROM 短参数、延迟响应的 smallvec。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认仅依赖标准库。Vulkan/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`vulkan`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
+`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认依赖标准库和用于 CD-ROM 短参数、延迟响应的 smallvec。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认仅依赖标准库。wgpu 硬件后端/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`dx12`、`metal`、`vulkan`、`opengl`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
 
 | 位置 | 职责 |
 | --- | --- |
 | `crates/ps1/src/{cpu,bus,machine}.rs` | MIPS CPU、总线、机器状态与执行；DMA 位于 `bus/dma.rs` |
 | `crates/ps1/src/cpu_engine.rs`、`cpu/jit.rs` | 解释器/JIT 选择、缓存及逐指令异常/中断/代码失效检查 |
-| `crates/ps1/src/gpu/` | 自主软件光栅器、多线程绘图、Vulkan 管线与 WGSL；GP0/GP1 和显示时序位于 `gpu.rs` |
+| `crates/ps1/src/gpu/` | 自主软件光栅器、多线程绘图、共享 wgpu 计算管线与 WGSL；GP0/GP1 和显示时序位于 `gpu.rs` |
 | `crates/ps1/src/{gte,mdec,timers,sio,memory_card}.rs` | PS1 几何运算、解码、时钟、手柄和记忆卡协议 |
 | `crates/ps1/src/{disc,cue,cdrom}.rs` | 镜像读取与光驱控制器 |
 | `crates/ps1/src/spu/`、`{adpcm,xa,cd_audio}.rs` | PS1 合成、混响与光盘音频解码 |
@@ -60,9 +60,15 @@ Eidoryn (CLI / GPUI)
 显存读取、机器克隆和后端切换会先提交剩余命令并等待工作完成。VBlank 在向 CPU 发出中断前排入画面采集命令，携带该时刻的显示寄存器；GPU 按顺序在先前绘图之后、后续清屏之前生成不可变像素。解释器可继续执行，真正读取完成帧的调用方才等待采集结果，并通过 `OnceLock` 缓存。同一有界队列也限制在途采集；未消费的旧帧可丢弃，不会阻塞 GPU 回复。克隆得到独立的串行数据快照，避免共享可变显存；会话重置和换媒体会恢复已选后端，线程创建失败时保留原会话。调试接口 `vram()` 返回同步副本，`vram_mut()` 收回工作线程后提供串行编辑。退出时排空已接收任务并 join；设备或线程初始化失败会保留旧后端及显存。设备运行错误锁存后在宿主时间片边界停止执行，克隆也携带错误，不能把失败读回当成健康状态。主模拟器继续禁止 unsafe Rust；可选 JIT 的原生调用边界隔离在本地 `jit-runtime` crate，并有独立的安全约束与测试。
 
 
-Vulkan 模式通过 wgpu 的安全接口把显存保存在 GPU storage buffer，每个 PS1 半字对应 u32，避免相邻半字写入竞争。GP0 图元编码为固定 32-word 记录，按 8×8 像素分块，每个 GPU invocation 独占一个像素，依次执行该块的命令并保留遮罩/混合顺序。根据 UV 范围、窗口、翻转和 CLUT 追踪读取区域；读写区域发生依赖时结束批次，自身反馈/重叠复制使用有序 GPU shader。上传合并为行段。批次最多 2048 图元、262144 个块引用、65536 上传半字；在途提交到 64 次时等待，防止无 VBlank 程序无限排队。原生分辨率和整数运算与软件算法一致，不要求 shader int64。
+硬件模式通过 wgpu 的安全接口把显存保存在 GPU storage buffer，每个 PS1 半字对应 u32，避免相邻半字写入竞争。GP0 图元编码为固定 32-word 记录，按 8×8 像素分块，每个 GPU invocation 独占一个像素，依次执行该块的命令并保留遮罩/混合顺序。根据 UV 范围、窗口、翻转和 CLUT 追踪读取区域；读写区域发生依赖时结束批次，自身反馈/重叠复制使用有序 GPU shader。上传合并为行段。批次最多 2048 图元、262144 个块引用、65536 上传半字；在途提交到 64 次时等待，防止无 VBlank 程序无限排队。原生分辨率和整数运算与软件算法一致，不要求 shader int64。
 
-Vulkan 的 RGB15/RGB24 显示转换也在 GPU 执行，然后读回 RGB 供 GPUI 显示，尚未共享显示纹理。下载显存时缓存完整读回到下一次绘图；模式切换/克隆显式同步。Vulkan 编译特性和后端选择独立，默认构建提供 Vulkan，但默认运行软件模式；无物理显卡时报告错误，不选择 CPU Vulkan 适配器。后端实现位于 `crates/ps1/src/gpu/`；验证见 `tests/vulkan_gpu.rs`、`tests/threaded_gpu.rs` 和 `tests/display.rs`。
+硬件后端的 RGB15/RGB24 显示转换也在 GPU 执行，然后读回 RGB 供 GPUI 显示，尚未共享显示纹理。下载显存时缓存完整读回到下一次绘图；模式切换/克隆显式同步。`dx12`、`metal`、`vulkan`、`opengl` 编译特性和后端选择独立，应用的 `hardware` 特性统一启用它们。默认仍运行软件模式，启用硬件加速后 `RendererMode::Hardware` 保留自动策略；Windows 按 DX12 → Vulkan → OpenGL 尝试，macOS 优先 Metal，其他平台优先 Vulkan。显式后端只尝试指定 API。各候选使用独立错误锁存器，失败设备的异步回调不会污染下一候选。
+
+四个后端共用 `crates/ps1/src/gpu/compute/` 下的命令编码、批处理、WGSL 和读回逻辑，不引入新的 unsafe 代码。`hardware_backends()` 探测当前平台和构建支持的物理设备、计算资源、着色器及缓冲区初始化，返回设备名或不可用原因。设置页在后台执行并缓存结果，检测未完成或不可用时禁用选项；命令行可用 `--list-renderers` 查看。初始化和显存上传成功后才替换当前渲染器，失败保留原会话。Windows GL 使用原生 WGL，要求 OpenGL 4.3+ 的计算能力。wgpu 30 不提供原生 DX11 后端，旧显卡可使用满足要求的 OpenGL，否则保留软件模式。Metal 仅完成配置接入，尚未进行 macOS 实机验证。
+
+`tests/dx12_gpu.rs`、`tests/vulkan_gpu.rs`、`tests/opengl_gpu.rs`、`tests/metal_gpu.rs` 共用 `tests/support/hardware_gpu.rs` 的像素等价性、反馈/复制、批次边界、扫描输出和运行中切换测试。`tests/renderer_backends.rs` 验证可用性检测、不可用后端状态保留和 Windows 自动优先 DX12。默认忽略需要实体显卡的用例；在支持的 Windows 机器上显式执行 `cargo test --locked --release --no-default-features --features dx12,vulkan,opengl --test dx12_gpu --test vulkan_gpu --test opengl_gpu --test renderer_backends -- --ignored --test-threads=1`，缺少硬件会使测试失败。软件后端验证仍见 `tests/threaded_gpu.rs` 和 `tests/display.rs`。
+
+2026-11-14 在 Windows / RTX 5070 Ti 上实测：DX12、Vulkan、OpenGL 的 18 项共用硬件测试及 2 项检测/自动优先级测试通过，完整工作区与 GPUI 交互测试、纯软件构建回归通过。本地 SCPH-5501 BIOS 配合《古惑狼》运行至 N. Sanity Beach 关卡；《铁拳 3》运行至选人后的对战加载画面。两款游戏均验证 DX12 → Vulkan → OpenGL → 自动模式切换；各后端分别对照软件运行 240 个切片，完整帧像素及最终 CPU/RAM/VRAM/GPU/排队音频一致。《铁拳 3》在本次固定输入序列下仍停在对战加载，运行到 23.53 亿步后，纯软件从头执行相同序列也复现相同 PC、寄存器、光驱状态及画面；该兼容性问题未在本次渲染后端改动中修复。BIOS、游戏、测试记忆卡与画面均不纳入源码或发行包。
 
 CPU 与设备共用 33,868,800 Hz 的累计周期时间线；指令按当前近似耗时推进设备，JIT 与解释器遵守相同的边界。周期定义与计数 API 位于 `crates/ps1/src/timing.rs` 和 `crates/ps1/src/bus.rs`，时序回归测试见 `tests/cpu_timing.rs`。
 

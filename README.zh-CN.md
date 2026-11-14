@@ -21,7 +21,7 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 ## 功能
 
 - **PS1 模拟**：MIPS CPU、GTE、GPU、MDEC、SPU、光驱、DMA、计时器、统一 CPU/设备周期时间线和数字手柄。
-- **画面与性能选项**：串行软件绘图、多线程软件绘图和可选 Vulkan 加速；支持放大、全屏与 CRT 显示滤镜。
+- **画面与性能选项**：串行软件绘图、多线程软件绘图和可选 wgpu 硬件加速，运行时检测可用后端；支持放大、全屏与 CRT 显示滤镜。
 - **桌面体验**：中英文即时切换、键盘导航、四套内置主题、JSON 主题插件、设置持久化、音量滑条与系统音频输出。
 - **游戏媒体与存档**：读取 ISO、BIN 和多轨 CUE/BIN；支持双槽记忆卡及自动保存。
 - **调试工具**：默认关闭的可选调试器，包含 CPU 寄存器、反汇编、单步和执行切片；可在调试页开启，或使用 `--debugger` 启动。另有实验性 JIT 与无窗口命令行模式。
@@ -32,7 +32,7 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 | --- | --- |
 | 模拟主机 | PlayStation（PS1）进行中；其他主机尚未实现 |
 | 宿主平台 | Linux x86-64 已用于开发和测试；Windows、macOS 无窗口 CLI 已通过 CI 冒烟测试，桌面版仍需实际运行验证 |
-| 渲染 | 默认串行软件绘图；构建包含相应后端时，可在 **设置 / F8** 中切换多线程软件绘图和 Vulkan |
+| 渲染 | 默认软件绘图；在 **设置 → 图形设置 / F8** 中启用硬件加速并检测可用后端。Windows 自动选择优先 DirectX 12，其次 Vulkan、OpenGL |
 | CPU JIT | 实验性功能，默认关闭，仅支持 Linux x86-64 的部分整数指令 |
 | 精度与兼容性 | 设备时序、图形和音频并非周期精确；游戏兼容性和性能因场景与设备而异 |
 
@@ -44,7 +44,7 @@ Eidoryn 是一个使用 Rust 编写的实验性模拟器，配备原生 GPUI 界
 
 - Rust **1.95 或更新版本**及 Cargo；建议使用 release 构建运行游戏。
 - 桌面版需要 GPUI 所需的系统图形、字体与音频开发库，以及可用图形驱动。Linux 构建依赖见[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)。
-- Vulkan 模式需要支持 Vulkan 的物理显卡和驱动；默认软件模式不要求 Vulkan 硬件。
+- 硬件绘图需要支持计算着色器的物理显卡和驱动。Windows 支持 DirectX 12、Vulkan 和 OpenGL 4.3+；没有兼容硬件后端的老旧设备仍可使用软件绘图。
 - 启动游戏需要自行准备相应 BIOS 和镜像。项目不提供这些文件。
 
 此 UI 改版分支提供 Linux x86-64 Wayland、Linux x86-64 X11 和 Windows x86-64 临时测试发行包，均附 SHA-256 校验文件。这些预发布版本从测试分支构建，不替换最新发行版。Linux 请按桌面会话选择对应压缩包，需要 Ubuntu 24.04 或兼容的更新系统；Windows 请完整解压 ZIP，再从解压目录运行 `eidoryn.exe`。Windows 桌面显示、输入及声音仍需人工实机验证，原生 CI 覆盖编译、测试和无窗口演示。可用测试包见 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases)。
@@ -69,10 +69,16 @@ cargo build --locked --release --bin eidoryn --no-default-features --features x1
 Windows 测试包采用原生 MSVC 构建，通过 `GPUI_FXC_PATH` 指定 Windows SDK 的 `fxc.exe`：
 
 ```powershell
-cargo build --locked --release --bin eidoryn --no-default-features --features desktop,vulkan
+cargo build --locked --release --bin eidoryn --no-default-features --features desktop,dx12,vulkan,opengl
 ```
 
 Windows 包不启用仅支持 Linux 的实验性 JIT。
+
+在 **设置 → 图形设置 / F8** 中启用 **硬件加速**，或通过 `--renderer hardware` 自动选择。设置页在后台检测设备并验证着色器初始化，不可用的后端会禁用并说明原因。`--renderer dx12`、`vulkan`、`opengl`、`metal` 可明确指定后端。Windows 优先 DirectX 12，Linux 优先 Vulkan，macOS 优先 Metal；自动模式依次尝试可用后端，明确指定时则报告失败并保留原会话，不静默切换图形接口。
+
+在 PowerShell 中运行 `./target/release/eidoryn.exe --list-renderers | Out-Host` 可查看检测到的后端及不可用原因。
+
+`hardware` 构建特性包含四种 wgpu 后端，也可单独启用 `dx12`、`vulkan`、`opengl`、`metal`；运行时仍受平台和驱动能力限制。它们共用整数计算光栅器，绘图、纹理采样、混合及显示转换在 GPU 上执行，再读回画面供桌面显示。性能取决于游戏和驱动。wgpu 30 不提供原生 DirectX 11 后端；老旧 Windows 显卡可尝试支持计算着色器的 OpenGL，或使用软件绘图。Metal 及非 Windows 平台的运行行为仍需在对应设备上验证。
 
 Windows 桌面使用系统原生标题栏，并隐藏额外的工作区顶部栏。桌面 release 构建启动时不再弹出控制台；调试构建和未启用 `desktop` 的构建仍保留控制台。需要交互式命令行输出时，请使用无窗口构建（`--no-default-features`）。在 PowerShell 中读取桌面发行版的输出并等待其结束，可通过管道连接 `Out-Host`，例如 `./target/release/eidoryn.exe --help | Out-Host`。
 

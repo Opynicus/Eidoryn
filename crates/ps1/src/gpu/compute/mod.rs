@@ -1,11 +1,12 @@
-//! Vulkan compute owns VRAM and performs PS1 rasterization, not just scanout.
+//! wgpu compute owns VRAM and performs PS1 rasterization, not just scanout.
 //! Tile command lists preserve draw order at each pixel. Cross-pixel reads
 //! require a batch barrier; feedback uses an ordered compute invocation.
 mod commands;
 mod pipelines;
 use super::{
-    DisplaySettings, VRAM_HEIGHT, VRAM_WIDTH,
+    DisplaySettings, RendererMode, VRAM_HEIGHT, VRAM_WIDTH,
     rasterizer::{RasterCommand, Rasterizer},
+    renderer_engine::{ErrorLatch, select_candidates},
 };
 use commands::{Primitive, TILE_COUNT, UPLOAD};
 use std::{
@@ -20,8 +21,49 @@ const MAX_UPLOADS: usize = 65_536;
 const VRAM_BYTES: u64 = (VRAM_WIDTH * VRAM_HEIGHT * 4) as u64;
 const WAIT: Duration = Duration::from_secs(10);
 
-pub(super) struct VulkanRenderer {
+fn required_limits() -> wgpu::Limits {
+    // Request only the storage/compute resources used by the shared shaders.
+    // WebGPU defaults demand eight storage buffers; this rasterizer needs five.
+    wgpu::Limits {
+        max_storage_buffers_per_shader_stage: 5,
+        max_storage_buffer_binding_size: VRAM_BYTES,
+        max_compute_invocations_per_workgroup: 64,
+        max_compute_workgroup_size_x: 64,
+        max_compute_workgroup_size_y: 8,
+        max_compute_workgroup_size_z: 1,
+        max_compute_workgroups_per_dimension: TILE_COUNT as u32,
+        ..wgpu::Limits::downlevel_defaults()
+    }
+}
+
+fn physical_adapter(info: &wgpu::AdapterInfo) -> bool {
+    let description = format!("{} {} {}", info.name, info.driver, info.driver_info).to_lowercase();
+    if [
+        "software",
+        "llvmpipe",
+        "lavapipe",
+        "softpipe",
+        "swiftshader",
+        "mesa offscreen",
+        "gdi generic",
+        "microsoft basic",
+    ]
+    .iter()
+    .any(|name| description.contains(name))
+    {
+        return false;
+    }
+    matches!(
+        info.device_type,
+        wgpu::DeviceType::DiscreteGpu | wgpu::DeviceType::IntegratedGpu
+    ) || (info.backend == wgpu::Backend::Gl && info.device_type == wgpu::DeviceType::Other)
+    // OpenGL cannot query PCI device type. wgpu reports physical NVIDIA/AMD
+    // adapters as Other; a zero vendor ID can also describe an AMD WGL driver.
+}
+
+pub(super) struct ComputeRenderer {
     pub name: String,
+    backend: &'static str,
     device: wgpu::Device,
     queue: wgpu::Queue,
     buffers: [wgpu::Buffer; 6],
@@ -45,25 +87,64 @@ pub(super) struct VulkanRenderer {
     submissions: usize,
 }
 
-impl VulkanRenderer {
-    pub(super) fn new(error: Arc<OnceLock<String>>) -> io::Result<Self> {
+impl ComputeRenderer {
+    pub(super) fn new(mode: RendererMode) -> io::Result<(Self, ErrorLatch)> {
+        let backends = match mode {
+            RendererMode::Dx12 => wgpu::Backends::DX12,
+            RendererMode::Vulkan => wgpu::Backends::VULKAN,
+            RendererMode::OpenGl => wgpu::Backends::GL,
+            RendererMode::Metal => wgpu::Backends::METAL,
+            _ => return Err(io::Error::other("A hardware renderer must be selected")),
+        };
+        let backend = mode.label();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
-        adapters.retain(|a| {
-            matches!(
-                a.get_info().device_type,
-                wgpu::DeviceType::DiscreteGpu | wgpu::DeviceType::IntegratedGpu
-            )
-        });
+        let mut adapters = pollster::block_on(instance.enumerate_adapters(backends));
+        adapters.retain(|a| physical_adapter(&a.get_info()));
         adapters.sort_by_key(|a| a.get_info().device_type != wgpu::DeviceType::DiscreteGpu);
-        let adapter = adapters.into_iter().next().ok_or_else(|| io::Error::other(
-            "No physical Vulkan GPU available (CPU/software adapters are excluded); use --renderer serial"))?;
+        let limits = required_limits();
+        let requirement = if mode == RendererMode::OpenGl {
+            " (OpenGL 4.3+ on Windows)"
+        } else {
+            ""
+        };
+        adapters.retain(|adapter| {
+            adapter
+                .get_downlevel_capabilities()
+                .flags
+                .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+                && limits.check_limits(&adapter.limits())
+        });
+        if adapters.is_empty() {
+            return Err(io::Error::other(format!(
+                "No physical {backend} GPU with compute shaders and five storage buffers is available{requirement}. CPU/software adapters are excluded; use --renderer serial"
+            )));
+        }
+        select_candidates(
+            adapters
+                .into_iter()
+                .map(|adapter| (adapter.get_info().name, adapter)),
+            |adapter, error| {
+                let mut gpu = Self::from_adapter(adapter, backend, Arc::clone(error))?;
+                // Complete resource allocation before an API/device is selected.
+                // A failure here can still fall back to another physical adapter.
+                gpu.synchronize().map_err(io::Error::other)?;
+                Ok(gpu)
+            },
+        )
+    }
+
+    fn from_adapter(
+        adapter: wgpu::Adapter,
+        backend: &'static str,
+        error: ErrorLatch,
+    ) -> io::Result<Self> {
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Eidoryn PS1 rasterizer"),
+            required_limits: required_limits(),
             // Our fixed buffers total less than 8 MiB. Large default allocation
             // blocks waste device/unified memory; resources can still grow.
             memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -72,12 +153,12 @@ impl VulkanRenderer {
         .map_err(io::Error::other)?;
         let uncaptured = Arc::clone(&error);
         device.on_uncaptured_error(Arc::new(move |failure: wgpu::Error| {
-            let _ = uncaptured.set(format!("Vulkan: {failure}"));
+            let _ = uncaptured.set(format!("{backend}: {failure}"));
         }));
         let lost = Arc::clone(&error);
         device.set_device_lost_callback(move |reason, message| {
             if reason != wgpu::DeviceLostReason::Destroyed {
-                let _ = lost.set(format!("Vulkan device lost: {reason:?}: {message}"));
+                let _ = lost.set(format!("{backend} device lost: {reason:?}: {message}"));
             }
         });
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -126,7 +207,12 @@ impl VulkanRenderer {
             return Err(io::Error::other(failure.clone()));
         }
         Ok(Self {
-            name: format!("{} ({}, Vulkan)", info.name, info.driver),
+            name: if info.driver.is_empty() {
+                format!("{} ({backend})", info.name)
+            } else {
+                format!("{} ({}, {backend})", info.name, info.driver)
+            },
+            backend,
             device,
             queue,
             buffers,
@@ -162,7 +248,7 @@ impl VulkanRenderer {
                     0,
                     wgpu::BufferSize::new(VRAM_BYTES).expect("VRAM is not empty"),
                 )
-                .ok_or("Vulkan VRAM upload staging allocation failed")?;
+                .ok_or_else(|| format!("{} VRAM upload staging allocation failed", self.backend))?;
             upload
                 .slice(..)
                 .write_iter(raster.vram.iter().flat_map(|&v| u32::from(v).to_ne_bytes()));
@@ -323,7 +409,7 @@ impl VulkanRenderer {
                 submission_index: None,
                 timeout: Some(WAIT),
             })
-            .map_err(|e| format!("Vulkan wait failed: {e}"))?;
+            .map_err(|e| format!("{} wait failed: {e}", self.backend))?;
         self.submissions = 0;
         self.check()
     }
@@ -358,13 +444,13 @@ impl VulkanRenderer {
         let result = self.wait().and_then(|()| {
             receive
                 .recv_timeout(WAIT)
-                .map_err(|e| format!("Vulkan map callback: {e}"))?
-                .map_err(|e| format!("Vulkan readback: {e}"))?;
+                .map_err(|e| format!("{} map callback: {e}", self.backend))?
+                .map_err(|e| format!("{} readback: {e}", self.backend))?;
             let mapped = self
                 .staging
                 .slice(..bytes)
                 .get_mapped_range()
-                .map_err(|e| format!("Vulkan readback: {e}"))?;
+                .map_err(|e| format!("{} readback: {e}", self.backend))?;
             // Convert while mapped: callers allocate only their final output,
             // rather than copying the complete readback through a Vec<u32>.
             Ok(convert(&mapped))

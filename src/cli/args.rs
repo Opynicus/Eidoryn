@@ -42,6 +42,7 @@ pub(super) struct Options {
     pub export: Option<PathBuf>,
     pub inspect: Option<PathBuf>,
     pub export_disc_test: bool,
+    pub list_renderers: bool,
 }
 
 impl Default for Options {
@@ -75,6 +76,7 @@ impl Default for Options {
             export: None,
             inspect: None,
             export_disc_test: false,
+            list_renderers: false,
         }
     }
 }
@@ -90,6 +92,12 @@ pub(super) fn parse(
         match argument.to_str() {
             Some("--help" | "-h") => {
                 return Ok(None);
+            }
+            Some("--list-renderers") => {
+                if options.list_renderers {
+                    return Err("Duplicate --list-renderers".into());
+                }
+                options.list_renderers = true;
             }
             Some("--inspect-disc") => {
                 if options.inspect.is_some() {
@@ -157,7 +165,7 @@ pub(super) fn parse(
                 }
                 options.renderer = Some(
                     args.next()
-                        .ok_or("Missing --renderer mode: serial, threaded, or vulkan")?
+                        .ok_or("Missing --renderer mode: serial, threaded, hardware, dx12, vulkan, opengl, or metal")?
                         .to_str()
                         .ok_or("Renderer mode must be valid UTF-8")?
                         .parse::<RendererMode>()?,
@@ -258,6 +266,12 @@ impl Options {
     pub fn validate(&self) -> Result<(), String> {
         if self.no_cards && self.custom_cards {
             return Err("--no-memory-cards cannot be combined with --card1/--card2".into());
+        }
+        if self.list_renderers {
+            if self.has_startup_options() || self.inspect.is_some() || self.export.is_some() {
+                return Err("--list-renderers is a standalone operation".into());
+            }
+            return Ok(());
         }
         if self.inspect.is_some() {
             if self.has_startup_options() || self.export.is_some() {
@@ -365,7 +379,8 @@ pub(super) fn print_help() {
         --clean-fullscreen  Hide bars in fullscreen (F12 toggles)\n\
         --fullscreen-controls Show bars in fullscreen\n\
         --crt MODE          CRT display: off, soft, classic (overrides saved choice)\n\
-        --renderer MODE     GPU: serial, threaded, vulkan (overrides saved choice)\n\
+        --renderer MODE     GPU: serial, threaded, hardware, dx12, vulkan, opengl, metal\n\
+        --list-renderers    Detect usable hardware backends and exit\n\
         --cpu MODE          CPU: interpreter (default), jit (experimental)\n\
         --language LANG     Interface language: en or zh-CN\n\
         --theme ID          Start with a built-in or discovered theme\n\

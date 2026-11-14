@@ -129,34 +129,52 @@ impl Desktop {
 mod tests {
     use super::*;
 
-    #[cfg(not(feature = "vulkan"))]
     #[test]
     fn unavailable_saved_renderer_falls_back_but_explicit_override_fails() {
-        let path =
-            std::env::temp_dir().join(format!("eidoryn-fallback-{}.json", std::process::id()));
-        Preferences {
-            renderer: "vulkan".into(),
-            ..Preferences::default()
+        for (mode, supported) in [
+            (RendererMode::Vulkan, cfg!(feature = "vulkan")),
+            (RendererMode::OpenGl, cfg!(feature = "opengl")),
+            (
+                RendererMode::Dx12,
+                cfg!(all(feature = "dx12", target_os = "windows")),
+            ),
+            (
+                RendererMode::Metal,
+                cfg!(all(feature = "metal", target_os = "macos")),
+            ),
+        ] {
+            if supported {
+                continue;
+            }
+            let path = std::env::temp_dir().join(format!(
+                "eidoryn-fallback-{}-{}.json",
+                std::process::id(),
+                mode.id()
+            ));
+            Preferences {
+                renderer: mode.id().into(),
+                ..Preferences::default()
+            }
+            .save(&path)
+            .unwrap();
+            let mut machine = Machine::demo();
+            let startup = load_at(&mut machine, &Options::default(), Some(path.clone())).unwrap();
+            assert_eq!(machine.bus.gpu.renderer_mode(), RendererMode::Serial);
+            assert!(startup.notice.is_some());
+            assert_eq!(Preferences::load(&path).unwrap().renderer, mode.id());
+            assert!(
+                load_at(
+                    &mut machine,
+                    &Options {
+                        renderer: Some(mode),
+                        ..Options::default()
+                    },
+                    Some(path.clone())
+                )
+                .is_err()
+            );
+            std::fs::remove_file(path).unwrap();
         }
-        .save(&path)
-        .unwrap();
-        let mut machine = Machine::demo();
-        let startup = load_at(&mut machine, &Options::default(), Some(path.clone())).unwrap();
-        assert_eq!(machine.bus.gpu.renderer_mode(), RendererMode::Serial);
-        assert!(startup.notice.is_some());
-        assert_eq!(Preferences::load(&path).unwrap().renderer, "vulkan");
-        assert!(
-            load_at(
-                &mut machine,
-                &Options {
-                    renderer: Some(RendererMode::Vulkan),
-                    ..Options::default()
-                },
-                Some(path.clone())
-            )
-            .is_err()
-        );
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -9,6 +9,9 @@ use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px, rgb, rgba}
 
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.graphics.open && self.settings_tab == SettingsTab::Graphics {
+            self.detect_hardware(cx);
+        }
         if let Some(probe) = &mut self.probe {
             probe.record(self.snapshot.video_frames, "render");
         }

@@ -91,4 +91,4 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Test
-        run: cargo test --locked --workspace --no-default-features --features desktop,vulkan
+        run: cargo test --locked --workspace --no-default-features --features desktop,dx12,vulkan,opengl,ui-tests

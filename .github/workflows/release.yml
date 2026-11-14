@@ -79,7 +79,7 @@ jobs:
         with:
           shared-key: windows-msvc-release
       - name: Build
-        run: cargo build --locked --release --bin eidoryn --no-default-features --features desktop,vulkan
+        run: cargo build --locked --release --bin eidoryn --no-default-features --features desktop,dx12,vulkan,opengl
       - name: Original demo smoke test
         # A pipeline makes PowerShell wait for the Windows GUI executable.
         run: |

@@ -15,11 +15,15 @@ default-members = ["."]
 resolver = "3"
 
 [features]
-default = ["desktop", "wayland", "x11", "vulkan", "jit"]
+default = ["desktop", "wayland", "x11", "hardware", "jit"]
 desktop = ["dep:gpui", "dep:image", "dep:libc", "dep:serde", "dep:serde_json", "eidoryn-host/audio-output", "eidoryn-host/themes"]
 wayland = ["desktop", "gpui/wayland"]
 x11 = ["desktop", "gpui/x11"]
 vulkan = ["eidoryn-ps1/vulkan"]
+opengl = ["eidoryn-ps1/opengl"]
+dx12 = ["eidoryn-ps1/dx12"]
+metal = ["eidoryn-ps1/metal"]
+hardware = ["dx12", "metal", "vulkan", "opengl"]
 jit = ["eidoryn-ps1/jit"]
 # Opt-in GPUI interaction tests; headless builds keep their minimal dependencies.
 ui-tests = ["desktop", "gpui/test-support"]

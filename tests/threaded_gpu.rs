@@ -249,3 +249,26 @@ fn unavailable_hardware_backend_preserves_current_renderer_and_vram() {
     assert_eq!(gpu.renderer_mode(), RendererMode::Threaded);
     assert_eq!(gpu.vram(), before);
 }
+
+#[cfg(not(feature = "opengl"))]
+#[test]
+fn unavailable_opengl_preserves_software_modes_and_can_keep_drawing() {
+    for mode in [RendererMode::Serial, RendererMode::Threaded] {
+        let mut gpu = Gpu::default();
+        gpu.set_renderer(mode).unwrap();
+        send(&mut gpu, &[0x0200_00ff, 0, xy(16, 1)]);
+        let before = gpu.vram();
+        assert!(
+            gpu.set_renderer(RendererMode::OpenGl)
+                .unwrap_err()
+                .to_string()
+                .contains("--features opengl")
+        );
+        assert_eq!(gpu.renderer_mode(), mode);
+        assert_eq!(gpu.vram(), before);
+        assert_eq!(gpu.renderer_error(), None);
+        send(&mut gpu, &[0x0200_ff00, 0, xy(16, 1)]);
+        assert_eq!(gpu.vram()[0], 31 << 5);
+        assert_eq!(gpu.renderer_error(), None);
+    }
+}
