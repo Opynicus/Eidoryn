@@ -115,6 +115,9 @@ cargo test --locked --workspace
 
 With default features disabled, the core and CLI use the Rust standard library and smallvec for short CD-ROM command buffers. `--frames` counts execution slices, not video frames.
 
+GPUI follows the official `main` branch; `Cargo.lock` pins the tested revision.
+See [dependency provenance](THIRD_PARTY.md).
+
 </details>
 
 ## Controls

@@ -9,6 +9,7 @@ import zipfile
 
 
 RUNTIME_FILES = ('plugins/themes/ember.json',)
+NOTICE_FILES = ('THIRD_PARTY.md',)
 
 
 parser = argparse.ArgumentParser()
@@ -24,6 +25,10 @@ with tempfile.TemporaryDirectory() as temporary:
     stage.mkdir()
     shutil.copy2(args.binary, stage / args.binary.name)
     for filename in RUNTIME_FILES:
+        destination = stage / filename
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / filename, destination)
+    for filename in NOTICE_FILES:
         destination = stage / filename
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / filename, destination)

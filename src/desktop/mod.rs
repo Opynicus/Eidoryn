@@ -29,8 +29,7 @@ use eidoryn_psx::{
     theme::ThemeCatalog,
 };
 use gpui::{
-    App, Application, Bounds, FocusHandle, RenderImage, WindowBounds, WindowOptions, prelude::*,
-    px, size,
+    App, Bounds, FocusHandle, RenderImage, WindowBounds, WindowOptions, prelude::*, px, size,
 };
 pub use probe::ProbeOptions;
 use std::{
@@ -118,7 +117,7 @@ fn open_window(
 ) -> Result<(), String> {
     let startup_error = Rc::new(RefCell::new(None));
     let error_slot = Rc::clone(&startup_error);
-    Application::new()
+    gpui_platform::application()
         .with_assets(icons::Icons)
         .run(move |cx: &mut App| {
             let bounds = Bounds::centered(None, size(px(1280.), px(900.)), cx);
@@ -141,7 +140,7 @@ fn open_window(
                     window.set_window_title(app::NAME);
                     cx.new(|cx| {
                         let focus = cx.focus_handle();
-                        window.focus(&focus);
+                        window.focus(&focus, cx);
                         let subscriptions = vec![
                             cx.observe_window_activation(
                                 window,
@@ -210,7 +209,7 @@ fn open_window(
                 cx.quit();
                 return;
             }
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }

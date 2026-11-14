@@ -115,6 +115,8 @@ cargo test --locked --workspace
 
 无默认特性的核心与命令行仅使用 Rust 标准库。`--frames` 表示执行切片数，而不是视频帧数。
 
+GPUI 跟随官方 `main` 分支，由 `Cargo.lock` 锁定已验证的提交，详见[依赖来源说明](THIRD_PARTY.md)。
+
 </details>
 
 ## 按键

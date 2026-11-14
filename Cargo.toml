@@ -16,9 +16,9 @@ resolver = "3"
 
 [features]
 default = ["desktop", "wayland", "x11", "hardware", "jit"]
-desktop = ["dep:gpui", "dep:image", "dep:libc", "dep:serde", "dep:serde_json", "eidoryn-host/audio-output", "eidoryn-host/themes"]
-wayland = ["desktop", "gpui/wayland"]
-x11 = ["desktop", "gpui/x11"]
+desktop = ["dep:gpui", "dep:gpui_platform", "dep:image", "dep:serde", "dep:serde_json", "eidoryn-host/audio-output", "eidoryn-host/themes"]
+wayland = ["desktop", "gpui_platform/wayland"]
+x11 = ["desktop", "gpui_platform/x11"]
 vulkan = ["eidoryn-ps1/vulkan"]
 opengl = ["eidoryn-ps1/opengl"]
 dx12 = ["eidoryn-ps1/dx12"]
@@ -31,18 +31,19 @@ ui-tests = ["desktop", "gpui/test-support"]
 [dependencies]
 eidoryn-ps1 = { path = "crates/ps1", default-features = false }
 eidoryn-host = { path = "crates/host", default-features = false }
-gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "windows-manifest"], optional = true }
+# Follow official main; Cargo.lock pins the exact tested revision for both crates.
+gpui = { git = "https://github.com/zed-industries/zed", branch = "main", version = "0.2.2", default-features = false, optional = true }
+gpui_platform = { git = "https://github.com/zed-industries/zed", branch = "main", version = "0.1.0", default-features = false, features = ["font-kit"], optional = true }
 image = { version = "0.25", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 
-# GPUI's old xattr dependency still requires the ENOATTR alias on Linux.
-libc = { version = "=0.2.186", optional = true }
-
 [patch.crates-io]
-# Fix the private proc_macro re-export in GPUI's transitive dependency.
-# https://github.com/GnomedDev/proc-macro-error-2/pull/14
-proc-macro-error2 = { git = "https://github.com/GnomedDev/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }
+# Match Zed main's task-waker fix until it is released on crates.io.
+async-task = { git = "https://github.com/smol-rs/async-task", rev = "41fd3359c75e221bd8b187a8ee361aa309c1714c" }
+# GPUI's Linux event-loop and EGL fixes from the same upstream workspace.
+calloop = { git = "https://github.com/zed-industries/calloop", rev = "3759371fee14c40066d64777e2a36b6ffcc22590" }
+khronos-egl = { git = "https://github.com/zed-industries/khronos-egl", rev = "42214b36347b108fd9630ca6254b96dde59e04fe" }
 
 [profile.dev]
 debug = 0

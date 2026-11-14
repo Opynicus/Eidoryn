@@ -124,7 +124,7 @@ impl Desktop {
                 } else {
                     height * 0.035
                 });
-                if let Err(error) = window.paint_image(bounds, corners, image, 0, false) {
+                if let Err(error) = window.paint_image(bounds, bounds, corners, image, 0, false) {
                     eprintln!("GPUI frame: {error}");
                 }
                 let scale = window.scale_factor();
@@ -150,8 +150,14 @@ impl Desktop {
                     }
                 }
                 if let Some(overlay) = cached.as_ref()
-                    && let Err(error) =
-                        window.paint_image(bounds, corners, Arc::clone(&overlay.image), 0, false)
+                    && let Err(error) = window.paint_image(
+                        bounds,
+                        bounds,
+                        corners,
+                        Arc::clone(&overlay.image),
+                        0,
+                        false,
+                    )
                 {
                     eprintln!("GPUI CRT overlay: {error}");
                 }
