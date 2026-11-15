@@ -5,6 +5,11 @@ use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
 
 impl Desktop {
     pub(super) fn stop_input(&mut self, cx: &mut Context<Self>) {
+        self.stop_rewind(cx);
+        if self.save_state_picker_open {
+            self.save_state_picker_open = false;
+            cx.notify();
+        }
         if self.rebinding.take().is_some() {
             cx.notify();
         }
@@ -43,7 +48,16 @@ impl Desktop {
     }
 
     pub(super) fn command(&mut self, command: Command, cx: &mut Context<Self>) {
+        if matches!(command, Command::Toggle)
+            && (self.rewind_sources != 0 || self.snapshot.rewinding)
+        {
+            self.stop_rewind(cx);
+            return;
+        }
         let input_only = matches!(command, Command::SetButtons(_) | Command::SetTurbo(_));
+        if !input_only && !matches!(command, Command::SetRewinding(_)) {
+            self.stop_rewind(cx);
+        }
         if matches!(
             command,
             Command::Reset
@@ -55,7 +69,13 @@ impl Desktop {
         {
             self.release_buttons(cx);
         }
-        let notice = self.runner.send(command).err();
+        let input = if matches!(command, Command::Toggle) && !self.snapshot.running {
+            // A restored checkpoint may hold buttons that are no longer physically down.
+            self.runner.send(Command::SetButtons(self.pressed_buttons))
+        } else {
+            Ok(())
+        };
+        let notice = input.and_then(|()| self.runner.send(command)).err();
         let notice_changed = notice != self.notice;
         self.notice = notice;
         // The pad display comes from the next worker snapshot. Invalidating
@@ -72,6 +92,12 @@ impl Desktop {
         }
     }
     pub(super) fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "z"
+            || !event.keystroke.modifiers.control
+            || matches!(event.keystroke.key.as_str(), "control" | "ctrl")
+        {
+            self.hold_rewind(super::rewind::RewindSource::Keyboard, false, cx);
+        }
         if let Some(button) = self.preferences.keybindings.button(&event.keystroke.key)
             && self.pressed_buttons & button.mask() != 0
         {
@@ -116,9 +142,7 @@ impl Desktop {
         .detach();
     }
     pub(super) fn open_disc(&mut self, fast_boot: bool, cx: &mut Context<Self>) {
-        if !fast_boot && self.bios.is_none() {
-            self.notice = Some(self.tr(Text::BiosRequired).into());
-            cx.notify();
+        if (!fast_boot || self.bios.is_some()) && !self.validate_current_bios(cx) {
             return;
         }
         let picker = cx.prompt_for_paths(PathPromptOptions {
@@ -140,14 +164,7 @@ impl Desktop {
                 match result {
                     Ok(Ok(Some(paths))) => {
                         if let Some(path) = paths.into_iter().next() {
-                            view.command(
-                                Command::LoadDisc {
-                                    path,
-                                    bios: view.bios.clone(),
-                                    fast_boot,
-                                },
-                                cx,
-                            );
+                            view.load_selected_disc(path, fast_boot, cx);
                         }
                     }
                     Ok(Ok(None)) => {}
@@ -173,6 +190,14 @@ impl Desktop {
             return;
         }
         let key = event.keystroke.key.as_str();
+        if self.renaming_state.is_some() {
+            self.rename_key(event, window, cx);
+            return;
+        }
+        if self.save_state_picker_open && self.save_state_key(key, cx) {
+            cx.stop_propagation();
+            return;
+        }
         if key == "tab" {
             self.release_buttons(cx);
             self.move_focus(event.keystroke.modifiers.shift, window, cx);
@@ -197,6 +222,11 @@ impl Desktop {
             }
             return;
         }
+        if key == "z" && event.keystroke.modifiers.control {
+            self.hold_rewind(super::rewind::RewindSource::Keyboard, true, cx);
+            cx.stop_propagation();
+            return;
+        }
         if !self.focus.is_focused(window) {
             match key {
                 "escape" => {
@@ -213,7 +243,8 @@ impl Desktop {
                     return;
                 }
                 "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" => {}
-                "r" if event.keystroke.modifiers.control => {}
+                "r" | "s" if event.keystroke.modifiers.control => {}
+                "l" if event.keystroke.modifiers.control && event.keystroke.modifiers.shift => {}
                 _ => return, // Enter/Space activate the focused control on key-up.
             }
         }
@@ -236,12 +267,7 @@ impl Desktop {
             "f8" => {
                 self.open_settings(false, cx);
             }
-            "f11" => {
-                window.toggle_fullscreen();
-                window.focus(&self.focus, cx);
-                cx.notify();
-            }
-            "escape" if window.is_fullscreen() => {
+            "f11" | "escape" if key == "f11" || window.is_fullscreen() => {
                 window.toggle_fullscreen();
                 window.focus(&self.focus, cx);
                 cx.notify();
@@ -251,10 +277,15 @@ impl Desktop {
                 cx.notify();
             }
             "r" if event.keystroke.modifiers.control => self.command(Command::Reset, cx),
+            "s" if modifiers.control && modifiers.shift => self.command(Command::QuickSave, cx),
+            "s" if modifiers.control => self.command(Command::SaveState, cx),
+            "l" if modifiers.control && modifiers.shift => self.command(Command::QuickLoad, cx),
             _ => {}
         }
     }
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stop_rewind(cx);
+        self.save_state_picker_open = false;
         if window.is_fullscreen() {
             window.toggle_fullscreen();
             self.game_view = false;
@@ -271,11 +302,17 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.stop_rewind(cx);
         if window.is_fullscreen() {
             window.toggle_fullscreen();
         }
         self.game_view = false;
         self.page = page;
+        self.save_state_picker_open = false;
+        if page == WorkspacePage::SaveStates {
+            self.release_buttons(cx);
+            self.command(Command::RefreshSaveStates, cx);
+        }
         self.rebinding = None;
         self.keybindings_draft = None;
         self.graphics.open = false;
@@ -284,6 +321,8 @@ impl Desktop {
     }
 
     pub(super) fn open_settings(&mut self, appearance: bool, cx: &mut Context<Self>) {
+        self.stop_rewind(cx);
+        self.save_state_picker_open = false;
         self.release_buttons(cx);
         self.rebinding = None;
         self.keybindings_draft = None;
@@ -304,7 +343,7 @@ impl Desktop {
         cx.notify();
     }
 
-    fn move_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn move_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         // The drawer is modal: skip background tab stops, including on wraparound.
         for _ in 0..128 {
             if backwards {
@@ -312,7 +351,12 @@ impl Desktop {
             } else {
                 window.focus_next(cx);
             }
-            if !self.graphics.open || self.settings_focus.contains_focused(window, cx) {
+            let within_scope = if let Some(rename) = &self.renaming_state {
+                rename.focus.contains_focused(window, cx)
+            } else {
+                !self.graphics.open || self.settings_focus.contains_focused(window, cx)
+            };
+            if within_scope {
                 break;
             }
         }

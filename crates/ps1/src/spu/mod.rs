@@ -20,8 +20,9 @@ const RAM_CONTROL: usize = 0x1ac / 2;
 /// Approximate control latch delay, expressed in CPU-clock cycles.
 pub const CONTROL_CLOCKS: u32 = 768;
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Spu {
+    #[serde(with = "crate::state::array")]
     registers: [u16; 256],
     ram: Vec<u8>,
     fifo: VecDeque<u16>,
@@ -70,6 +71,24 @@ impl Default for Spu {
     }
 }
 impl Spu {
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        if self.ram.len() != RAM_SIZE
+            || self.cursor >= RAM_SIZE
+            || self.cursor & 1 != 0
+            || self.sample_clock >= SAMPLE_CLOCKS
+            || self.capture_cursor >= 1024
+            || self.capture_cursor & 1 != 0
+            || self.fifo.len() > 32
+            || self.reverb.cursor >= RAM_SIZE
+            || self.reverb.cursor & 1 != 0
+        {
+            return Err("Invalid saved SPU state".into());
+        }
+        for voice in &self.voices {
+            voice.validate_state()?;
+        }
+        Ok(())
+    }
     pub fn irq_pending(&self) -> bool {
         self.irq
     }

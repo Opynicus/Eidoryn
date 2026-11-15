@@ -11,7 +11,7 @@ pub const REGISTER_NAMES: [&str; 32] = [
     "ra",
 ];
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Cpu {
     pub registers: [u32; 32],
     pub pc: u32,
@@ -31,6 +31,12 @@ pub struct Cpu {
 }
 
 impl Cpu {
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        if self.load.is_some_and(|(register, _)| register >= 32) {
+            return Err("Invalid saved CPU load register".into());
+        }
+        Ok(())
+    }
     pub fn new(pc: u32) -> Self {
         let mut cop0 = [0; 32];
         cop0[12] = 1 << 22; // BEV: ROM exception vectors.

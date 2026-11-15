@@ -29,33 +29,33 @@ pub const VRAM_WIDTH: usize = 1024;
 pub const VRAM_HEIGHT: usize = 512;
 /// Immutable pixels from the end of the visible field, before the guest's
 /// VBlank handler can swap or clear its drawing buffers.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DisplayFrame {
     pub dimensions: (usize, usize),
     pub rgb: Arc<[u8]>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 struct Vertex {
     position: (i32, i32),
     color: [i64; 3],
     uv: [i64; 2],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Texture {
     clut: u16,
     raw: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct DrawStyle {
     texture: Option<Texture>,
     transparent: bool,
     dither: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Polyline {
     previous: Vertex,
     next_color: Option<[i64; 3]>,
@@ -63,7 +63,7 @@ struct Polyline {
     style: DrawStyle,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct Transfer {
     x: usize,
     y: usize,
@@ -96,6 +96,7 @@ impl Transfer {
 
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)] // Independent GPU hardware control bits.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Gpu {
     renderer: Renderer,
     pub commands: u64,
@@ -172,6 +173,59 @@ impl Default for Gpu {
 }
 
 impl Gpu {
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        self.renderer.validate_state()?;
+        let transfer_valid = |transfer: &Transfer| {
+            transfer.x < VRAM_WIDTH
+                && transfer.y < VRAM_HEIGHT
+                && (1..=VRAM_WIDTH).contains(&transfer.width)
+                && (1..=VRAM_HEIGHT).contains(&transfer.height)
+                && transfer.index <= transfer.width * transfer.height
+        };
+        let divider = if self.display_mode & 0x40 != 0 {
+            7
+        } else {
+            [10, 8, 5, 4][(self.display_mode & 3) as usize]
+        };
+        if self.packet.len() > 12
+            || self.packet_words > 12
+            || (!self.packet.is_empty() && self.packet.len() >= self.packet_words)
+            || self.upload.as_ref().is_some_and(|t| !transfer_valid(t))
+            || self.download.as_ref().is_some_and(|t| !transfer_valid(t))
+            || !(0..VRAM_WIDTH as i32).contains(&self.draw_min.0)
+            || !(0..VRAM_HEIGHT as i32).contains(&self.draw_min.1)
+            || !(0..VRAM_WIDTH as i32).contains(&self.draw_max.0)
+            || !(0..VRAM_HEIGHT as i32).contains(&self.draw_max.1)
+            || !(-1024..=1023).contains(&self.offset.0)
+            || !(-1024..=1023).contains(&self.offset.1)
+            || self.polyline.as_ref().is_some_and(|line| {
+                !(-2048..=2046).contains(&line.previous.position.0)
+                    || !(-2048..=2046).contains(&line.previous.position.1)
+                    || line
+                        .previous
+                        .color
+                        .iter()
+                        .any(|color| !(0..=255).contains(color))
+                    || line
+                        .next_color
+                        .iter()
+                        .flatten()
+                        .any(|color| !(0..=255).contains(color))
+            })
+            || self.display_start.0 >= VRAM_WIDTH
+            || self.display_start.1 >= VRAM_HEIGHT
+            || self.video_fraction >= 451_584
+            || self.line_clock >= 3413
+            || self.scanline >= 314
+            || self.dot_divider != divider
+            || self.next_dot <= self.line_clock
+            || self.next_dot > self.line_clock + divider
+        {
+            return Err("Invalid GPU state".into());
+        }
+        Ok(())
+    }
+
     pub fn status(&self) -> u32 {
         let dma_request = match self.dma_direction {
             1 | 2 => true,
@@ -685,5 +739,104 @@ mod timing_regression {
             assert_eq!(fast.frames, reference.frames);
             assert_eq!(fast_timers, reference_timers);
         }
+    }
+}
+
+#[cfg(test)]
+mod save_state_tests {
+    use super::{Gpu, RendererMode};
+
+    #[test]
+    fn save_state_accepts_mid_field_mode_changes_and_polyline_extremes() {
+        let roundtrip = |gpu: &Gpu| {
+            let bytes = bincode::serialize(gpu).unwrap();
+            let restored: Gpu = bincode::deserialize(&bytes).unwrap();
+            restored.validate_state().unwrap();
+            restored
+        };
+        let mut gpu = Gpu::default();
+        let mut timers = super::Timers::default();
+        gpu.gp1(0x0800_0008).unwrap();
+        gpu.tick(650_000, &mut timers);
+        assert!(gpu.scanline > 263);
+        // PAL -> NTSC may retain a scanline beyond NTSC's field until line wrap.
+        for mode in [0, 0x24, 0x44, 3, 1, 8] {
+            gpu.gp1(0x0800_0000 | mode).unwrap();
+            let mut restored = roundtrip(&gpu);
+            let mut restored_timers = timers.clone();
+            assert_eq!(
+                gpu.tick(19, &mut timers),
+                restored.tick(19, &mut restored_timers)
+            );
+            assert_eq!(timers, restored_timers);
+            assert!(bincode::serialize(&gpu).unwrap() == bincode::serialize(&restored).unwrap());
+        }
+        for offset in [0x400, 0x3ff] {
+            for shaded in [false, true] {
+                gpu.gp1(0x0100_0000).unwrap();
+                gpu.gp0(0xe500_0000 | offset | (offset << 11)).unwrap();
+                gpu.gp0(if shaded { 0x58ff_00ff } else { 0x4800_ff00 })
+                    .unwrap();
+                gpu.gp0(offset | (offset << 16)).unwrap();
+                if shaded {
+                    gpu.gp0(0x00ff_ffff).unwrap();
+                }
+                gpu.gp0(offset | (offset << 16)).unwrap();
+                if shaded {
+                    // Stop between the next vertex's color and position words.
+                    gpu.gp0(0x0000_00ff).unwrap();
+                }
+                let mut restored = roundtrip(&gpu);
+                for target in [&mut gpu, &mut restored] {
+                    target.gp0(0).unwrap();
+                    target.gp0(0x5000_5000).unwrap();
+                }
+                assert!(
+                    bincode::serialize(&gpu).unwrap() == bincode::serialize(&restored).unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn save_state_preserves_queued_pixels_partial_transfer_and_scanout() {
+        let mut gpu = Gpu::default();
+        gpu.set_renderer(RendererMode::Threaded).unwrap();
+        gpu.gp1(0x0300_0000).unwrap();
+        // Capture the old field, then leave an upload and its queued pixels unfinished.
+        gpu.latch_display();
+        for word in [0xa000_0000, 0, (1 << 16) | 4, 0x001f_7c00] {
+            gpu.gp0(word).unwrap();
+        }
+        let bytes = bincode::serialize(&gpu).unwrap();
+        let mut restored: Gpu = bincode::deserialize(&bytes).unwrap();
+        restored.validate_state().unwrap();
+        assert_eq!(restored.renderer_mode(), RendererMode::Serial);
+        assert_eq!(
+            restored.completed_frame().unwrap().rgb,
+            gpu.completed_frame().unwrap().rgb
+        );
+        assert_eq!(restored.vram(), gpu.vram());
+        for machine in [&mut gpu, &mut restored] {
+            machine.gp0(0x7fff_03e0).unwrap();
+            for word in [0xc000_0000, 0, (1 << 16) | 4] {
+                machine.gp0(word).unwrap();
+            }
+            assert_eq!(machine.read(), 0x001f_7c00);
+        }
+        let bytes = bincode::serialize(&restored).unwrap();
+        let mut downloaded: Gpu = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(downloaded.read(), 0x7fff_03e0);
+        assert_eq!(restored.read(), gpu.read());
+        assert_eq!(restored.vram(), gpu.vram());
+        // Scanout remains the captured old field until the next display latch.
+        assert!(
+            restored
+                .completed_frame()
+                .unwrap()
+                .rgb
+                .iter()
+                .all(|&byte| byte == 0)
+        );
     }
 }

@@ -9,7 +9,7 @@ pub const ACK_DELAY: u32 = 300;
 // the host can acknowledge the previous interrupt once this pulse has ended.
 pub const ACK_PULSE: u32 = 68;
 
-#[derive(Clone, Copy, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
 enum PadPhase {
     #[default]
     Address,
@@ -21,7 +21,7 @@ enum PadPhase {
     Finished,
 }
 
-#[derive(Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 pub struct Sio {
     mode: u16,
     control: u16,
@@ -43,6 +43,12 @@ pub struct Sio {
 }
 
 impl Sio {
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        for card in self.cards.iter().flatten() {
+            card.validate_state()?;
+        }
+        Ok(())
+    }
     /// Host input is active-high; the serial pad response is active-low.
     pub fn set_buttons(&mut self, pressed: u16) {
         self.buttons = pressed & !6; // A digital pad has no L3/R3 switches.

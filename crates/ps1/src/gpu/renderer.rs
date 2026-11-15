@@ -50,6 +50,30 @@ impl Clone for FrameReadback {
     }
 }
 
+impl serde::Serialize for FrameReadback {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.get().serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FrameReadback {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let frame = DisplayFrame::deserialize(deserializer)?;
+        let (width, height) = frame.dimensions;
+        if ![256, 320, 368, 512, 640].contains(&width)
+            || ![240, 480].contains(&height)
+            || frame.rgb.len() != width * height * 3
+        {
+            return Err(serde::de::Error::custom("Invalid completed display frame"));
+        }
+        Ok(Self {
+            dimensions: frame.dimensions,
+            ready: OnceLock::from(frame),
+            pending: RefCell::new(None),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RendererMode {
     #[default]
@@ -142,7 +166,32 @@ impl Clone for Renderer {
     }
 }
 
+impl serde::Serialize for Renderer {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let raster = self.snapshot();
+        if let Some(error) = self.error() {
+            return Err(serde::ser::Error::custom(error));
+        }
+        raster.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Renderer {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raster = Rasterizer::deserialize(deserializer)?;
+        raster.validate_state().map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            backend: RefCell::new(Backend::Serial(raster)),
+            inherited_error: None,
+        })
+    }
+}
+
 impl Renderer {
+    pub(super) fn validate_state(&self) -> Result<(), String> {
+        self.snapshot().validate_state()
+    }
+
     pub(super) fn mode(&self) -> RendererMode {
         match &*self.backend.borrow() {
             Backend::Serial(_) => RendererMode::Serial,

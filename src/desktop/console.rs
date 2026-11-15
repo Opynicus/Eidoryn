@@ -43,6 +43,7 @@ impl Desktop {
             .flex_col()
             .gap_6()
             .child(self.console_header(cx))
+            .child(self.recent_games_card(cx))
             .child(if stacked {
                 div()
                     .flex()
@@ -122,10 +123,14 @@ impl Desktop {
         let p = &self.themes.active().palette;
         let s = &self.snapshot;
         let speed = self.tr(Text::Speed);
-        let (status, dot) = match s.execution_state() {
-            ExecutionState::Stopped => (self.tr(Text::Stopped), p.on_error),
-            ExecutionState::Running => (self.tr(Text::Running), p.on_success),
-            ExecutionState::Paused => (self.tr(Text::Paused), p.muted),
+        let (status, dot) = if s.rewinding {
+            (self.tr(Text::Rewind), p.on_success)
+        } else {
+            match s.execution_state() {
+                ExecutionState::Stopped => (self.tr(Text::Stopped), p.on_error),
+                ExecutionState::Running => (self.tr(Text::Running), p.on_success),
+                ExecutionState::Paused => (self.tr(Text::Paused), p.muted),
+            }
         };
         card(p)
             .debug_selector(|| "display-card".into())
@@ -220,14 +225,21 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "transport-run",
-                    if running {
+                    if self.snapshot.rewinding {
+                        self.tr(Text::EndRewind)
+                    } else if running {
                         self.tr(Text::Pause)
                     } else {
                         self.tr(Text::Run)
                     },
-                    Some(if running { "pause" } else { "play" }),
+                    Some(if running || self.snapshot.rewinding {
+                        "pause"
+                    } else {
+                        "play"
+                    }),
                     true,
                 )
+                .when(self.snapshot.rewinding, |button| button.tab_index(-1))
                 .on_click(cx.listener(|view, _, _, cx| view.command(Command::Toggle, cx))),
             )
             .child(
@@ -274,6 +286,9 @@ impl Desktop {
                 )
                 .on_click(cx.listener(|view, _, window, cx| view.toggle_view(window, cx)))
             })
+            .child(div().w_full().child(self.save_state_controls(cx)))
+            .child(div().w_full().child(self.quick_state_controls(cx)))
+            .child(div().w_full().child(self.rewind_controls(cx)))
     }
 
     fn shortcuts(&self) -> gpui::Div {
@@ -291,6 +306,10 @@ impl Desktop {
                     ("F6", self.tr(Text::GameView)),
                     ("F7", "CRT"),
                     ("F8", self.tr(Text::Graphics)),
+                    ("Ctrl+S", self.tr(Text::SaveState)),
+                    ("Ctrl+Shift+S", self.tr(Text::QuickSave)),
+                    ("Ctrl+Shift+L", self.tr(Text::QuickLoad)),
+                    ("Ctrl+Z", self.tr(Text::Rewind)),
                 ]
                 .into_iter()
                 .map(|(key, description)| {
@@ -315,14 +334,6 @@ impl Desktop {
 
     fn session_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let bios = self
-            .bios
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .map_or_else(
-                || self.tr(Text::NotSelected).into(),
-                |name| name.to_string_lossy().into_owned(),
-            );
         card(p)
             .debug_selector(|| "session-card".into())
             .p_4()
@@ -377,7 +388,7 @@ impl Desktop {
                             )),
                     ),
             )
-            .child(pair(p, "BIOS", bios))
+            .child(self.bios_controls(cx))
             .child(pair(p, self.tr(Text::Renderer), self.renderer_label()))
             .child(pair(
                 p,

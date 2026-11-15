@@ -1,5 +1,7 @@
 //! PlayStation session scheduling and transitions. No frontend dependencies.
-use super::{Command, SharedSnapshot, Snapshot, SnapshotMode, pacing::FramePacing};
+mod rewind;
+
+use super::{Command, SelectedMedia, SharedSnapshot, Snapshot, SnapshotMode, pacing::FramePacing};
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
@@ -7,8 +9,10 @@ use crate::systems::ps1::{
     input::PadInput,
     machine::{INSTRUCTIONS_PER_SLICE, Machine},
     media::{load_disc, load_path},
+    state_file::{SaveStateInfo, StateStore},
 };
 use eidoryn_host::audio::AudioBuffer;
+use rewind::RewindBuffer;
 use std::{
     path::{Path, PathBuf},
     sync::mpsc,
@@ -30,8 +34,13 @@ pub(super) fn run(
 ) {
     let mut worker = Worker::new(machine, auto_run, store, audio, mode);
     loop {
-        let command = if worker.running {
-            match receiver.recv_timeout(worker.pacing.wait_duration(Instant::now())) {
+        let wait = worker.rewind.wait_duration().or_else(|| {
+            worker
+                .running
+                .then(|| worker.pacing.wait_duration(Instant::now()))
+        });
+        let command = if let Some(wait) = wait {
+            match receiver.recv_timeout(wait) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -43,6 +52,18 @@ pub(super) fn run(
             }
         };
         let view_only = matches!(command, Some(Command::SetSnapshotMode(_)));
+        let state_command = matches!(
+            command,
+            Some(
+                Command::SaveState
+                    | Command::QuickSave
+                    | Command::QuickLoad
+                    | Command::LoadState { .. }
+                    | Command::RenameState { .. }
+                    | Command::RefreshSaveStates
+                    | Command::SetRewinding(true)
+            )
+        );
         let mut force_publish = command
             .as_ref()
             .is_some_and(|c| !matches!(c, Command::SetButtons(_) | Command::SetTurbo(_)));
@@ -50,11 +71,15 @@ pub(super) fn run(
             Some(Command::Shutdown) => break,
             Some(command) => worker.apply(command),
             None => {
-                force_publish = worker.run_batch();
+                force_publish = if worker.rewind.active.is_some() {
+                    worker.rewind_one()
+                } else {
+                    worker.run_batch()
+                };
                 false
             }
         };
-        if !view_only && !worker.flush_cards(!worker.running) {
+        if !view_only && !state_command && !worker.flush_cards(!worker.running) {
             close_ready = false;
             force_publish = true;
         }
@@ -71,6 +96,7 @@ pub(super) fn run(
             break;
         }
     }
+    worker.end_rewind();
     if let Err(error) = worker.store.flush(&worker.machine.bus.sio.cards) {
         eprintln!("Eidoryn shutdown: {error}");
     }
@@ -89,7 +115,13 @@ struct Worker {
     cpu_mode: CpuMode,
     running: bool,
     message: Option<String>,
+    success_message: Option<String>,
     bios_path: Option<PathBuf>,
+    disc_path: Option<PathBuf>,
+    disc_fast_boot: bool,
+    media_selection: Option<SelectedMedia>,
+    media_revision: u64,
+    renamed_state: Option<(PathBuf, PathBuf)>,
     pacing: FramePacing,
     last_publish: Instant,
     epoch: Instant,
@@ -98,7 +130,10 @@ struct Worker {
     rate: f64,
     video_fps: f64,
     store: CardStore,
+    states: StateStore,
+    save_states: Vec<SaveStateInfo>,
     audio: Option<AudioBuffer>,
+    rewind: RewindBuffer,
 }
 
 impl Worker {
@@ -115,17 +150,25 @@ impl Worker {
         let pacing = FramePacing::new(now, frames, machine.bus.gpu.nominal_fps());
         let mut input = PadInput::default();
         input.set_buttons(machine.bus.sio.buttons(), machine.bus.elapsed_cycles());
-        Self {
+        let mut worker = Self {
             input,
             snapshot_mode,
             initial: machine.clone(),
             renderer: machine.bus.gpu.renderer_mode(),
             renderer_revision: 0,
             cpu_mode: machine.cpu_mode(),
+            states: StateStore::new(Path::new("saves"), &machine),
+            save_states: Vec::new(),
             machine,
             running,
             message: None,
+            success_message: None,
             bios_path: None,
+            disc_path: None,
+            disc_fast_boot: false,
+            media_selection: None,
+            media_revision: 0,
+            renamed_state: None,
             pacing,
             last_publish: now,
             epoch: now,
@@ -135,7 +178,11 @@ impl Worker {
             video_fps: 0.0,
             store,
             audio,
-        }
+            rewind: RewindBuffer::default(),
+        };
+        worker.refresh_states();
+        worker.capture_rewind();
+        worker
     }
 
     fn reset_pacing(&mut self) {
@@ -168,7 +215,12 @@ impl Worker {
         self.machine = machine;
         self.release_input();
         self.initial.clone_from(&self.machine);
+        self.states = StateStore::new(Path::new("saves"), &self.initial);
+        self.save_states.clear();
+        self.renamed_state = None;
         self.message = None;
+        self.refresh_states();
+        self.reset_rewind();
         true
     }
 
@@ -205,8 +257,18 @@ impl Worker {
         self.release_input();
         match load_path(&path, bios) {
             Ok(loaded) => {
-                if self.replace_machine(loaded) && bios {
-                    self.bios_path = Some(path);
+                if self.replace_machine(loaded) {
+                    if bios {
+                        self.bios_path = Some(path);
+                    }
+                    self.disc_path = None;
+                    self.disc_fast_boot = false;
+                    self.media_selection = Some(if bios {
+                        SelectedMedia::Bios
+                    } else {
+                        SelectedMedia::Exe
+                    });
+                    self.media_revision = self.media_revision.wrapping_add(1);
                 }
                 self.reset_pacing();
             }
@@ -225,6 +287,10 @@ impl Worker {
                         self.bios_path = bios;
                     }
                     self.running = fast_boot;
+                    self.disc_path = Some(path.to_path_buf());
+                    self.disc_fast_boot = fast_boot;
+                    self.media_selection = Some(SelectedMedia::Disc);
+                    self.media_revision = self.media_revision.wrapping_add(1);
                 }
             }
             Err(error) => self.message = Some(error),
@@ -233,14 +299,154 @@ impl Worker {
         self.reset_pacing();
     }
 
+    fn refresh_states(&mut self) {
+        match self.states.list() {
+            Ok(states) => self.save_states = states,
+            Err(error) => {
+                self.message = Some(error);
+                self.success_message = None;
+            }
+        }
+    }
+
+    fn save_state(&mut self, quick: bool) {
+        let result = if quick {
+            self.states.save_quick(&self.machine, &self.input)
+        } else {
+            self.states.save(&self.machine, &self.input)
+        };
+        match result {
+            Ok(path) => {
+                self.message = None;
+                let action = if quick {
+                    "Quick-saved state"
+                } else {
+                    "Saved state"
+                };
+                self.success_message = Some(format!("{action}: {}", path.display()));
+            }
+            Err(error) => self.message = Some(error),
+        }
+        self.refresh_states();
+        self.reset_pacing();
+    }
+
+    fn load_state(&mut self, path: &Path) {
+        let prepare = || -> Result<_, String> {
+            let (mut machine, input) = self.states.load(path)?;
+            machine
+                .set_cpu_mode(self.cpu_mode)
+                .map_err(|e| format!("Cannot start CPU engine: {e}"))?;
+            machine
+                .bus
+                .gpu
+                .set_renderer(self.renderer)
+                .map_err(|e| format!("Cannot start GPU renderer: {e}"))?;
+            Ok((machine, input))
+        };
+        match prepare() {
+            Ok((machine, input)) => {
+                let held = self.input.held_buttons();
+                self.machine = machine;
+                self.input = input;
+                if self.running {
+                    // Resuming immediately must not keep historical buttons stuck down.
+                    self.input
+                        .set_buttons(held, self.machine.bus.elapsed_cycles());
+                    self.update_input();
+                }
+                self.store.invalidate();
+                if let Some(audio) = &self.audio {
+                    audio.clear();
+                    audio.set_playing(self.running);
+                }
+                self.message = None;
+                self.success_message = Some(format!("Loaded state: {}", path.display()));
+                self.reset_pacing();
+                self.reset_rewind();
+            }
+            Err(error) => self.message = Some(error),
+        }
+    }
+
+    fn rename_state(&mut self, path: &Path, name: &str) {
+        match self.states.rename(path, name) {
+            Ok(renamed) => {
+                self.message = None;
+                self.success_message = Some(format!("Renamed snapshot: {}", renamed.display()));
+                self.renamed_state = Some((path.to_path_buf(), renamed));
+            }
+            Err(error) => self.message = Some(error),
+        }
+        self.refresh_states();
+    }
+
     /// Returns true when the frontend should close after receiving the final snapshot.
+    #[allow(clippy::too_many_lines)] // Keep command ordering and persistence guards together.
     fn apply(&mut self, command: Command) -> bool {
+        match command {
+            Command::SetRewinding(enabled) => {
+                if enabled {
+                    self.begin_rewind();
+                } else {
+                    self.end_rewind();
+                }
+                return false;
+            }
+            Command::SetRewindEnabled(enabled) => {
+                if self.rewind.enabled != enabled {
+                    self.end_rewind();
+                    self.rewind.enabled = enabled;
+                    self.reset_rewind();
+                }
+                return false;
+            }
+            Command::SetRewindSeconds(seconds) => {
+                self.set_rewind_seconds(seconds);
+                return false;
+            }
+            Command::SetButtons(buttons) if self.rewind.active.is_some() => {
+                self.rewind.active.as_mut().expect("active rewind").held = buttons & !6;
+                return false;
+            }
+            Command::SetSnapshotMode(_) => {}
+            _ => {
+                self.end_rewind();
+            }
+        }
+        let view_only = matches!(command, Command::SetSnapshotMode(_));
+        let input_only = matches!(command, Command::SetButtons(_) | Command::SetTurbo(_));
+        if !view_only && !input_only && !matches!(command, Command::RefreshSaveStates) {
+            self.success_message = None;
+        }
+        // Checkpoints remain available even when a memory-card file cannot be flushed.
+        match command {
+            Command::SaveState | Command::QuickSave => {
+                self.save_state(matches!(command, Command::QuickSave));
+                return false;
+            }
+            Command::QuickLoad => {
+                self.load_state(&self.states.quick_path());
+                return false;
+            }
+            Command::LoadState { path } => {
+                self.load_state(&path);
+                return false;
+            }
+            Command::RenameState { path, name } => {
+                self.rename_state(&path, &name);
+                return false;
+            }
+            Command::RefreshSaveStates => {
+                self.refresh_states();
+                return false;
+            }
+            _ => {}
+        }
         if matches!(command, Command::SetRenderer(_)) {
             // Also acknowledge a request rejected by the card-flush guard below.
             self.renderer_revision = self.renderer_revision.wrapping_add(1);
         }
-        let view_only = matches!(command, Command::SetSnapshotMode(_));
-        let input_only = matches!(command, Command::SetButtons(_) | Command::SetTurbo(_));
         if !view_only && !input_only && !self.flush_cards(true) {
             return false;
         }
@@ -294,9 +500,26 @@ impl Worker {
             }
             Command::Demo => {
                 self.running = self.replace_machine(Machine::demo());
+                if self.running {
+                    self.disc_path = None;
+                    self.disc_fast_boot = false;
+                    self.media_selection = Some(SelectedMedia::Demo);
+                    self.media_revision = self.media_revision.wrapping_add(1);
+                }
                 self.reset_pacing();
             }
             Command::FlushCards => self.message = None,
+            Command::SaveState
+            | Command::SetRewinding(_)
+            | Command::SetRewindEnabled(_)
+            | Command::SetRewindSeconds(_)
+            | Command::QuickSave
+            | Command::QuickLoad
+            | Command::LoadState { .. }
+            | Command::RenameState { .. }
+            | Command::RefreshSaveStates => {
+                unreachable!("handled before card persistence")
+            }
             Command::Load { path, bios } => self.load_image(path, bios),
             Command::LoadDisc {
                 path,
@@ -309,10 +532,14 @@ impl Worker {
                 return true;
             }
         }
+        self.capture_rewind();
         false
     }
 
     fn flush_cards(&mut self, force: bool) -> bool {
+        if self.rewind.active.is_some() {
+            return true;
+        }
         let result = if force {
             self.store.flush(&self.machine.bus.sio.cards)
         } else {
@@ -320,6 +547,7 @@ impl Worker {
         };
         if let Err(error) = result {
             self.message = Some(error);
+            self.success_message = None;
             self.running = false;
             return false;
         }
@@ -328,7 +556,7 @@ impl Worker {
 
     fn publish_audio(&mut self) {
         if let Some(audio) = &self.audio {
-            audio.set_playing(self.running);
+            audio.set_playing(self.running && self.rewind.active.is_none());
             audio.push(self.machine.bus.spu.drain_audio());
         } else {
             self.machine.bus.spu.drain_audio().for_each(drop);
@@ -353,6 +581,7 @@ impl Worker {
                 }
                 Err(error) => {
                     self.message = Some(error.to_string());
+                    self.success_message = None;
                     self.running = false;
                     self.release_input();
                     break;
@@ -370,6 +599,7 @@ impl Worker {
             self.machine.bus.gpu.nominal_fps(),
             frame_finished,
         );
+        self.capture_rewind();
         frame_finished || !self.running
     }
 
@@ -408,6 +638,24 @@ impl Worker {
             self.snapshot_mode,
         );
         snapshot.bios_path.clone_from(&self.bios_path);
+        snapshot.disc_path.clone_from(&self.disc_path);
+        snapshot.disc_fast_boot = self.disc_fast_boot;
+        snapshot.media_selection = self.media_selection;
+        snapshot.media_revision = self.media_revision;
+        snapshot.renamed_state.clone_from(&self.renamed_state);
+        snapshot.rewind_enabled = self.rewind.enabled;
+        snapshot.rewind_max_seconds = self.rewind.max_seconds;
+        snapshot.rewinding = self.rewind.active.is_some();
+        (snapshot.rewind_states, snapshot.rewind_seconds) =
+            self.rewind.available(self.machine.elapsed_cycles());
+        if snapshot.rewinding {
+            snapshot.renderer = self.renderer;
+            snapshot.cpu_mode = self.cpu_mode;
+        }
+        if snapshot.message.is_none() {
+            snapshot.success_message.clone_from(&self.success_message);
+        }
+        snapshot.save_states.clone_from(&self.save_states);
         snapshot.renderer_revision = self.renderer_revision;
         snapshot.cards = self.store.status(&self.machine.bus.sio.cards);
         snapshot.video_fps = if self.running { self.video_fps } else { 0.0 };
@@ -430,6 +678,392 @@ impl Worker {
 mod tests {
     use super::*;
     use crate::systems::ps1::{input::TurboConfig, timing::CPU_CLOCK_HZ};
+
+    #[test]
+    fn loads_preserve_execution_mode_and_resume_with_live_buttons() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-load-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let audio = AudioBuffer::default();
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            Some(audio.clone()),
+            SnapshotMode::Display,
+        );
+        worker.states = StateStore::new(&root, &worker.initial);
+        worker.machine.cpu.registers[5] = 33;
+        worker.apply(Command::SetButtons(0x8000));
+        worker.apply(Command::SaveState);
+        let path = worker.save_states[0].path.clone();
+        worker.apply(Command::QuickSave);
+        for quick in [false, true] {
+            for (running, held) in [(false, 0), (true, 0), (true, 0x4000)] {
+                worker.running = running;
+                worker.apply(Command::SetButtons(held));
+                worker.machine.cpu.registers[5] = 99;
+                audio.set_playing(true);
+                audio.push([[123, -123]; 64]);
+                worker.apply(if quick {
+                    Command::QuickLoad
+                } else {
+                    Command::LoadState { path: path.clone() }
+                });
+                assert!(worker.message.is_none());
+                assert_eq!(worker.running, running);
+                assert_eq!(worker.machine.cpu.registers[5], 33);
+                let buttons = if running { held } else { 0x8000 };
+                assert_eq!(worker.input.held_buttons(), buttons);
+                assert_eq!(worker.machine.bus.sio.buttons(), buttons);
+                assert_eq!(audio.stats().queued_frames, 0);
+                audio.push([[123, -123]; 4]);
+                assert_eq!(audio.stats().queued_frames, if running { 4 } else { 0 });
+                if running {
+                    worker.run_batch();
+                    assert!(worker.count > 0);
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quick_load_rewinds_the_slot_and_failed_loads_preserve_execution() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-worker-quick-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        worker.states = StateStore::new(&root, &worker.initial);
+        let initial = worker.machine.save_state().unwrap();
+        worker.apply(Command::QuickLoad);
+        assert!(worker.message.is_some());
+        assert!(worker.success_message.is_none());
+        assert!(worker.running);
+        assert_eq!(worker.machine.save_state().unwrap(), initial);
+
+        worker.apply(Command::QuickSave);
+        assert!(worker.message.is_none());
+        assert!(worker.success_message.is_some());
+        assert!(worker.running);
+        worker.machine.run_slice().unwrap();
+        worker.apply(Command::SetButtons(0x8000));
+        let saved = worker.machine.save_state().unwrap();
+        let input = worker.input.save_state();
+        worker.apply(Command::QuickSave);
+        assert!(worker.save_states.is_empty());
+        worker.machine.run_slice().unwrap();
+        worker.apply(Command::QuickLoad);
+        assert!(worker.running);
+        assert!(worker.message.is_none());
+        assert!(worker.success_message.is_some());
+        assert_eq!(worker.machine.save_state().unwrap(), saved);
+        assert_eq!(worker.input.save_state(), input);
+
+        std::fs::write(worker.states.quick_path(), b"damaged").unwrap();
+        worker.running = true;
+        let pacing = worker.pacing;
+        worker.apply(Command::QuickLoad);
+        assert!(worker.running);
+        assert_eq!(worker.pacing, pacing);
+        assert!(worker.message.is_some());
+        assert!(worker.success_message.is_none());
+        assert_eq!(worker.machine.save_state().unwrap(), saved);
+        assert_eq!(worker.input.save_state(), input);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rename_reports_new_path_without_changing_execution() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-worker-rename-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        worker.states = StateStore::new(&root, &worker.initial);
+        worker.apply(Command::SaveState);
+        let original = worker.save_states[0].path.clone();
+        let machine = worker.machine.save_state().unwrap();
+        let pacing = worker.pacing;
+        worker.apply(Command::RenameState {
+            path: original.clone(),
+            name: "关卡二".into(),
+        });
+        let renamed = worker.save_states[0].path.clone();
+        assert_eq!(worker.save_states[0].name, "关卡二");
+        assert_eq!(worker.renamed_state, Some((original, renamed.clone())));
+        assert!(worker.success_message.is_some());
+        assert!(worker.message.is_none());
+        assert!(worker.running);
+        assert_eq!(worker.pacing, pacing);
+        assert_eq!(worker.machine.save_state().unwrap(), machine);
+        worker.apply(Command::SaveState);
+        let newer = worker.save_states[0].path.clone();
+        assert_ne!(newer, renamed);
+        worker.apply(Command::RenameState {
+            path: newer.clone(),
+            name: "关卡二".into(),
+        });
+        assert!(
+            worker
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("already exists")
+        );
+        assert!(worker.success_message.is_none());
+        assert!(newer.exists() && renamed.exists());
+        let output = std::sync::Arc::new(std::sync::Mutex::new(None));
+        worker.publish(&output, false);
+        assert_eq!(
+            output.lock().unwrap().as_ref().unwrap().renamed_state,
+            worker.renamed_state
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn media_receipts_only_advance_after_successful_selection() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-media-receipts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let disc = root.join("game.iso");
+        let bios = root.join("bios.bin");
+        let exe = root.join("game.exe");
+        std::fs::write(&disc, [0; 2048]).unwrap();
+        std::fs::write(&bios, vec![0; crate::systems::ps1::bus::BIOS_SIZE]).unwrap();
+        std::fs::write(&exe, crate::systems::ps1::demo::executable()).unwrap();
+        let mut worker = Worker::new(
+            Machine::demo(),
+            false,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        for revision in [1, 2] {
+            worker.apply(Command::LoadDisc {
+                path: disc.clone(),
+                bios: Some(bios.clone()),
+                fast_boot: false,
+            });
+            assert_eq!(worker.media_revision, revision);
+            assert_eq!(worker.media_selection, Some(SelectedMedia::Disc));
+            assert_eq!(worker.disc_path, Some(disc.clone()));
+            assert!(!worker.disc_fast_boot);
+        }
+        worker.apply(Command::Reset);
+        assert_eq!(worker.media_revision, 2);
+        assert_eq!(worker.disc_path, Some(disc.clone()));
+        worker.apply(Command::LoadDisc {
+            path: root.join("missing.iso"),
+            bios: Some(bios.clone()),
+            fast_boot: false,
+        });
+        assert_eq!(worker.media_revision, 2);
+        assert_eq!(worker.disc_path, Some(disc));
+        for (path, is_bios, selection, revision) in [
+            (bios.clone(), true, SelectedMedia::Bios, 3),
+            (bios.clone(), true, SelectedMedia::Bios, 4),
+            (exe, false, SelectedMedia::Exe, 5),
+        ] {
+            worker.apply(Command::Load {
+                path,
+                bios: is_bios,
+            });
+            assert_eq!(worker.media_revision, revision);
+            assert_eq!(worker.media_selection, Some(selection));
+            assert!(worker.disc_path.is_none());
+        }
+        worker.apply(Command::Demo);
+        assert_eq!(worker.media_revision, 6);
+        assert_eq!(worker.media_selection, Some(SelectedMedia::Demo));
+        assert_eq!(worker.bios_path, Some(bios));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn save_state_rewinds_without_cards_and_failed_restore_preserves_session() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-rewind-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let audio = AudioBuffer::default();
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            Some(audio.clone()),
+            SnapshotMode::Debug,
+        );
+        worker.states = StateStore::new(&root, &worker.initial);
+        worker.apply(Command::SetTurbo(TurboConfig::new(0x8000, 10).unwrap()));
+        worker.apply(Command::SetButtons(0x8000));
+        worker.machine.run_slice().unwrap();
+        let saved = worker.machine.save_state().unwrap();
+        let input = worker.input.save_state();
+        worker.apply(Command::SaveState);
+        assert!(worker.running);
+        assert!(worker.message.is_none());
+        assert!(
+            worker
+                .success_message
+                .as_deref()
+                .unwrap()
+                .starts_with("Saved state:")
+        );
+        let success = worker.success_message.clone();
+        worker.apply(Command::RefreshSaveStates);
+        worker.apply(Command::SetSnapshotMode(SnapshotMode::Display));
+        assert_eq!(worker.success_message, success);
+        assert_eq!(worker.machine.save_state().unwrap(), saved);
+        let path = worker.save_states[0].path.clone();
+        worker.machine.run_slice().unwrap();
+        audio.push([[123, -123]; 64]);
+        worker.apply(Command::LoadState { path: path.clone() });
+        assert!(worker.running);
+        assert!(worker.message.is_none());
+        assert!(
+            worker
+                .success_message
+                .as_deref()
+                .unwrap()
+                .starts_with("Loaded state:")
+        );
+        let published = std::sync::Arc::new(std::sync::Mutex::new(None));
+        assert!(worker.publish(&published, false));
+        let snapshot = published.lock().unwrap().take().unwrap();
+        assert!(snapshot.message.is_none());
+        assert_eq!(snapshot.success_message, worker.success_message);
+        assert_eq!(audio.stats().queued_frames, 0);
+        assert_eq!(worker.machine.save_state().unwrap(), saved);
+        assert_eq!(worker.input.save_state(), input);
+        assert!(worker.machine.bus.sio.cards.iter().all(Option::is_none));
+        let mut expected = Machine::load_state(&saved).unwrap();
+        expected.run_slice().unwrap();
+        worker.machine.run_slice().unwrap();
+        assert_eq!(
+            worker.machine.save_state().unwrap(),
+            expected.save_state().unwrap()
+        );
+        worker.running = true;
+        audio.set_playing(true);
+        let before = worker.machine.save_state().unwrap();
+        let pacing = worker.pacing;
+        audio.push([[123, -123]; 64]);
+        std::fs::write(&path, b"broken").unwrap();
+        worker.apply(Command::LoadState { path });
+        assert!(worker.running);
+        assert_eq!(worker.pacing, pacing);
+        assert_eq!(worker.machine.save_state().unwrap(), before);
+        assert_eq!(audio.stats().queued_frames, 64);
+        assert!(worker.message.as_deref().unwrap().contains("Invalid"));
+        assert!(worker.success_message.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn game_changes_and_paused_startup_load_their_own_history() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("eidoryn-history-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let game_a = root.join(format!("history-a-{stamp}.exe"));
+        let game_b = root.join(format!("history-b-{stamp}.exe"));
+        let bytes = crate::systems::ps1::demo::executable();
+        std::fs::write(&game_a, &bytes).unwrap();
+        std::fs::write(&game_b, &bytes).unwrap();
+        let mut worker = Worker::new(
+            load_path(&game_a, false).unwrap(),
+            false,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        assert!(worker.save_states.is_empty());
+        worker.apply(Command::SaveState);
+        let saved_a = worker.save_states[0].path.clone();
+        worker.apply(Command::Load {
+            path: game_b.clone(),
+            bios: false,
+        });
+        assert!(worker.save_states.is_empty());
+        assert!(worker.success_message.is_none());
+        worker.apply(Command::SaveState);
+        let saved_b = worker.save_states[0].path.clone();
+        assert_ne!(saved_a.parent(), saved_b.parent());
+        for (game, saved) in [
+            (&game_a, &saved_a),
+            (&game_b, &saved_b),
+            (&game_a, &saved_a),
+        ] {
+            worker.apply(Command::Load {
+                path: game.clone(),
+                bios: false,
+            });
+            assert_eq!(worker.save_states.len(), 1);
+            assert_eq!(&worker.save_states[0].path, saved);
+        }
+        worker.apply(Command::Load {
+            path: root.join("missing.exe"),
+            bios: false,
+        });
+        assert_eq!(worker.save_states.len(), 1);
+        assert_eq!(worker.save_states[0].path, saved_a);
+        worker.apply(Command::Reset);
+        assert_eq!(worker.save_states.len(), 1);
+        assert_eq!(worker.save_states[0].path, saved_a);
+
+        let restarted =
+            super::super::Runner::new(load_path(&game_a, false).unwrap(), false).unwrap();
+        let snapshot = restarted.take_snapshot().unwrap();
+        assert!(!snapshot.running);
+        assert_eq!(snapshot.save_states.len(), 1);
+        assert_eq!(snapshot.save_states[0].path, saved_a);
+        drop(restarted);
+        for path in [saved_a, saved_b] {
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn failed_loads_preserve_their_distinct_timing_and_clear_audio() {

@@ -155,18 +155,21 @@ impl Desktop {
                             &self.fonts,
                             p,
                             "debug-run",
-                            if self.snapshot.running {
+                            if self.snapshot.rewinding {
+                                self.tr(Text::EndRewind)
+                            } else if self.snapshot.running {
                                 self.tr(Text::Pause)
                             } else {
                                 self.tr(Text::Run)
                             },
-                            Some(if self.snapshot.running {
+                            Some(if self.snapshot.running || self.snapshot.rewinding {
                                 "pause"
                             } else {
                                 "play"
                             }),
                             true,
                         )
+                        .when(self.snapshot.rewinding, |button| button.tab_index(-1))
                         .on_click(cx.listener(|view, _, _, cx| view.command(Command::Toggle, cx))),
                     ),
             )

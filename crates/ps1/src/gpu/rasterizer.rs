@@ -11,7 +11,7 @@ const DITHER: [[i64; 4]; 4] = [
     [3, -1, 2, -2],
 ];
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct DrawState {
     pub draw_min: (i32, i32),
     pub draw_max: (i32, i32),
@@ -29,7 +29,7 @@ pub(super) enum RasterCommand {
     Pixel(usize, u16, DrawState),
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Rasterizer {
     pub vram: Vec<u16>,
     state: DrawState,
@@ -45,6 +45,21 @@ impl Default for Rasterizer {
 }
 
 impl Rasterizer {
+    pub(super) fn validate_state(&self) -> Result<(), String> {
+        let valid_position = |position: (i32, i32)| {
+            (0..VRAM_WIDTH as i32).contains(&position.0)
+                && (0..VRAM_HEIGHT as i32).contains(&position.1)
+        };
+        if self.vram.len() != VRAM_WIDTH * VRAM_HEIGHT
+            || !valid_position(self.state.draw_min)
+            || !valid_position(self.state.draw_max)
+            || !(-1024..=1023).contains(&self.state.offset.0)
+            || !(-1024..=1023).contains(&self.state.offset.1)
+        {
+            return Err("Invalid rasterizer state".into());
+        }
+        Ok(())
+    }
     #[cfg(feature = "vulkan")]
     pub(super) fn from_vram(vram: Vec<u16>) -> Self {
         Self {

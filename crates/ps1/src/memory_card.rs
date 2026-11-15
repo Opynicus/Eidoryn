@@ -7,7 +7,7 @@ pub const CARD_ACK_DELAY: u32 = 300;
 pub const READ_ACK_DELAY: u32 = CARD_ACK_DELAY + 31_000;
 pub type Cards = [Option<MemoryCard>; 2];
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct MemoryCard {
     bytes: Vec<u8>,
     flag: u8,
@@ -16,6 +16,7 @@ pub struct MemoryCard {
     address: u16,
     checksum: u8,
     previous: u8,
+    #[serde(with = "crate::state::array")]
     buffer: [u8; SECTOR_SIZE],
     result: u8,
     active: bool,
@@ -25,6 +26,19 @@ pub struct MemoryCard {
 }
 
 impl MemoryCard {
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        if self.bytes.len() != CARD_SIZE
+            || self.position > 139
+            || (self.active && self.command == 0x53 && self.position > 8)
+            || (self.active
+                && self.command == 0x52
+                && (9..=138).contains(&self.position)
+                && usize::from(self.address) >= SECTORS)
+        {
+            return Err("Invalid saved memory-card state".into());
+        }
+        Ok(())
+    }
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, String> {
         if bytes.len() != CARD_SIZE {
             return Err(format!(

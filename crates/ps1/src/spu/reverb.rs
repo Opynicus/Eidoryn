@@ -1,6 +1,6 @@
 //! Stereo reflection/comb/all-pass network in the guest's SPU RAM.
 //! The half-rate resampling currently uses a box filter and linear reconstruction.
-#[derive(Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 pub(super) struct Reverb {
     pub cursor: usize,
     previous_input: [i32; 2],

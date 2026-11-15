@@ -1,7 +1,7 @@
 //! Original XA packet decoder and 37.8/18.9 kHz to 44.1 kHz reconstruction.
 use crate::{adpcm::Predictor, spu::StereoFrame};
 
-#[derive(Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 pub(crate) struct XaDecoder {
     predictors: [Predictor; 2],
     history: [[i32; 2]; 32],
@@ -10,6 +10,12 @@ pub(crate) struct XaDecoder {
 }
 
 impl XaDecoder {
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        if self.cursor >= 32 || self.sixstep >= 6 {
+            return Err("Invalid saved XA resampler position".into());
+        }
+        Ok(())
+    }
     pub fn decode(&mut self, raw: &[u8], mut output: impl FnMut(StereoFrame)) {
         if raw.len() < 24 + 18 * 128 {
             return;

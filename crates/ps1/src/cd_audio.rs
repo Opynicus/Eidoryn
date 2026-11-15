@@ -2,7 +2,7 @@
 use crate::{spu::StereoFrame, xa::XaDecoder};
 use std::collections::VecDeque;
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub(crate) struct CdAudio {
     decoder: XaDecoder,
     samples: VecDeque<StereoFrame>,
@@ -26,6 +26,9 @@ impl Default for CdAudio {
 }
 
 impl CdAudio {
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        self.decoder.validate_state()
+    }
     pub fn xa_active(&self) -> bool {
         self.is_xa && !self.samples.is_empty()
     }

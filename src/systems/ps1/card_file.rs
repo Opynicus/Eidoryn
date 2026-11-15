@@ -22,7 +22,7 @@ pub struct CardStatus {
 
 struct CardFile {
     path: PathBuf,
-    saved_revision: u64,
+    saved_revision: Option<u64>,
     // Lock a stable sibling inode: the card inode is replaced by atomic saves.
     _lock: File,
 }
@@ -61,7 +61,7 @@ impl CardStore {
                 path: self.slots[slot].as_ref().map(|file| file.path.clone()),
                 pending: self.slots[slot]
                     .as_ref()
-                    .is_some_and(|file| file.saved_revision != card.revision()),
+                    .is_some_and(|file| file.saved_revision != Some(card.revision())),
                 reads: card.reads,
                 writes: card.writes,
             })
@@ -79,15 +79,22 @@ impl CardStore {
     pub fn flush(&mut self, cards: &Cards) -> Result<(), String> {
         for (file, card) in self.slots.iter_mut().zip(cards) {
             if let (Some(file), Some(card)) = (file, card)
-                && file.saved_revision != card.revision()
+                && file.saved_revision != Some(card.revision())
             {
                 atomic_write(&file.path, card.bytes(), false)
                     .map_err(|error| format!("Cannot save memory card {}: {error}. Data is still in memory; retry Flush saves.", file.path.display()))?;
-                file.saved_revision = card.revision();
+                file.saved_revision = Some(card.revision());
             }
         }
         self.last_flush = Instant::now();
         Ok(())
+    }
+
+    /// A restored timeline may have different bytes with the same revision count.
+    pub(super) fn invalidate(&mut self) {
+        for file in self.slots.iter_mut().flatten() {
+            file.saved_revision = None;
+        }
     }
 }
 
@@ -145,7 +152,7 @@ impl CardFile {
             Ok((
                 Self {
                     path,
-                    saved_revision: card.revision(),
+                    saved_revision: Some(card.revision()),
                     _lock: lock,
                 },
                 card,
@@ -169,7 +176,7 @@ impl Drop for Temporary {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], create: bool) -> std::io::Result<()> {
+pub(super) fn atomic_write(path: &Path, bytes: &[u8], create: bool) -> std::io::Result<()> {
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp_path = sibling(path, &format!(".{}.{sequence}.tmp", std::process::id()));
     let mut file = File::create_new(&temp_path)?;
@@ -186,4 +193,33 @@ fn atomic_write(path: &Path, bytes: &[u8], create: bool) -> std::io::Result<()> 
     #[cfg(unix)]
     File::open(path.parent().expect("validated card parent"))?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restored_card_with_same_revision_is_persisted() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-card-rewind-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("card.mcd");
+        let (mut store, mut cards) = CardStore::open([Some(path.clone()), None]).unwrap();
+        let mut bytes = cards[0].as_ref().unwrap().bytes().to_vec();
+        bytes[1024] ^= 0xff;
+        cards[0] = Some(MemoryCard::from_bytes(bytes.clone()).unwrap());
+        store.invalidate();
+        assert!(store.status(&cards)[0].as_ref().unwrap().pending);
+        store.flush(&cards).unwrap();
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        assert!(!store.status(&cards)[0].as_ref().unwrap().pending);
+        drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -19,6 +19,7 @@ pub(super) struct Startup {
     pub muted: bool,
     pub crt: CrtFilter,
     pub clean_fullscreen: bool,
+    pub bios: Option<PathBuf>,
 }
 
 pub(super) fn load(machine: &mut Machine, options: &Options) -> Result<Startup, String> {
@@ -31,12 +32,31 @@ fn load_at(
     path: Option<PathBuf>,
 ) -> Result<Startup, String> {
     let mut errors = Vec::new();
-    let preferences = path.as_deref().map_or_else(Preferences::default, |path| {
+    let mut preferences = path.as_deref().map_or_else(Preferences::default, |path| {
         Preferences::load(path).unwrap_or_else(|error| {
             errors.push(format!("{}: {error}", path.display()));
             Preferences::default()
         })
     });
+    let previous_bios = preferences.bios_path.clone();
+    let saved_bios = match preferences.validate_saved_bios() {
+        Ok(bios) => bios,
+        Err(error) => {
+            errors.push(error);
+            None
+        }
+    };
+    if preferences.bios_path.as_ref().map(|path| path.as_os_str())
+        != previous_bios.as_ref().map(|path| path.as_os_str())
+        && let Some(path) = &path
+        && let Err(error) = preferences.save(path)
+    {
+        errors.push(format!(
+            "Cannot update saved BIOS in {}: {error}",
+            path.display()
+        ));
+    }
+    let bios = options.bios.clone().or(saved_bios);
     let mut themes = ThemeCatalog::default();
     themes.select("midnight")?;
     errors.extend(themes.discover(std::path::Path::new("plugins/themes")));
@@ -79,6 +99,7 @@ fn load_at(
         ));
     }
     Ok(Startup {
+        bios,
         language: options.language.unwrap_or_else(|| preferences.language()),
         volume: options.volume.unwrap_or(preferences.volume).min(100),
         muted: options.muted.unwrap_or(preferences.muted),
@@ -128,6 +149,70 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_bios_is_selected_and_missing_defaults_are_removed_on_restart() {
+        let root =
+            std::env::temp_dir().join(format!("eidoryn-bios-startup-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let bios = root.join("bios.bin");
+        let config = root.join("settings.json");
+        std::fs::write(&bios, vec![0; eidoryn_psx::bus::BIOS_SIZE]).unwrap();
+        let bios = bios.canonicalize().unwrap();
+        let mut saved = Preferences {
+            bios_path: Some(root.join(".").join("bios.bin")),
+            theme: "forest".into(),
+            ..Preferences::default()
+        };
+        saved.save(&config).unwrap();
+        saved.bios_path = Some(bios.clone());
+        let mut machine = Machine::demo();
+        let startup = load_at(&mut machine, &Options::default(), Some(config.clone())).unwrap();
+        assert_eq!(startup.bios, Some(bios.clone()));
+        assert!(startup.notice.is_none());
+        assert_eq!(
+            startup
+                .preferences
+                .bios_path
+                .as_deref()
+                .unwrap()
+                .as_os_str(),
+            bios.as_os_str()
+        );
+        assert_eq!(
+            Preferences::load(&config)
+                .unwrap()
+                .bios_path
+                .as_deref()
+                .unwrap()
+                .as_os_str(),
+            bios.as_os_str()
+        );
+        assert_eq!(Preferences::load(&config).unwrap(), saved);
+        let override_path = root.join("override.bin");
+        let startup = load_at(
+            &mut machine,
+            &Options {
+                bios: Some(override_path.clone()),
+                ..Options::default()
+            },
+            Some(config.clone()),
+        )
+        .unwrap();
+        assert_eq!(startup.bios, Some(override_path));
+        assert_eq!(Preferences::load(&config).unwrap(), saved);
+        std::fs::remove_file(bios).unwrap();
+        let startup = load_at(&mut machine, &Options::default(), Some(config.clone())).unwrap();
+        assert!(startup.bios.is_none());
+        assert!(startup.notice.as_deref().unwrap().contains("removed"));
+        let restored = Preferences::load(&config).unwrap();
+        assert!(restored.bios_path.is_none());
+        assert_eq!(restored.theme, "forest");
+        let startup = load_at(&mut machine, &Options::default(), Some(config)).unwrap();
+        assert!(startup.bios.is_none());
+        assert!(startup.notice.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn unavailable_saved_renderer_falls_back_but_explicit_override_fails() {

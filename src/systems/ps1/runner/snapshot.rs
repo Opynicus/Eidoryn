@@ -5,6 +5,7 @@ use crate::systems::ps1::{
     cpu_engine::{CpuMode, CpuStats},
     gpu::RendererMode,
     machine::Machine,
+    state_file::SaveStateInfo,
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -22,14 +23,28 @@ pub enum SnapshotMode {
     Debug,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectedMedia {
+    Bios,
+    Exe,
+    Disc,
+    Demo,
+}
+
 #[allow(clippy::struct_excessive_bools)] // Independent media, execution, and shutdown flags.
 pub struct Snapshot {
+    pub save_states: Vec<SaveStateInfo>,
+    pub renamed_state: Option<(PathBuf, PathBuf)>,
     pub mode: SnapshotMode,
     pub cards: [Option<CardStatus>; 2],
     pub pad_buttons: u16,
     pub pad_polls: u64,
     /// Last successfully selected BIOS; failed loads do not replace it.
     pub bios_path: Option<PathBuf>,
+    pub disc_path: Option<PathBuf>,
+    pub disc_fast_boot: bool,
+    pub media_selection: Option<SelectedMedia>,
+    pub media_revision: u64,
     pub cdrom_reads: u64,
     pub disc_mounted: bool,
     pub cpu: Cpu,
@@ -37,9 +52,16 @@ pub struct Snapshot {
     pub cpu_stats: CpuStats,
     pub title: String,
     pub running: bool,
+    pub rewind_enabled: bool,
+    pub rewind_max_seconds: u16,
+    pub rewinding: bool,
+    pub rewind_states: usize,
+    pub rewind_seconds: f64,
     /// A machine/renderer fault, independent of recoverable notifications.
     pub halted: bool,
+    /// Recoverable errors and machine faults; successful actions have their own channel.
     pub message: Option<String>,
+    pub success_message: Option<String>,
     pub close_ready: bool,
     pub gpu_status: u32,
     pub renderer: RendererMode,
@@ -103,6 +125,8 @@ impl Snapshot {
         let renderer_error = gpu.renderer_error();
         let halted = machine.halted.is_some() || renderer_error.is_some();
         Self {
+            save_states: Vec::new(),
+            renamed_state: None,
             mode,
             cards: std::array::from_fn(|slot| {
                 machine.bus.sio.cards[slot].as_ref().map(|card| CardStatus {
@@ -115,6 +139,10 @@ impl Snapshot {
             pad_buttons: machine.bus.sio.buttons(),
             pad_polls: machine.bus.sio.polls,
             bios_path: None,
+            disc_path: None,
+            disc_fast_boot: false,
+            media_selection: None,
+            media_revision: 0,
             cdrom_reads: machine.bus.cdrom.sectors_read,
             disc_mounted: machine.bus.cdrom.mounted(),
             cpu: machine.cpu.clone(),
@@ -122,10 +150,16 @@ impl Snapshot {
             cpu_stats: machine.cpu_stats(),
             title: machine.title.clone(),
             running: running && !halted,
+            rewind_enabled: false,
+            rewind_max_seconds: super::DEFAULT_REWIND_SECONDS,
+            rewinding: false,
+            rewind_states: 0,
+            rewind_seconds: 0.0,
             halted,
             message: renderer_error
                 .or(message)
                 .or_else(|| machine.halted.as_ref().map(ToString::to_string)),
+            success_message: None,
             close_ready: false,
             gpu_status: machine.bus.gpu.status(),
             renderer: machine.bus.gpu.renderer_mode(),

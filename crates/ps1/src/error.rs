@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 pub enum EmuError {
     Bus {
         address: u32,
@@ -39,3 +39,38 @@ impl std::fmt::Display for EmuError {
 }
 
 impl std::error::Error for EmuError {}
+
+impl<'de> serde::Deserialize<'de> for EmuError {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        enum SavedError {
+            Bus { address: u32, operation: String },
+            UnsupportedInstruction { pc: u32, instruction: u32 },
+            GpuCommand(u8),
+            GpuBackend(String),
+            Jit(String),
+            Dma(String),
+            Spu(String),
+            Mdec(String),
+            InvalidImage(String),
+        }
+        let message =
+            |value: &str| crate::state::static_error(value).map_err(serde::de::Error::custom);
+        Ok(match SavedError::deserialize(deserializer)? {
+            SavedError::Bus { address, operation } => Self::Bus {
+                address,
+                operation: message(&operation)?,
+            },
+            SavedError::UnsupportedInstruction { pc, instruction } => {
+                Self::UnsupportedInstruction { pc, instruction }
+            }
+            SavedError::GpuCommand(command) => Self::GpuCommand(command),
+            SavedError::GpuBackend(error) => Self::GpuBackend(error),
+            SavedError::Jit(error) => Self::Jit(error),
+            SavedError::Dma(error) => Self::Dma(message(&error)?),
+            SavedError::Spu(error) => Self::Spu(message(&error)?),
+            SavedError::Mdec(error) => Self::Mdec(message(&error)?),
+            SavedError::InvalidImage(error) => Self::InvalidImage(error),
+        })
+    }
+}

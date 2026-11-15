@@ -9,7 +9,7 @@ use crate::{
 
 pub const INSTRUCTIONS_PER_SLICE: usize = 20_000;
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: Bus,
@@ -17,10 +17,23 @@ pub struct Machine {
     pub halted: Option<EmuError>,
     pub slices: u64,
     demo: bool,
+    #[serde(skip)]
     execution: Execution,
 }
 
 impl Machine {
+    pub(crate) fn clone_guest(&self) -> Self {
+        Self {
+            cpu: self.cpu.clone(),
+            bus: self.bus.clone_guest(),
+            title: self.title.clone(),
+            halted: self.halted.clone(),
+            slices: self.slices,
+            demo: self.demo,
+            execution: Execution::default(),
+        }
+    }
+
     pub fn from_disc(
         path: &std::path::Path,
         bios: Option<&[u8]>,

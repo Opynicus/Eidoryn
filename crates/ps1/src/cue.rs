@@ -238,8 +238,5 @@ pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
         });
         cursor += length;
     }
-    Ok(DiscImage {
-        tracks: result,
-        sectors: cursor,
-    })
+    DiscImage::from_tracks(path, result, cursor)
 }

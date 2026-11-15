@@ -9,6 +9,7 @@ use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px, rgb, rgba}
 
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_save_state_selection();
         if self.graphics.open && self.settings_tab == SettingsTab::Graphics {
             self.detect_hardware(cx);
         }
@@ -50,8 +51,10 @@ impl Render for Desktop {
             .when(
                 !pure_video
                     || self.graphics.open
+                    || self.renaming_state.is_some()
                     || self.notice.is_some()
-                    || self.snapshot.message.is_some(),
+                    || self.snapshot.message.is_some()
+                    || self.snapshot.success_message.is_some(),
                 |root| root.font(self.fonts.normal()),
             )
             .track_focus(&self.focus)
@@ -59,7 +62,7 @@ impl Render for Desktop {
             .on_key_down(cx.listener(Self::key))
             .on_key_up(cx.listener(Self::key_up))
             .on_click(cx.listener(|view, event, window, cx| {
-                if matches!(event, gpui::ClickEvent::Mouse(_)) {
+                if view.renaming_state.is_none() && matches!(event, gpui::ClickEvent::Mouse(_)) {
                     window.focus(&view.focus, cx);
                 }
             }))
@@ -82,6 +85,9 @@ impl Render for Desktop {
                 )
                 .child(self.settings_drawer(cx));
         }
+        if self.renaming_state.is_some() {
+            root = root.child(self.rename_state_dialog(cx));
+        }
         root
     }
 }
@@ -93,6 +99,7 @@ impl Desktop {
         let compact = window.viewport_size().width <= px(1250.);
         let page = match self.page {
             WorkspacePage::Console => self.console_page(window, cx),
+            WorkspacePage::SaveStates => self.save_states_page(cx),
             WorkspacePage::Debug => self.debug_page(window, cx),
         };
         div()
@@ -158,6 +165,7 @@ impl Desktop {
             )
     }
 
+    #[allow(clippy::too_many_lines)] // Keep the workspace navigation and its order together.
     pub(super) fn sidebar_content(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let console = nav_item(
@@ -180,6 +188,17 @@ impl Desktop {
             false,
         )
         .on_click(cx.listener(|view, _, window, cx| view.toggle_view(window, cx)));
+        let saves = nav_item(
+            p,
+            "nav-save-states",
+            "disc",
+            self.tr(Text::SaveStates),
+            compact,
+            self.page == WorkspacePage::SaveStates,
+        )
+        .on_click(cx.listener(|view, _, window, cx| {
+            view.show_page(WorkspacePage::SaveStates, window, cx);
+        }));
         let debug = nav_item(
             p,
             "nav-debug",
@@ -216,6 +235,7 @@ impl Desktop {
             })
             .child(console)
             .child(game)
+            .child(saves)
             .child(debug)
             .child(div().h(px(24.)))
             .when(!compact, |element| {
@@ -349,6 +369,7 @@ impl Desktop {
                     .font(self.fonts.medium())
                     .child(match self.page {
                         WorkspacePage::Console => self.tr(Text::Console),
+                        WorkspacePage::SaveStates => self.tr(Text::SaveStates),
                         WorkspacePage::Debug => self.tr(Text::Debugger),
                     }),
             )
@@ -462,19 +483,27 @@ impl Desktop {
     fn notice_banner(&self) -> Option<gpui::Div> {
         let p = &self.themes.active().palette;
         self.notice
-            .clone()
-            .or_else(|| self.snapshot.message.clone())
-            .map(|message| {
+            .as_ref()
+            .or(self.snapshot.message.as_ref())
+            .map(|message| (message, p.error, p.on_error, "error-notice"))
+            .or_else(|| {
+                self.snapshot
+                    .success_message
+                    .as_ref()
+                    .map(|message| (message, p.success, p.on_success, "success-notice"))
+            })
+            .map(|(message, background, foreground, selector)| {
                 div()
+                    .debug_selector(move || selector.into())
                     .px_4()
                     .py_3()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(p.on_error))
-                    .bg(rgb(p.error))
-                    .text_color(rgb(p.on_error))
+                    .border_color(rgb(foreground))
+                    .bg(rgb(background))
+                    .text_color(rgb(foreground))
                     .text_sm()
-                    .child(message)
+                    .child(message.clone())
             })
     }
 
@@ -545,6 +574,7 @@ impl Desktop {
                             ),
                             ("tab-appearance", Text::Appearance, SettingsTab::Appearance),
                             ("tab-controller", Text::Controller, SettingsTab::Controller),
+                            ("tab-rewind", Text::Rewind, SettingsTab::Rewind),
                         ]
                         .into_iter()
                         .map(|(id, title, tab)| {
@@ -591,6 +621,7 @@ impl Desktop {
                                 SettingsTab::Graphics => self.graphics_panel(cx),
                                 SettingsTab::Appearance => self.appearance(cx),
                                 SettingsTab::Controller => self.controller_panel(cx),
+                                SettingsTab::Rewind => self.rewind_settings(cx),
                             }),
                     ),
             )

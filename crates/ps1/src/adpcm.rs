@@ -1,5 +1,5 @@
 //! Shared arithmetic for the two PS1 ADPCM formats; packet layouts live in their devices.
-#[derive(Clone, Copy, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
 pub(crate) struct Predictor {
     history: [i32; 2],
 }

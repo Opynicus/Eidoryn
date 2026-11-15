@@ -1,7 +1,7 @@
 //! Original root counters with system/divided and externally supplied clocks.
 //! GPU scanout supplies horizontal/vertical blank and dot-clock inputs.
 //! https://psx-spx.consoledev.net/timers/
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 #[allow(clippy::struct_excessive_bools)] // Independent hardware latches, not mutually exclusive states.
 struct Counter {
@@ -32,7 +32,7 @@ impl Default for Counter {
         }
     }
 }
-#[derive(Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Timers {
     counters: [Counter; 3],
