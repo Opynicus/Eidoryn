@@ -1,7 +1,7 @@
 //! Linux fixed-count rewind capture/retention microbenchmark; no game assets.
 //! Build: `cargo build --locked --release --no-default-features --example rewind_bench`
 //! Run separately for each count: `target/release/examples/rewind_bench 0|20|40`
-//! See `docs/REWIND_PERFORMANCE.md` for the CSV schema and measurement limits.
+//! Fixed-count demo measurements do not represent real-game rewind duration or frame rate.
 use eidoryn_ps1::{machine::Machine, memory_card::MemoryCard, timing::CPU_CLOCK_HZ};
 use std::{hint::black_box, time::Instant};
 
