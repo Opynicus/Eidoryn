@@ -11,7 +11,7 @@ Eidoryn (CLI / GPUI)
 └── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
-`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认依赖标准库和用于 CD-ROM 短参数、延迟响应的 smallvec。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认仅依赖标准库。wgpu 硬件后端/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`dx12`、`metal`、`vulkan`、`opengl`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
+`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认依赖标准库、用于 CD-ROM 短参数与延迟响应的 smallvec，以及即时存档使用的 serde、bincode、sha2。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认仅依赖标准库。wgpu 硬件后端/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`dx12`、`metal`、`vulkan`、`opengl`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
 
 | 位置 | 职责 |
 | --- | --- |
@@ -28,6 +28,7 @@ Eidoryn (CLI / GPUI)
 | `src/systems/ps1/input.rs` | 按键保持状态、独立连发相位与配置校验；以模拟 CPU 周期计时 |
 | `src/systems/ps1/media.rs` | BIOS/EXE 读取、校验与 PS1 会话构建 |
 | `src/systems/ps1/card_file.rs` | PS1 卡文件锁、批量同步和原子替换 |
+| `crates/ps1/src/state.rs`、`src/systems/ps1/state_file.rs` | 完整硬件快照、格式校验、按游戏归档与时间戳文件 |
 | `src/systems/ps1/runner/` | PS1 命令、会话线程、持久化边界、快照与调试状态 |
 | `src/systems/ps1/runner/pacing.rs` | 私有帧节奏状态；显式接收时间、帧计数和目标帧率，不处理会话、统计或 I/O |
 | `src/desktop/` | GPUI 生命周期、窗口、Material 组件、音量、主题、CRT 合成和操作；PS1 调试面板明确放在 `ps1_inspector.rs` |
@@ -52,6 +53,10 @@ Eidoryn (CLI / GPUI)
 ## PS1 执行与同步
 
 工作线程独占 `Machine` 和 `CardStore`，窗口通过通道发送命令，从邮箱取走最新完整快照。关闭请求先同步记忆卡，成功后发布最终快照再退出；失败则暂停并允许重试。`Runner::drop` 回收线程并尝试最终同步。媒体加载先校验，成功后再替换机器和重置基准；换媒体和重置均保留当前记忆卡。失败仍保留原会话。
+
+即时存档由工作线程在指令边界捕获，GPU 先排空待执行绘图并保留最近锁存画面。核心通过 serde/bincode 保存全部客体设备字段，格式包含版本号与 SHA-256 校验；光盘保存规范路径及内容/轨道布局指纹，恢复时重新打开并核对。JIT 缓存、GPU 工作线程和宿主音频队列不写入文件，恢复时重新建立。应用同时保存手柄保持状态与连发相位，以启动时 BIOS、RAM、CPU 寄存器和光盘身份区分游戏，在 `saves/<游戏名>-<标识>/` 内原子创建带 UTC 时间戳的 `.ps1state`，不覆盖历史。存档和恢复不以记忆卡同步成功为前提；恢复会带回快照中的卡内容，并使卡文件的已保存版本失效，避免分叉时间线出现同版本、不同内容的漏写。解码、校验和后端准备全部成功后才替换机器，普通加载和快速加载均保持加载前的运行状态并重置宿主节奏：正在运行则继续运行，已暂停或停止则保持暂停；失败保留当前会话。
+
+倒带参考 [DuckStation 的内存状态和倒带调度机制](https://github.com/stenzek/duckstation/blob/master/src/core/system.cpp)，在当前核心中独立实现。倒带默认关闭，通过设置（F8）中的倒带页启用并设置 5–120 秒的最大历史时长，默认上限为 30 秒；开关和时长均持久化。启用后，工作线程每隔 250 毫秒客体时间捕获内存快照，将完整设备状态和手柄连发状态放入有界历史队列；队列受配置时长和估算 256 MiB 内存预算约束，达到任一上限时淘汰最旧记录，因此实际可用历史可能更短。倒带期间停止前向执行，每 100 毫秒恢复一个较早状态并发布画面，静音且不向磁盘同步中间时间点的记忆卡。内存快照使用同步后的串行 GPU 数据和共享只读光盘文件，不重新打开或校验整个镜像，也不保存 JIT 缓存；倒带结束时恢复选定 CPU/GPU 后端、同步当前实际按键和原有运行/暂停状态。已回退的未来记录被消费，最早点停留到松开为止。成功更换游戏、重置、普通或快速加载、关闭倒带记录都会清空历史；倒带缓存不落盘，不影响普通和快速存档文件。
 
 手柄输入通过 `Command::SetButtons` 更新实际保持状态，`Command::SetTurbo` 配置动作/肩键连发。运行线程在每个有界执行片段前后采样连发状态并送入 SIO；按键各自以首次按下的 CPU 周期为起点，按下/松开各占半个周期。暂停和会话替换释放输入但保留连发配置。输入配置不清空音频、不重置帧节奏，也不改动硬件核心的手柄协议。
 
@@ -82,4 +87,4 @@ PCM 按设备时钟在核心生成，工作线程独立排入 `AudioBuffer`，�
 
 快照中的像素和尺寸未变化时，窗口复用已有纹理，运行中的调试/状态信息最多每 100 ms 触发一次重绘。新的视频帧、暂停和关闭立即刷新，避免静态全屏画面仍被状态计数强制每帧重绘。软件三角形边缘权重按整数增量推进；恒定颜色和原色纹理跳过无效插值，保留逐像素输出等价性。视频转换按行处理，RGB24 直接解包连续 VRAM 半字，RGB15 展开三个颜色通道；没有改动游戏指令、设备时序或绘图命令。相关像素等价性测试位于 `tests/display.rs`，转换基准位于 `examples/display_probe.rs`。
 
-新增 UI 元素使用 `Palette` 语义字段；新增主题无需改硬件核心。`theme` 和 JSON 依赖随 `desktop` 特性启用，关闭所有默认特性后的软件核心依赖标准库和 smallvec。原 `runner::load_path/load_disc` 入口继续重导出，新的调用方使用 `systems::ps1::media`。
+新增 UI 元素使用 `Palette` 语义字段；新增主题无需改硬件核心。`theme` 和 JSON 依赖随 `desktop` 特性启用，关闭所有默认特性后的软件核心保留 smallvec 和即时存档的序列化、校验依赖。原 `runner::load_path/load_disc` 入口继续重导出，新的调用方使用 `systems::ps1::media`。

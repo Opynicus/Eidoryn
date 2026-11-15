@@ -5,7 +5,7 @@
 use crate::EmuError;
 use std::collections::VecDeque;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
 enum Operation {
     Idle,
     Quant,
@@ -13,7 +13,7 @@ enum Operation {
     Decode,
 }
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Mdec {
     operation: Operation,
     command: u32,
@@ -21,13 +21,17 @@ pub struct Mdec {
     status_count: u16,
     table_index: usize,
     dma_control: u32,
+    #[serde(with = "crate::state::matrix")]
     quant: [[u8; 64]; 2],
+    #[serde(with = "crate::state::array")]
     scale: [i16; 64],
     input: VecDeque<u16>,
     output: VecDeque<u32>,
+    #[serde(with = "crate::state::array")]
     coefficients: [i32; 64],
     coefficient_index: Option<usize>,
     quant_scale: i32,
+    #[serde(with = "crate::state::matrix")]
     chroma: [[i32; 64]; 2],
     block: usize,
     output_block: usize,
@@ -65,6 +69,24 @@ impl Default for Mdec {
 }
 
 impl Mdec {
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        let table_limit = match self.operation {
+            Operation::Quant => 128,
+            Operation::Scale => 64,
+            _ => usize::MAX,
+        };
+        if (self.remaining != 0 && self.table_index >= table_limit)
+            || self.block > 5
+            || self.output_block > 5
+            || self.coefficient_index.is_some_and(|index| index >= 64)
+            || self.input.len() > 64
+            || self.output.len() > 48
+            || !(0..=63).contains(&self.quant_scale)
+        {
+            return Err("Invalid saved MDEC state".into());
+        }
+        Ok(())
+    }
     pub fn write_control(&mut self, value: u32) {
         if value & 0x8000_0000 != 0 {
             // Reset aborts the stream; quantization and scale tables remain programmed.

@@ -1,5 +1,5 @@
 //! Per-sample envelope counters shared by ADSR and stereo volume sweeps.
-#[derive(Clone, Copy, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
 pub(super) struct Envelope {
     pub level: i32,
     counter: u32,
@@ -65,7 +65,7 @@ impl Envelope {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Phase {
     #[default]
     Off,

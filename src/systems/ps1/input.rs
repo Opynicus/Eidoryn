@@ -44,6 +44,42 @@ pub struct PadInput {
 }
 
 impl PadInput {
+    pub(super) fn save_state(&self) -> [u8; 69] {
+        let mut bytes = [0; 69];
+        bytes[..2].copy_from_slice(&self.config.buttons.to_le_bytes());
+        bytes[2] = self.config.hz;
+        bytes[3..5].copy_from_slice(&self.held.to_le_bytes());
+        for (chunk, start) in bytes[5..]
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip(self.started)
+        {
+            chunk.copy_from_slice(&start.to_le_bytes());
+        }
+        bytes
+    }
+
+    pub(super) fn load_state(bytes: &[u8; 69]) -> Result<Self, String> {
+        let config = TurboConfig::new(u16::from_le_bytes([bytes[0], bytes[1]]), bytes[2])?;
+        let held = u16::from_le_bytes([bytes[3], bytes[4]]);
+        if held & 6 != 0 {
+            return Err("Invalid save state controller buttons".into());
+        }
+        let started = std::array::from_fn(|i| {
+            u64::from_le_bytes(
+                bytes[5 + i * 8..13 + i * 8]
+                    .try_into()
+                    .expect("fixed pad state"),
+            )
+        });
+        Ok(Self {
+            config,
+            held,
+            started,
+        })
+    }
+
     pub fn configure(&mut self, config: TurboConfig, cycles: u64) {
         if self.config != config {
             self.config = config;
@@ -60,6 +96,10 @@ impl PadInput {
             }
         }
         self.held = held & !6; // Digital pads have no L3/R3.
+    }
+
+    pub(super) fn held_buttons(&self) -> u16 {
+        self.held
     }
 
     pub fn buttons(&self, cycles: u64) -> u16 {

@@ -20,6 +20,8 @@ pub mod mdec;
 pub mod memory_card;
 pub mod sio;
 pub mod spu;
+mod state;
+pub use state::RewindState;
 pub mod timers;
 pub mod timing;
 mod xa;

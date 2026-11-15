@@ -52,7 +52,9 @@ pub(super) fn action(
                 palette.primary
             }))
         })
-        .tooltip(move |_, cx| tooltip(palette, tooltip_text.clone(), cx))
+        .when(!tooltip_text.is_empty(), |button| {
+            button.tooltip(move |_, cx| tooltip(palette, tooltip_text.clone(), cx))
+        })
         .text_color(rgb(foreground))
         .hover(move |style| style.bg(rgb(hover)))
         .active(move |style| style.bg(rgb(pressed)))

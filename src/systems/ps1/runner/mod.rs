@@ -5,17 +5,22 @@ mod worker;
 
 use crate::systems::ps1::card_file::CardStore;
 use crate::systems::ps1::machine::Machine;
+use crate::systems::ps1::state_file::StateStore;
 use eidoryn_host::audio::AudioBuffer;
-pub use snapshot::{ExecutionState, Snapshot, SnapshotMode};
+pub use snapshot::{ExecutionState, SelectedMedia, Snapshot, SnapshotMode};
 // Preserve the existing loader entry points while keeping file I/O outside the worker.
 pub use crate::systems::ps1::media::{load_disc, load_path};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     thread,
 };
 
 type SharedSnapshot = Arc<Mutex<Option<Snapshot>>>;
+
+pub const MIN_REWIND_SECONDS: u16 = 5;
+pub const MAX_REWIND_SECONDS: u16 = 120;
+pub const DEFAULT_REWIND_SECONDS: u16 = 30;
 
 pub enum Command {
     SetSnapshotMode(SnapshotMode),
@@ -23,12 +28,26 @@ pub enum Command {
     SetTurbo(super::input::TurboConfig),
     SetRenderer(crate::systems::ps1::gpu::RendererMode),
     SetCpuMode(crate::systems::ps1::cpu_engine::CpuMode),
+    SetRewindEnabled(bool),
+    SetRewindSeconds(u16),
+    SetRewinding(bool),
     Toggle,
     Step,
     Slice,
     Reset,
     Demo,
     FlushCards,
+    SaveState,
+    QuickSave,
+    QuickLoad,
+    LoadState {
+        path: PathBuf,
+    },
+    RenameState {
+        path: PathBuf,
+        name: String,
+    },
+    RefreshSaveStates,
     Load {
         path: PathBuf,
         bios: bool,
@@ -82,6 +101,12 @@ impl Runner {
         let (sender, receiver) = mpsc::channel();
         let mut snapshot = Snapshot::capture_with_mode(&machine, auto_run, None, 0.0, mode);
         snapshot.cards = store.status(&machine.bus.sio.cards);
+        match StateStore::new(Path::new("saves"), &machine).list() {
+            Ok(states) => snapshot.save_states = states,
+            Err(error) => {
+                snapshot.message.get_or_insert(error);
+            }
+        }
         let latest = Arc::new(Mutex::new(Some(snapshot)));
         let output = Arc::clone(&latest);
         let thread = thread::Builder::new()

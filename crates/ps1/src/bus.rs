@@ -5,21 +5,21 @@ mod dma;
 pub const RAM_SIZE: usize = 2 * 1024 * 1024;
 pub const BIOS_SIZE: usize = 512 * 1024;
 
-#[derive(Clone, Copy, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
 struct DmaChannel {
     base: u32,
     block: u32,
     control: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
 struct MdecTransfer {
     address: u32,
     remaining: u32,
     block_size: u32,
 }
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Bus {
     pub ram: Vec<u8>,
     pub bios: Vec<u8>,
@@ -32,6 +32,7 @@ pub struct Bus {
     pub mdec: Mdec,
     mdec_dma: [Option<MdecTransfer>; 2],
     cdrom_dma_resume: Option<u64>,
+    #[serde(with = "crate::state::array")]
     scratchpad: [u8; 1024],
     memory_control: [u32; 9],
     ram_size: u32,
@@ -45,6 +46,7 @@ pub struct Bus {
     elapsed_cycles: u64,
     // Scratch storage only: cleared before each list, bounded by the number of
     // aligned RAM addresses. Retain capacity across frames instead of reallocating.
+    #[serde(skip)]
     dma_visited: HashSet<u32>,
 }
 
@@ -86,6 +88,51 @@ pub fn physical(address: u32) -> u32 {
 }
 
 impl Bus {
+    pub(crate) fn clone_guest(&self) -> Self {
+        Self {
+            ram: self.ram.clone(),
+            bios: self.bios.clone(),
+            gpu: self.gpu.clone(),
+            cdrom: self.cdrom.clone(),
+            spu: self.spu.clone(),
+            post: self.post,
+            timers: self.timers.clone(),
+            sio: self.sio.clone(),
+            mdec: self.mdec.clone(),
+            mdec_dma: self.mdec_dma,
+            cdrom_dma_resume: self.cdrom_dma_resume,
+            scratchpad: self.scratchpad,
+            memory_control: self.memory_control,
+            ram_size: self.ram_size,
+            cache_control: self.cache_control,
+            irq_status: self.irq_status,
+            irq_mask: self.irq_mask,
+            dma: self.dma,
+            dma_control: self.dma_control,
+            dma_interrupt: self.dma_interrupt,
+            elapsed_cycles: self.elapsed_cycles,
+            dma_visited: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        if self.ram.len() != RAM_SIZE || self.bios.len() != BIOS_SIZE {
+            return Err("Invalid saved RAM or BIOS size".into());
+        }
+        if self
+            .mdec_dma
+            .iter()
+            .flatten()
+            .any(|transfer| transfer.block_size == 0 || transfer.remaining > RAM_SIZE as u32 / 4)
+        {
+            return Err("Invalid saved DMA transfer".into());
+        }
+        self.gpu.validate_state()?;
+        self.cdrom.validate_state()?;
+        self.spu.validate_state()?;
+        self.sio.validate_state()?;
+        self.mdec.validate_state()
+    }
     /// CPU-clock cycles started on this bus, wrapping after `u64::MAX`.
     /// Cloning a bus preserves the timeline. A failed device tick still consumes
     /// the cycle in which the error occurred; subsequent cycles are not run.

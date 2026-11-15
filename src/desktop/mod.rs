@@ -10,10 +10,14 @@ mod graphics;
 mod icons;
 mod probe;
 mod ps1_inspector;
+mod recent_games;
+mod rewind;
+mod save_states;
 mod settings;
 mod sidebar;
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
+mod text_input;
 mod video;
 mod view;
 
@@ -76,7 +80,12 @@ pub fn run_with_probe(
     let audio_output = match AudioOutput::open(audio_buffer.clone()) {
         Ok(output) => Some(output),
         Err(error) => {
-            startup.notice = Some(error);
+            startup.notice = Some(
+                startup
+                    .notice
+                    .take()
+                    .map_or_else(|| error.clone(), |notice| format!("{notice}\n{error}")),
+            );
             None
         }
     };
@@ -96,6 +105,12 @@ pub fn run_with_probe(
     )
     .map_err(|e| e.to_string())?;
     runner.send(Command::SetTurbo(startup.preferences.turbo()?))?;
+    runner.send(Command::SetRewindSeconds(
+        startup.preferences.rewind_seconds,
+    ))?;
+    runner.send(Command::SetRewindEnabled(
+        startup.preferences.rewind_enabled,
+    ))?;
     let audio = AudioControls {
         buffer: audio_buffer,
         output: audio_output,
@@ -107,6 +122,7 @@ pub fn run_with_probe(
 }
 
 #[allow(clippy::too_many_lines)] // Keep window setup and the Desktop initializer together.
+#[allow(clippy::needless_pass_by_value)] // Startup options move into the 'static GPUI callback.
 fn open_window(
     runner: Runner,
     snapshot: Snapshot,
@@ -186,7 +202,7 @@ fn open_window(
                             focus,
                             notice: startup.notice,
                             audio,
-                            bios: options.bios,
+                            bios: startup.bios,
                             game_view: options.game_view,
                             page: if options.debugger {
                                 WorkspacePage::Debug
@@ -196,6 +212,10 @@ fn open_window(
                             themes: startup.themes,
                             settings_tab: SettingsTab::Graphics,
                             pressed_buttons: 0,
+                            selected_save_state: None,
+                            save_state_picker_open: false,
+                            renaming_state: None,
+                            rewind_sources: 0,
                             rebinding: None,
                             keybindings_draft: None,
                             probe,
@@ -245,6 +265,10 @@ struct Desktop {
     game_view: bool,
     page: WorkspacePage,
     pressed_buttons: u16,
+    selected_save_state: Option<std::path::PathBuf>,
+    save_state_picker_open: bool,
+    renaming_state: Option<save_states::RenameState>,
+    rewind_sources: u8,
     rebinding: Option<eidoryn_psx::keybindings::PadButton>,
     keybindings_draft: Option<eidoryn_psx::keybindings::KeyBindings>,
     probe: Option<probe::Probe>,
@@ -260,12 +284,14 @@ enum SettingsTab {
     Graphics,
     Appearance,
     Controller,
+    Rewind,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum WorkspacePage {
     #[default]
     Console,
+    SaveStates,
     Debug,
 }
 
@@ -318,8 +344,12 @@ impl Desktop {
                 mode.id().clone_into(&mut self.preferences.renderer);
                 self.save_preferences();
             }
-            if snapshot.bios_path.is_some() {
-                self.bios.clone_from(&snapshot.bios_path);
+            self.receive_media_selection(&snapshot, cx);
+            if snapshot.renamed_state != self.snapshot.renamed_state
+                && let Some((old, new)) = &snapshot.renamed_state
+                && self.selected_save_state.as_ref() == Some(old)
+            {
+                self.selected_save_state = Some(new.clone());
             }
             let frame_changed = !snapshot.has_same_frame(&self.snapshot);
             if frame_changed && let Some(image) = &mut self.image {
@@ -327,6 +357,15 @@ impl Desktop {
                 image.dirty = true;
             }
             let redraw = frame_changed
+                || snapshot.rewinding != self.snapshot.rewinding
+                || snapshot.rewind_states != self.snapshot.rewind_states
+                || snapshot.success_message != self.snapshot.success_message
+                || snapshot.message != self.snapshot.message
+                || !snapshot.save_states.iter().map(|state| &state.path).eq(self
+                    .snapshot
+                    .save_states
+                    .iter()
+                    .map(|state| &state.path))
                 || snapshot.mode != self.snapshot.mode
                 || !snapshot.running
                 || snapshot.running != self.snapshot.running

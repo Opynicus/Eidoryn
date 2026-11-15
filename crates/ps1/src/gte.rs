@@ -2,7 +2,7 @@
 //! https://psx-spx.consoledev.net/geometrytransformationenginegte/
 //! Results are synchronous. Command busy times and register pipeline hazards are not modeled.
 
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct Gte {
     data: [u32; 32],
     control: [u32; 32],

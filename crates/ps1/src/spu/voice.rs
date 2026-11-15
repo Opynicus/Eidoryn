@@ -4,7 +4,7 @@ use super::{
 };
 use crate::adpcm::Predictor;
 
-#[derive(Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 pub(super) struct Voice {
     pub envelope: Envelope,
     pub phase: Phase,
@@ -20,6 +20,12 @@ pub(super) struct Voice {
 }
 
 impl Voice {
+    pub(super) fn validate_state(&self) -> Result<(), String> {
+        if self.position >= 28 || self.address >= 512 * 1024 || self.fraction >= 4096 {
+            return Err("Invalid saved SPU voice position".into());
+        }
+        Ok(())
+    }
     pub fn key_on(&mut self, address: u16) {
         let volumes = self.volumes;
         *self = Self {

@@ -2,7 +2,12 @@
 use crate::{
     i18n::Language,
     keybindings::KeyBindings,
-    systems::ps1::{gpu::RendererMode, input::TurboConfig},
+    systems::ps1::{
+        bus::BIOS_SIZE,
+        gpu::RendererMode,
+        input::TurboConfig,
+        runner::{DEFAULT_REWIND_SECONDS, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS},
+    },
     video_filter::CrtFilter,
 };
 use serde::{Deserialize, Serialize};
@@ -11,6 +16,13 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentDisc {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub fast_boot: bool,
+}
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,6 +38,10 @@ pub struct Preferences {
     pub turbo_buttons: u16,
     pub turbo_hz: u8,
     pub keybindings: KeyBindings,
+    pub bios_path: Option<PathBuf>,
+    pub recent_discs: Vec<RecentDisc>,
+    pub rewind_enabled: bool,
+    pub rewind_seconds: u16,
 }
 
 impl Default for Preferences {
@@ -42,11 +58,78 @@ impl Default for Preferences {
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
             keybindings: KeyBindings::default(),
+            bios_path: None,
+            recent_discs: Vec::new(),
+            rewind_enabled: false,
+            rewind_seconds: DEFAULT_REWIND_SECONDS,
         }
     }
 }
 
 impl Preferences {
+    /// Record successfully opened media, with the most recent choice first.
+    pub fn remember_disc(&mut self, path: &Path, fast_boot: bool) -> Result<(), String> {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if !path.is_file() {
+            return Err(format!("Disc is not a regular file: {}", path.display()));
+        }
+        self.recent_discs.retain(|disc| disc.path != path);
+        self.recent_discs.insert(0, RecentDisc { path, fast_boot });
+        self.recent_discs.truncate(10);
+        Ok(())
+    }
+
+    /// Valid defaults become canonical paths; missing defaults are cleared.
+    /// Temporary read failures retain the user's choice.
+    /// The caller persists the configuration if `bios_path` changed.
+    pub fn validate_saved_bios(&mut self) -> Result<Option<PathBuf>, String> {
+        let Some(path) = self.bios_path.clone() else {
+            return Ok(None);
+        };
+        let check = || -> std::io::Result<PathBuf> {
+            let metadata = std::fs::metadata(&path)?;
+            if !metadata.is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "not a regular file",
+                ));
+            }
+            if metadata.len() != BIOS_SIZE as u64 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "BIOS must be exactly 512 KiB",
+                ));
+            }
+            let mut bytes = Vec::new();
+            std::fs::File::open(&path)?
+                .take(BIOS_SIZE as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() != BIOS_SIZE {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "BIOS must be exactly 512 KiB",
+                ));
+            }
+            path.canonicalize()
+        };
+        match check() {
+            Ok(path) => {
+                self.bios_path = Some(path.clone());
+                Ok(Some(path))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.bios_path = None;
+                Err(format!(
+                    "Saved BIOS {} is missing or is not a regular file; its default setting was removed. Select a BIOS again.",
+                    path.display()
+                ))
+            }
+            Err(error) => Err(format!("Cannot use saved BIOS {}: {error}", path.display())),
+        }
+    }
+
     pub fn language(&self) -> Language {
         self.language
             .as_deref()
@@ -77,6 +160,11 @@ impl Preferences {
         if self.volume > 100 || self.theme.is_empty() {
             return Err("Volume must be 0..100 and theme must not be empty".into());
         }
+        if !(MIN_REWIND_SECONDS..=MAX_REWIND_SECONDS).contains(&self.rewind_seconds) {
+            return Err(format!(
+                "Rewind duration must be {MIN_REWIND_SECONDS}..{MAX_REWIND_SECONDS} seconds"
+            ));
+        }
         Ok(())
     }
 
@@ -95,7 +183,8 @@ impl Preferences {
         if bytes.len() > 65_536 {
             return Err("Preferences exceed 64 KiB".into());
         }
-        let settings: Self = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let mut settings: Self = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        settings.recent_discs.truncate(10);
         settings.validate()?;
         Ok(settings)
     }
@@ -146,6 +235,88 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recent_discs_are_persistent_unique_and_bounded() {
+        let root = std::env::temp_dir().join(format!("eidoryn-recents-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut preferences = Preferences::default();
+        for index in 0..12 {
+            let path = root.join(format!("game-{index}.iso"));
+            std::fs::write(&path, []).unwrap();
+            preferences.remember_disc(&path, false).unwrap();
+        }
+        assert_eq!(preferences.recent_discs.len(), 10);
+        let reused = root.join("game-7.iso").canonicalize().unwrap();
+        preferences.remember_disc(&reused, true).unwrap();
+        assert_eq!(preferences.recent_discs[0].path, reused);
+        assert!(preferences.recent_discs[0].fast_boot);
+        assert_eq!(
+            preferences
+                .recent_discs
+                .iter()
+                .filter(|disc| disc.path == reused)
+                .count(),
+            1
+        );
+        let settings = root.join("settings.json");
+        preferences.save(&settings).unwrap();
+        assert_eq!(Preferences::load(&settings).unwrap(), preferences);
+        assert!(
+            preferences
+                .remember_disc(&root.join("missing.iso"), false)
+                .is_err()
+        );
+        assert_eq!(Preferences::load(&settings).unwrap(), preferences);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_bios_is_cleared_but_invalid_contents_keep_the_setting() {
+        let root = std::env::temp_dir().join(format!("eidoryn-bios-check-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let bios = root.join("bios.bin");
+        let mut preferences = Preferences {
+            bios_path: Some(bios.clone()),
+            ..Preferences::default()
+        };
+        assert!(
+            preferences
+                .validate_saved_bios()
+                .unwrap_err()
+                .contains("removed")
+        );
+        assert!(preferences.bios_path.is_none());
+        std::fs::write(&bios, [0; 8]).unwrap();
+        preferences.bios_path = Some(bios.clone());
+        assert!(
+            preferences
+                .validate_saved_bios()
+                .unwrap_err()
+                .contains("512 KiB")
+        );
+        assert_eq!(preferences.bios_path, Some(bios.clone()));
+        std::fs::write(&bios, vec![0; BIOS_SIZE]).unwrap();
+        preferences.bios_path = Some(root.join(".").join("bios.bin"));
+        let canonical = bios.canonicalize().unwrap();
+        assert_eq!(
+            preferences.validate_saved_bios().unwrap(),
+            Some(canonical.clone())
+        );
+        assert_eq!(
+            preferences.bios_path.as_deref().unwrap().as_os_str(),
+            canonical.as_os_str()
+        );
+        preferences.bios_path = Some(root.clone());
+        assert!(
+            preferences
+                .validate_saved_bios()
+                .unwrap_err()
+                .contains("removed")
+        );
+        assert!(preferences.bios_path.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rendering_ids_preserve_json_values_and_parse_back() {
         for (renderer, renderer_id) in [
             (RendererMode::Serial, "serial"),
@@ -189,6 +360,8 @@ mod tests {
             clean_fullscreen: true,
             turbo_buttons: 0x8400,
             turbo_hz: 15,
+            rewind_enabled: true,
+            rewind_seconds: 90,
             ..Preferences::default()
         };
         settings
@@ -201,6 +374,12 @@ mod tests {
         assert!(settings.save(&path).is_err());
         assert_eq!(Preferences::load(&path).unwrap().volume, 42);
         settings.volume = 42;
+        for seconds in [MIN_REWIND_SECONDS - 1, MAX_REWIND_SECONDS + 1] {
+            settings.rewind_seconds = seconds;
+            assert!(settings.save(&path).is_err());
+            assert_eq!(Preferences::load(&path).unwrap().rewind_seconds, 90);
+        }
+        settings.rewind_seconds = 90;
         std::fs::write(&path, b"{\"keybindings\":{\"cross\":\"z\"}}").unwrap();
         assert!(Preferences::load(&path).is_err());
         settings.save(&path).unwrap();
@@ -219,9 +398,22 @@ mod tests {
             Preferences::load(&path).unwrap().turbo().unwrap(),
             TurboConfig::default()
         );
+        assert!(Preferences::load(&path).unwrap().bios_path.is_none());
+        assert_eq!(Preferences::load(&path).unwrap().recent_discs, []);
+        assert!(!Preferences::load(&path).unwrap().rewind_enabled);
+        assert_eq!(Preferences::load(&path).unwrap().rewind_seconds, 30);
+        std::fs::write(&path, b"{\"rewind_enabled\":true}").unwrap();
+        assert!(Preferences::load(&path).unwrap().rewind_enabled);
+        assert_eq!(Preferences::load(&path).unwrap().rewind_seconds, 30);
+        for (seconds, valid) in [(4, false), (5, true), (120, true), (121, false)] {
+            std::fs::write(&path, format!("{{\"rewind_seconds\":{seconds}}}")).unwrap();
+            assert_eq!(Preferences::load(&path).is_ok(), valid);
+        }
         std::fs::write(&path, b"{\"turbo_buttons\":32}").unwrap();
         assert!(Preferences::load(&path).is_err());
         std::fs::remove_file(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap(), Preferences::default());
+        assert!(!Preferences::default().rewind_enabled);
+        assert_eq!(Preferences::default().rewind_seconds, 30);
     }
 }

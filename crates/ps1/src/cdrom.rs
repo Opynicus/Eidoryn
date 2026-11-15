@@ -13,20 +13,20 @@ use std::collections::VecDeque;
 pub const COMMAND_CLOCKS: u32 = 2000;
 pub const SECTOR_CLOCKS: u32 = CPU_CLOCK_HZ / 75;
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Command {
     opcode: u8,
     parameters: SmallVec<[u8; 16]>,
     clocks: u32,
 }
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Response {
     interrupt: u8,
     // Current completions use at most eight bytes; longer responses can still spill to the heap.
     bytes: SmallVec<[u8; 8]>,
 }
 
-#[derive(Clone, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
 #[allow(clippy::struct_excessive_bools)] // Independent drive/status bits, not exclusive states.
 pub struct CdRom {
     disc: Option<DiscImage>,
@@ -69,6 +69,25 @@ pub struct CdRom {
 }
 
 impl CdRom {
+    pub fn disc_identity(&self) -> Option<String> {
+        self.disc.as_ref().map(|disc| disc.identity().to_owned())
+    }
+
+    pub(crate) fn validate_state(&self) -> Result<(), String> {
+        if ((self.reading || self.playing) && self.disc.is_none())
+            || self.index > 3
+            || self.parameters.len() > 16
+            || self
+                .command
+                .as_ref()
+                .is_some_and(|command| command.parameters.len() > 16)
+            || (!matches!(self.sector.len(), 0 | 2048 | 2340))
+            || self.data.len() > 2352
+        {
+            return Err("Invalid saved CD-ROM state".into());
+        }
+        self.audio.validate_state()
+    }
     /// Opt-in, bounded diagnostic events; normal emulation does not format logs.
     pub fn enable_trace(&mut self, enabled: bool) {
         self.trace = enabled.then(VecDeque::new);
@@ -672,4 +691,71 @@ impl CdRom {
 
 fn bcd(value: u8) -> u8 {
     (value / 10) << 4 | (value % 10)
+}
+
+#[cfg(test)]
+mod save_state_tests {
+    use super::{COMMAND_CLOCKS, SECTOR_CLOCKS};
+    use crate::{disc::DiscImage, machine::Machine};
+
+    #[test]
+    fn save_state_resumes_disc_command_staging_and_partial_fifo() {
+        let path = std::env::temp_dir().join(format!(
+            "eidoryn-cd-state-{}-{}.iso",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data: Vec<u8> = (0..6 * 2048)
+            .map(|index| (index as u8).wrapping_add((index / 2048) as u8))
+            .collect();
+        std::fs::write(&path, &data).unwrap();
+        let mut original = Machine::demo();
+        original.bus.cdrom.insert(DiscImage::open(&path).unwrap());
+        original.bus.cdrom.write(0, 1);
+        original.bus.cdrom.write(2, 0x1f);
+        original.bus.cdrom.write(0, 0);
+        original.bus.cdrom.write(1, 6); // ReadN, before its command latency expires.
+        original.bus.tick(COMMAND_CLOCKS / 2).unwrap();
+        let mut restored = Machine::load_state(&original.save_state().unwrap()).unwrap();
+        assert!(restored.bus.cdrom.command.is_some());
+        for machine in [&mut original, &mut restored] {
+            machine.bus.tick(COMMAND_CLOCKS / 2).unwrap();
+            assert_eq!(machine.bus.cdrom.irq_flags, 3);
+            machine.bus.cdrom.write(0, 1);
+            machine.bus.cdrom.write(3, 0x1f);
+            machine.bus.cdrom.write(0, 0);
+            machine.bus.tick(SECTOR_CLOCKS).unwrap();
+            assert_eq!(machine.bus.cdrom.sector, data[..2048]);
+            assert_eq!(machine.bus.cdrom.irq_flags, 1);
+        }
+        assert!(original.save_state().unwrap() == restored.save_state().unwrap());
+        // The staged sector has not yet been requested into the CPU-visible FIFO.
+        restored = Machine::load_state(&original.save_state().unwrap()).unwrap();
+        for machine in [&mut original, &mut restored] {
+            machine.bus.cdrom.write(3, 0x80);
+            for &expected in &data[..37] {
+                assert_eq!(machine.bus.cdrom.read_data(), expected);
+            }
+        }
+        restored = Machine::load_state(&restored.save_state().unwrap()).unwrap();
+        assert_eq!(restored.bus.cdrom.data_available(), 2048 - 37);
+        for machine in [&mut original, &mut restored] {
+            for &expected in &data[37..2048] {
+                assert_eq!(machine.bus.cdrom.read_data(), expected);
+            }
+            machine.bus.cdrom.write(0, 1);
+            machine.bus.cdrom.write(3, 0x1f);
+            machine.bus.cdrom.write(0, 0);
+            machine.bus.tick(SECTOR_CLOCKS).unwrap();
+            assert_eq!(machine.bus.cdrom.sector, data[2048..4096]);
+            assert_eq!(machine.bus.cdrom.sectors_read, 2);
+        }
+        assert!(original.save_state().unwrap() == restored.save_state().unwrap());
+        drop(original);
+        drop(restored);
+        std::fs::remove_file(path).unwrap();
+    }
 }

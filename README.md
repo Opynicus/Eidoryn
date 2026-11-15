@@ -23,7 +23,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
 - **Graphics and performance options:** serial and multithreaded software rendering, optional wgpu hardware acceleration with runtime backend detection, enlarged and fullscreen views, and a CRT display filter.
 - **Desktop experience:** English and Simplified Chinese, keyboard navigation, four built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
-- **Media and saves:** ISO, BIN, and multi-track CUE/BIN images; two memory-card slots with automatic persistence.
+- **Media and saves:** ISO, BIN, and multi-track CUE/BIN images; two memory-card slots with automatic persistence, plus timestamped save states for returning to any saved moment.
 - **Debugging tools:** An optional debugger with CPU registers, disassembly, single stepping, and execution slices; an experimental JIT and a headless CLI. Enable the debugger in its workspace or start with `--debugger`.
 
 ## Current Status
@@ -36,7 +36,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 | CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
 | Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
-Save states, CHD images, and disc swapping are not supported. Memory-card saves must be made at a save point or through the game's own menu.
+CHD images and disc swapping are not supported. Memory-card saves use the game's own save points or menus; save states can be created while running or paused.
 
 ## Getting Started
 
@@ -96,6 +96,10 @@ Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are 
 2. Select **Open disc image** and load an ISO or CUE file. For a multi-track BIN image, select the `.cue` that references all tracks.
 3. Select **Run**. Press **F11** to enter or leave fullscreen.
 
+A BIOS successfully chosen in the desktop is remembered as the default and selected automatically on the next launch. **Clear default BIOS** removes that setting without deleting the BIOS file or changing the current session's selection. Startup and disc opening check that the selected BIOS is still available; a missing default is removed from the configuration and reported so you can choose another file. An unreadable or invalid BIOS is reported without discarding the saved path.
+
+The home page keeps the ten most recently opened disc images, newest first. Select a recent game to open it with the current BIOS without returning to the file picker; each entry remembers whether it used homebrew fast boot. **Clear recent games** removes only the history. Startup selects the default BIOS but does not automatically launch a recent game. Explicit command-line BIOS choices apply to that session without replacing the saved default.
+
 You can also start from the command line:
 
 ```bash
@@ -105,6 +109,24 @@ cargo run --locked --release -- \
 
 Memory cards default to `saves/card1.mcd` and `saves/card2.mcd` relative to the current working directory. Use `--card1 PATH` and `--card2 PATH` to choose other files. `--fast-boot` skips BIOS initialization and is intended only for homebrew that does not rely on BIOS services. Run `cargo run --locked --release -- --help` for more options.
 
+### Save states
+
+Select **Save state** below the game display or press **Ctrl+S** to capture the current emulated machine. Each capture creates a new timestamped file in `saves/<game>/` relative to the working directory. Existing captures are retained.
+
+Saving and loading are together below the game display: choose a timestamp from the snapshot dropdown, then select **Load snapshot** to return to that moment. Loading preserves the execution state from just before loading: a running game continues automatically, while a paused or stopped game remains paused; press **F5** or **Run** to resume. The dropdown automatically loads the current game's history on startup and after switching games, newest first. The sidebar's **Save states** page provides the same controls and a refresh button. Successful saves and loads show green notifications; failures show red and leave the current session intact. This restores CPU, memory, graphics, audio, device timing, disc-drive state, and connected memory-card contents together; it also works with memory cards disabled. Original disc images must remain available when restoring disc sessions. Save states use a versioned format and are not guaranteed to work across incompatible emulator versions.
+
+Use **Quick save** (**Ctrl+Shift+S**) and **Quick load** (**Ctrl+Shift+L**) alongside the snapshot controls for a dedicated slot at `saves/<game>/quick/slot.ps1state`. Each game has one quick-save slot: saving replaces that slot without creating additional files or overwriting timestamped history. Quick loading follows the same rule: running games continue, while paused or stopped games remain paused. **Ctrl+S** still creates a separate timestamped snapshot.
+
+To rename a snapshot, select it in the dropdown and use the rename button. The new name must be unique within the current game's save directory; existing files are never overwritten. Renaming keeps the `.ps1state` extension and the captured state unchanged. Newly created snapshots still receive timestamped names.
+
+### Rewind
+
+Open **Settings (F8) → Rewind** to enable recording and set the maximum history duration from **5 to 120 seconds**. Rewind is disabled by default, with a default maximum duration of **30 seconds**. Both settings are remembered; turning recording off releases the history.
+
+Once recording is enabled, hold **Ctrl+Z** or the **Rewind** button to move back through recent gameplay, then release to stop. Audio is muted while rewinding. Releasing resumes a previously running game or keeps a previously paused game paused, using the current controller buttons. The display shows how much recorded history remains.
+
+Complete machine snapshots stay in memory, sampled every 250 ms of emulated time, within the configured duration and an estimated **256 MiB** memory budget. Older snapshots are discarded as either limit is reached, so available history may be shorter than the selected maximum. Rewinding restores one snapshot every 100 ms and stops at the oldest recorded point until released. Continuing from a rewound point replaces the abandoned future history. Changing games, resetting, manually loading a snapshot, or closing the application clears this history. Rewind does not create save files or overwrite normal and quick-save snapshots.
+
 <details>
 <summary>Headless build and tests</summary>
 
@@ -113,7 +135,7 @@ cargo run --locked --release --no-default-features -- --headless --no-memory-car
 cargo test --locked --workspace
 ```
 
-With default features disabled, the core and CLI use the Rust standard library and smallvec for short CD-ROM command buffers. `--frames` counts execution slices, not video frames.
+With default features disabled, the core and CLI build without desktop, audio-output, or GPU dependencies. `--frames` counts execution slices, not video frames.
 
 GPUI follows the official `main` branch; `Cargo.lock` pins the tested revision.
 See [dependency provenance](THIRD_PARTY.md).
@@ -142,6 +164,10 @@ Open **Settings (F8) → Controller** to enable turbo for individual action or s
 | `F12` | Show or hide fullscreen controls |
 | `F9` / `F10` | Run one slice / step one instruction |
 | `Ctrl+R` | Reset the current session |
+| `Ctrl+S` | Create a save state |
+| `Ctrl+Shift+S` | Quick save to the current game's dedicated slot |
+| `Ctrl+Shift+L` | Quick load the current game's dedicated slot |
+| Hold `Ctrl+Z` | Rewind recent gameplay; release to stop |
 
 Use **Tab / Shift+Tab** to navigate controls and **Enter / Space** to activate them. Arrow keys adjust a focused volume slider; **Esc** closes settings or returns keyboard input to the game. Icon buttons show descriptions on hover.
 

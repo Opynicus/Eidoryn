@@ -1,10 +1,11 @@
 //! Original ISO/BIN/CUE image and bounded ISO-9660 reader. No emulator dependencies.
 //! Layout reference: https://psx-spx.consoledev.net/cdromformat/
 use crate::{EmuError, bus::RAM_SIZE};
+use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -18,7 +19,7 @@ pub enum TrackKind {
     Audio,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DiscRegion {
     America,
     Europe,
@@ -57,6 +58,37 @@ pub(crate) struct Track {
 pub struct DiscImage {
     pub(crate) tracks: Vec<Track>,
     pub sectors: u32,
+    source: PathBuf,
+    identity: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiscReference {
+    source: PathBuf,
+    identity: String,
+}
+
+impl serde::Serialize for DiscImage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        DiscReference {
+            source: self.source.clone(),
+            identity: self.identity.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DiscImage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let reference = DiscReference::deserialize(deserializer)?;
+        let disc = Self::open(&reference.source).map_err(serde::de::Error::custom)?;
+        if disc.identity != reference.identity {
+            return Err(serde::de::Error::custom(
+                "Disc image has changed since the save state was created",
+            ));
+        }
+        Ok(disc)
+    }
 }
 
 pub(crate) fn invalid(message: impl Into<String>) -> EmuError {
@@ -94,8 +126,9 @@ impl DiscImage {
             ));
         }
         let sectors = (metadata.len() / size) as u32;
-        Ok(Self {
-            tracks: vec![Track {
+        Self::from_tracks(
+            path,
+            vec![Track {
                 info: TrackInfo {
                     number: 1,
                     kind: if raw && header[15] == 1 {
@@ -113,7 +146,78 @@ impl DiscImage {
                 cooked: !raw,
             }],
             sectors,
+        )
+    }
+
+    pub(crate) fn from_tracks(
+        path: &Path,
+        tracks: Vec<Track>,
+        sectors: u32,
+    ) -> Result<Self, EmuError> {
+        let source = path
+            .canonicalize()
+            .map_err(|error| invalid(error.to_string()))?;
+        let mut digest = Sha256::new();
+        digest.update(b"Eidoryn disc identity v1");
+        digest.update(sectors.to_le_bytes());
+        let mut files = Vec::new();
+        for track in &tracks {
+            digest.update([
+                track.info.number,
+                track.info.kind as u8,
+                u8::from(track.cooked),
+            ]);
+            for value in [
+                track.info.index0_lba,
+                track.info.start_lba,
+                track.info.end_lba,
+                track.file_offset,
+                track.gap,
+            ] {
+                digest.update(value.to_le_bytes());
+            }
+            let file_index =
+                if let Some(index) = files.iter().position(|file| Arc::ptr_eq(file, &track.file)) {
+                    index
+                } else {
+                    files.push(Arc::clone(&track.file));
+                    files.len() - 1
+                };
+            digest.update((file_index as u32).to_le_bytes());
+        }
+        for file in files {
+            let mut file = file
+                .lock()
+                .map_err(|_| invalid("Disc image lock poisoned"))?;
+            let length = file
+                .metadata()
+                .map_err(|error| invalid(error.to_string()))?
+                .len();
+            digest.update(length.to_le_bytes());
+            file.seek(SeekFrom::Start(0))
+                .map_err(|error| invalid(error.to_string()))?;
+            let mut buffer = vec![0_u8; 65_536];
+            let mut remaining = length;
+            while remaining > 0 {
+                let count = usize::try_from(remaining.min(buffer.len() as u64))
+                    .expect("bounded disc hash read");
+                file.read_exact(&mut buffer[..count])
+                    .map_err(|error| invalid(error.to_string()))?;
+                digest.update(&buffer[..count]);
+                remaining -= count as u64;
+            }
+        }
+        Ok(Self {
+            tracks,
+            sectors,
+            source,
+            identity: format!("{:x}", digest.finalize()),
         })
+    }
+
+    /// Content and track-layout identity, independent of the image's filename.
+    pub fn identity(&self) -> &str {
+        &self.identity
     }
 
     pub fn tracks(&self) -> impl Iterator<Item = &TrackInfo> {
@@ -428,6 +532,36 @@ fn bitwise_edc(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn save_state_reopens_cue_and_rejects_changed_audio() {
+        let directory = std::env::temp_dir().join(format!(
+            "eidoryn-disc-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let cue = directory.join("game.cue");
+        std::fs::write(&cue, "FILE \"data.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\nFILE \"audio.bin\" BINARY\n TRACK 02 AUDIO\n INDEX 01 00:00:00\n").unwrap();
+        std::fs::write(directory.join("data.bin"), [0_u8; 2352 * 2]).unwrap();
+        std::fs::write(directory.join("audio.bin"), [42_u8; 2352 * 2]).unwrap();
+        let disc = super::DiscImage::open(&cue).unwrap();
+        let bytes = bincode::serialize(&disc).unwrap();
+        let restored: super::DiscImage = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(disc.identity(), restored.identity());
+        assert_eq!(
+            disc.read_sector(3).unwrap(),
+            restored.read_sector(3).unwrap()
+        );
+        drop(restored);
+        drop(disc);
+        std::fs::write(directory.join("audio.bin"), [43_u8; 2352 * 2]).unwrap();
+        assert!(bincode::deserialize::<super::DiscImage>(&bytes).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn cd_edc_check_vector() {
         assert_eq!(super::edc(b"123456789"), 0x6ec2_edc4);

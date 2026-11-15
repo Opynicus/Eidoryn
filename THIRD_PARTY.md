@@ -7,9 +7,13 @@ core, emulator adapter, or vendored emulator source is used.
 The application now depends on local `eidoryn-ps1` (hardware) and `eidoryn-host`
 (audio, filters, themes) crates. With optional features disabled, `eidoryn-host`
 uses only the Rust standard library. `eidoryn-ps1` uses smallvec 1.16.5
-(MIT/Apache-2.0, `union` feature) for private CD-ROM command parameters and delayed
+(MIT/Apache-2.0, `union` and `serde` features) for private CD-ROM command parameters and delayed
 responses. The inline capacities are 16 and 8 bytes; larger values can still use
 heap storage. Existing sector and FIFO buffers retain their reusable capacities.
+
+Full-machine save states use serde (MIT/Apache-2.0) and bincode 1.3.3 (MIT) for
+binary serialization, plus sha2 (MIT/Apache-2.0) for snapshot checksums and disc
+content identities. These dependencies are also enabled in headless builds.
 
 The optional `dx12`, `metal`, `vulkan` and `opengl` features use wgpu 30.0.2 for safe resource and compute
 submission APIs, pollster 1.0.1 for initialization, and bytemuck 1.25.2 for safe

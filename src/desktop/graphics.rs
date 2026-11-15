@@ -356,7 +356,7 @@ impl Desktop {
     }
 }
 
-fn switch(
+pub(super) fn switch(
     fonts: &super::fonts::Fonts,
     p: &Palette,
     id: &'static str,
