@@ -20,6 +20,7 @@ test-assets/
 /dist/
 __pycache__/
 
-# Keep docs/ limited to the architecture document.
+# Keep docs/ limited to maintained architecture and benchmark documentation.
 /docs/*
 !/docs/ARCHITECTURE.md
+!/docs/REWIND_PERFORMANCE.md

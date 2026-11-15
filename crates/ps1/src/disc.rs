@@ -96,6 +96,17 @@ pub(crate) fn invalid(message: impl Into<String>) -> EmuError {
 }
 
 impl DiscImage {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.tracks.capacity() * size_of::<Track>()
+            + self.source.capacity()
+            + self.identity.capacity()
+            + self
+                .tracks
+                .iter()
+                .map(|track| crate::state::shared_bytes(track.file.as_ref()))
+                .sum::<usize>()
+    }
+
     pub fn open(path: &Path) -> Result<Self, EmuError> {
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
         if ext.eq_ignore_ascii_case("cue") {

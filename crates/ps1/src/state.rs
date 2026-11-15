@@ -18,8 +18,10 @@ pub struct RewindState {
 }
 
 impl RewindState {
-    /// Conservative accounting for a bounded history, including shared scanout
-    /// pixels. Queue capacity and track metadata are deliberately overestimated.
+    /// Conservative history charge, including dynamic capacity and this value's
+    /// inline storage. Shared allocations are charged in full for each snapshot;
+    /// this is not deduplicated memory use or RSS. The 2x margin and 64 KiB reserve
+    /// cover allocator overhead and keep the existing history budget conservative.
     pub fn memory_size(&self) -> usize {
         self.memory_size
     }
@@ -31,6 +33,10 @@ impl RewindState {
     }
 }
 
+pub(crate) fn shared_bytes<T: ?Sized>(value: &T) -> usize {
+    size_of_val(value) + 2 * size_of::<usize>()
+}
+
 fn codec() -> impl Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
@@ -39,6 +45,27 @@ fn codec() -> impl Options {
 }
 
 impl Machine {
+    fn rewind_heap_bytes(&self) -> usize {
+        let error_bytes = match &self.halted {
+            Some(
+                crate::EmuError::GpuBackend(error)
+                | crate::EmuError::Jit(error)
+                | crate::EmuError::InvalidImage(error),
+            ) => error.capacity(),
+            _ => 0,
+        };
+        // clone_guest leaves the DMA scratch set and native execution cache empty.
+        self.title.capacity()
+            + error_bytes
+            + self.bus.ram.capacity()
+            + shared_bytes(&self.bus.bios[..])
+            + self.bus.gpu.rewind_heap_bytes()
+            + self.bus.cdrom.heap_bytes()
+            + self.bus.spu.heap_bytes()
+            + self.bus.sio.heap_bytes()
+            + self.bus.mdec.heap_bytes()
+    }
+
     /// Capture a rewind point without file I/O, checksumming, or cloning host
     /// caches. GPU work finishes before VRAM and the completed frame are copied.
     pub fn rewind_state(&self) -> Result<RewindState, String> {
@@ -50,15 +77,10 @@ impl Machine {
         if let Some(error) = self.bus.gpu.renderer_error() {
             return Err(format!("Cannot capture rewind state: {error}"));
         }
-        // Disc serialization only measures its cached path and identity, never
-        // reopens or hashes the image. The snapshot renderer is already serial.
-        let serialized = codec()
-            .serialized_size(&machine)
-            .map_err(|error| format!("Cannot size rewind state: {error}"))?;
-        let memory_size = usize::try_from(serialized)
-            .ok()
-            .and_then(|size| size.checked_mul(2))
-            .and_then(|size| size.checked_add(size_of::<Machine>() + 65_536))
+        let memory_size = machine
+            .rewind_heap_bytes()
+            .checked_mul(2)
+            .and_then(|size| size.checked_add(size_of::<RewindState>() + 65_536))
             .ok_or("Rewind state size overflow")?;
         Ok(RewindState {
             machine,
@@ -204,6 +226,23 @@ pub(crate) fn static_error(value: &str) -> Result<&'static str, &'static str> {
 mod tests {
     use super::*;
     use crate::{cpu::Cpu, cpu_engine::CpuMode, demo, gpu::RendererMode, memory_card::MemoryCard};
+
+    #[test]
+    fn rewind_charge_tracks_audio_and_is_stable_for_shared_cards() {
+        let mut machine = Machine::demo();
+        machine.bus.sio.cards[0] = Some(MemoryCard::formatted());
+        let first = machine.rewind_state().unwrap();
+        let second = machine.rewind_state().unwrap();
+        assert_eq!(first.memory_size(), second.memory_size());
+        let third = machine.rewind_state().unwrap();
+        assert_eq!(first.memory_size(), third.memory_size());
+        machine.bus.tick(crate::spu::SAMPLE_CLOCKS * 1024).unwrap();
+        let with_audio = machine.rewind_state().unwrap().memory_size();
+        let queued = machine.bus.spu.drain_audio().count();
+        let without_audio = machine.rewind_state().unwrap().memory_size();
+        assert!(with_audio >= without_audio + 2 * queued * size_of::<crate::spu::StereoFrame>());
+        assert_eq!(first.memory_size(), second.memory_size());
+    }
 
     #[test]
     fn rewind_preserves_guest_state_without_retaining_host_backends() {

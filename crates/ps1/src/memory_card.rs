@@ -1,5 +1,7 @@
 //! Independently implemented 128 KiB PS1 card and byte-serial protocol.
 //! Register/protocol reference: https://psx-spx.consoledev.net/controllersandmemorycards/
+use std::sync::Arc;
+
 pub const CARD_SIZE: usize = 128 * 1024;
 pub const SECTOR_SIZE: usize = 128;
 pub const SECTORS: usize = CARD_SIZE / SECTOR_SIZE;
@@ -9,7 +11,7 @@ pub type Cards = [Option<MemoryCard>; 2];
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct MemoryCard {
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     flag: u8,
     position: usize,
     command: u8,
@@ -47,7 +49,7 @@ impl MemoryCard {
             ));
         }
         Ok(Self {
-            bytes,
+            bytes: bytes.into(),
             flag: 8,
             position: 0,
             command: 0,
@@ -190,9 +192,9 @@ impl MemoryCard {
                 };
                 if self.result == 0x47 {
                     let start = usize::from(self.address) * SECTOR_SIZE;
-                    let target = &mut self.bytes[start..start + SECTOR_SIZE];
-                    if target != self.buffer {
-                        target.copy_from_slice(&self.buffer);
+                    if self.bytes[start..start + SECTOR_SIZE] != self.buffer {
+                        Arc::make_mut(&mut self.bytes)[start..start + SECTOR_SIZE]
+                            .copy_from_slice(&self.buffer);
                         self.revision += 1;
                     }
                     self.writes += 1;

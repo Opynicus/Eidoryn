@@ -26,6 +26,10 @@ impl Default for CdAudio {
 }
 
 impl CdAudio {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.samples.capacity() * size_of::<StereoFrame>()
+    }
+
     pub(crate) fn validate_state(&self) -> Result<(), String> {
         self.decoder.validate_state()
     }

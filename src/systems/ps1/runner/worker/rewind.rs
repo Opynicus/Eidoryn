@@ -162,7 +162,7 @@ impl Worker {
         let capture = self.machine.rewind_state().and_then(|state| {
             let bytes = state
                 .memory_size()
-                .saturating_add(std::mem::size_of::<Checkpoint>());
+                .saturating_add(size_of::<Checkpoint>() - size_of::<RewindState>());
             self.rewind.push(
                 Checkpoint {
                     state,

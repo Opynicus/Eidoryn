@@ -71,6 +71,12 @@ impl Default for Spu {
     }
 }
 impl Spu {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.ram.capacity()
+            + self.fifo.capacity() * size_of::<u16>()
+            + self.output.capacity() * size_of::<StereoFrame>()
+    }
+
     pub(crate) fn validate_state(&self) -> Result<(), String> {
         if self.ram.len() != RAM_SIZE
             || self.cursor >= RAM_SIZE

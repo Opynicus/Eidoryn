@@ -53,7 +53,8 @@ fn word_fast_paths_preserve_region_edges_and_ram_mirror_crossings() {
     }
     bus.write32(0x9f80_03fc, 0x7654_3210).unwrap();
     assert_eq!(bus.peek32(0xbf80_03fc), Some(0x7654_3210));
-    bus.bios[0x7fffc..].copy_from_slice(&0xfedc_ba98u32.to_le_bytes());
+    std::sync::Arc::make_mut(&mut bus.bios)[0x7fffc..]
+        .copy_from_slice(&0xfedc_ba98u32.to_le_bytes());
     assert_eq!(bus.peek32(0xbfc7_fffc), Some(0xfedc_ba98));
     for address in [0x007f_fffd, 0x1f80_03fd, 0x1fc7_fffd, 0xffff_fffe] {
         assert_eq!(bus.peek32(address), None);

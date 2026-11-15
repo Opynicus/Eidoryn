@@ -1,5 +1,5 @@
 use crate::{EmuError, cdrom::CdRom, gpu::Gpu, mdec::Mdec, sio::Sio, spu::Spu, timers::Timers};
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 mod dma;
 
 pub const RAM_SIZE: usize = 2 * 1024 * 1024;
@@ -22,7 +22,8 @@ struct MdecTransfer {
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Bus {
     pub ram: Vec<u8>,
-    pub bios: Vec<u8>,
+    /// Guest-read-only ROM, shared by checkpoints; host edits use `Arc::make_mut`.
+    pub bios: Arc<[u8]>,
     pub gpu: Gpu,
     pub cdrom: CdRom,
     pub spu: Spu,
@@ -54,7 +55,7 @@ impl Default for Bus {
     fn default() -> Self {
         Self {
             ram: vec![0; RAM_SIZE],
-            bios: vec![0; BIOS_SIZE],
+            bios: vec![0; BIOS_SIZE].into(),
             gpu: Gpu::default(),
             cdrom: CdRom::default(),
             spu: Spu::default(),
@@ -91,7 +92,7 @@ impl Bus {
     pub(crate) fn clone_guest(&self) -> Self {
         Self {
             ram: self.ram.clone(),
-            bios: self.bios.clone(),
+            bios: Arc::clone(&self.bios),
             gpu: self.gpu.clone(),
             cdrom: self.cdrom.clone(),
             spu: self.spu.clone(),

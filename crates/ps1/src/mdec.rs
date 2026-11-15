@@ -69,6 +69,10 @@ impl Default for Mdec {
 }
 
 impl Mdec {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.input.capacity() * size_of::<u16>() + self.output.capacity() * size_of::<u32>()
+    }
+
     pub(crate) fn validate_state(&self) -> Result<(), String> {
         let table_limit = match self.operation {
             Operation::Quant => 128,

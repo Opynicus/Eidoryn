@@ -6,6 +6,7 @@ use crate::{
     demo,
     disc::DiscImage,
 };
+use std::sync::Arc;
 
 pub const INSTRUCTIONS_PER_SLICE: usize = 20_000;
 
@@ -57,7 +58,7 @@ impl Machine {
                     "BIOS must be exactly 512 KiB".into(),
                 ));
             }
-            machine.bus.bios.copy_from_slice(bios);
+            Arc::make_mut(&mut machine.bus.bios).copy_from_slice(bios);
         }
         machine.bus.cdrom.insert(disc);
         Ok(machine)
@@ -93,7 +94,7 @@ impl Machine {
             )));
         }
         let mut machine = Self::empty(0xbfc0_0000, title);
-        machine.bus.bios.copy_from_slice(bytes);
+        Arc::make_mut(&mut machine.bus.bios).copy_from_slice(bytes);
         Ok(machine)
     }
 
