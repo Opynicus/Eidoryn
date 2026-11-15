@@ -43,6 +43,16 @@ pub struct Sio {
 }
 
 impl Sio {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.received.capacity()
+            + self
+                .cards
+                .iter()
+                .flatten()
+                .map(|card| crate::state::shared_bytes(card.bytes()))
+                .sum::<usize>()
+    }
+
     pub(crate) fn validate_state(&self) -> Result<(), String> {
         for card in self.cards.iter().flatten() {
             card.validate_state()?;

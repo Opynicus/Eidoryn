@@ -69,6 +69,32 @@ pub struct CdRom {
 }
 
 impl CdRom {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.disc.as_ref().map_or(0, DiscImage::heap_bytes)
+            + spilled_bytes(&self.parameters)
+            + self.response.capacity()
+            + self
+                .command
+                .as_ref()
+                .map_or(0, |command| spilled_bytes(&command.parameters))
+            + self
+                .completion
+                .as_ref()
+                .map_or(0, |(_, response)| spilled_bytes(&response.bytes))
+            + self
+                .play_completion
+                .as_ref()
+                .map_or(0, |response| spilled_bytes(&response.bytes))
+            + self.audio.heap_bytes()
+            + self.sector.capacity()
+            + self.data.capacity()
+            + self.trace.as_ref().map_or(0, |trace| {
+                trace.capacity() * size_of::<String>()
+                    + trace.iter().map(String::capacity).sum::<usize>()
+            })
+            + self.last_error.as_ref().map_or(0, String::capacity)
+    }
+
     pub fn disc_identity(&self) -> Option<String> {
         self.disc.as_ref().map(|disc| disc.identity().to_owned())
     }
@@ -689,14 +715,40 @@ impl CdRom {
     }
 }
 
+fn spilled_bytes<A: smallvec::Array<Item = u8>>(bytes: &SmallVec<A>) -> usize {
+    if bytes.spilled() { bytes.capacity() } else { 0 }
+}
+
 fn bcd(value: u8) -> u8 {
     (value / 10) << 4 | (value % 10)
 }
 
 #[cfg(test)]
 mod save_state_tests {
-    use super::{COMMAND_CLOCKS, SECTOR_CLOCKS};
+    use super::{COMMAND_CLOCKS, CdRom, Response, SECTOR_CLOCKS};
     use crate::{disc::DiscImage, machine::Machine};
+
+    #[test]
+    fn rewind_charge_includes_retained_buffers_spilled_responses_and_trace_text() {
+        let mut cdrom = CdRom::default();
+        let empty = cdrom.heap_bytes();
+        cdrom.sector.reserve(4096);
+        assert!(cdrom.sector.is_empty());
+        let buffered = cdrom.heap_bytes();
+        assert!(buffered >= empty + 4096);
+        let mut response = Response {
+            interrupt: 1,
+            bytes: Default::default(),
+        };
+        response.bytes.reserve(64);
+        cdrom.completion = Some((0, response));
+        let spilled = cdrom.heap_bytes();
+        assert!(spilled >= buffered + 64);
+        let mut message = String::with_capacity(1024);
+        message.push_str("CD trace");
+        cdrom.trace = Some([message].into());
+        assert!(cdrom.heap_bytes() >= spilled + 1024);
+    }
 
     #[test]
     fn save_state_resumes_disc_command_staging_and_partial_fifo() {

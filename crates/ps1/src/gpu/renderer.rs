@@ -188,6 +188,14 @@ impl<'de> serde::Deserialize<'de> for Renderer {
 }
 
 impl Renderer {
+    pub(super) fn rewind_heap_bytes(&self) -> usize {
+        let Backend::Serial(raster) = &*self.backend.borrow() else {
+            unreachable!("rewind snapshots contain only serial renderers");
+        };
+        raster.vram.capacity() * size_of::<u16>()
+            + self.inherited_error.as_ref().map_or(0, String::capacity)
+    }
+
     pub(super) fn validate_state(&self) -> Result<(), String> {
         self.snapshot().validate_state()
     }

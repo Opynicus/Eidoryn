@@ -173,6 +173,14 @@ impl Default for Gpu {
 }
 
 impl Gpu {
+    pub(crate) fn rewind_heap_bytes(&self) -> usize {
+        self.packet.capacity() * size_of::<u32>()
+            + self.renderer.rewind_heap_bytes()
+            + self.completed_frame.as_ref().map_or(0, |frame| {
+                crate::state::shared_bytes(frame.get().rgb.as_ref())
+            })
+    }
+
     pub(crate) fn validate_state(&self) -> Result<(), String> {
         self.renderer.validate_state()?;
         let transfer_valid = |transfer: &Transfer| {
