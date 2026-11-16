@@ -397,7 +397,7 @@ pub(super) fn print_help() {
         --inspect-disc PATH Inspect tracks and boot EXE without executing\n\
         --exe PATH          BIOS-independent PS-X EXE\n\
         --bios PATH         512 KiB BIOS (provide your own)\n\
-        --disc PATH         CUE/BIN or ISO; requires --bios or --fast-boot\n\
+        --disc PATH         CUE/BIN, ISO or CHD; requires --bios or --fast-boot\n\
         --fast-boot         Load EXE from disc; skips BIOS, homebrew only\n\n\
         Keys: F5 = run/pause; F9 = slice; F10 = instruction; Ctrl+R = reset.\n\
         F6 = game/inspector view; F7 = cycle CRT; F8 = graphics settings.\n\
