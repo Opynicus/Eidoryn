@@ -8,6 +8,7 @@ mod adpcm;
 pub mod bus;
 mod cd_audio;
 pub mod cdrom;
+mod chd;
 pub mod cpu;
 pub mod cpu_engine;
 mod cue;

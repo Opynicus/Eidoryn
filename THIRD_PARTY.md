@@ -15,6 +15,12 @@ Full-machine save states use serde (MIT/Apache-2.0) and bincode 1.3.3 (MIT) for
 binary serialization, plus sha2 (MIT/Apache-2.0) for snapshot checksums and disc
 content identities. These dependencies are also enabled in headless builds.
 
+CHD containers are decoded with [chd 0.4.0](https://github.com/SnowflakePowered/chd-rs)
+(BSD-3-Clause), a pure Rust image-format library. The local disc reader maps CD
+track metadata and sectors into the existing CD-ROM controller, decompressing
+one hunk at a time and caching it for nearby reads. This dependency is also
+enabled in headless builds; no external `chdman` installation is required.
+
 The optional `dx12`, `metal`, `vulkan` and `opengl` features use wgpu 30.0.2 for safe resource and compute
 submission APIs, pollster 1.0.1 for initialization, and bytemuck 1.25.2 for safe
 integer-slice byte views. These are general-purpose libraries; PS1 command

@@ -23,7 +23,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
 - **Graphics and performance options:** serial and multithreaded software rendering, optional wgpu hardware acceleration with runtime backend detection, enlarged and fullscreen views, and a CRT display filter.
 - **Desktop experience:** English and Simplified Chinese, keyboard navigation, four built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
-- **Media and saves:** ISO, BIN, and multi-track CUE/BIN images; two memory-card slots with automatic persistence, plus timestamped save states for returning to any saved moment.
+- **Media and saves:** ISO, BIN, multi-track CUE/BIN, and CHD CD images; two memory-card slots with automatic persistence, plus timestamped save states for returning to any saved moment.
 - **Debugging tools:** An optional debugger with CPU registers, disassembly, single stepping, and execution slices; an experimental JIT and a headless CLI. Enable the debugger in its workspace or start with `--debugger`.
 
 ## Current Status
@@ -36,7 +36,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 | CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
 | Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
-CHD images and disc swapping are not supported. Memory-card saves use the game's own save points or menus; save states can be created while running or paused.
+Disc swapping is not supported. Memory-card saves use the game's own save points or menus; save states can be created while running or paused.
 
 ## Getting Started
 
@@ -93,8 +93,10 @@ Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are 
 ### Load a game
 
 1. Select **Choose BIOS** and load your own 512 KiB BIOS file.
-2. Select **Open disc image** and load an ISO or CUE file. For a multi-track BIN image, select the `.cue` that references all tracks.
+2. Select **Open disc image** and load an ISO, CUE, or CHD file. For a multi-track BIN image, select the `.cue` that references all tracks.
 3. Select **Run**. Press **F11** to enter or leave fullscreen.
+
+CHD support covers standalone, single-session CD-ROM images. Images requiring a parent CHD and GD-ROM images are not supported.
 
 A BIOS successfully chosen in the desktop is remembered as the default and selected automatically on the next launch. **Clear default BIOS** removes that setting without deleting the BIOS file or changing the current session's selection. Startup and disc opening check that the selected BIOS is still available; a missing default is removed from the configuration and reported so you can choose another file. An unreadable or invalid BIOS is reported without discarding the saved path.
 
