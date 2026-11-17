@@ -106,7 +106,7 @@ fn voice_fetch_and_cd_capture_raise_irq_and_cd_ignores_spu_mute() {
 fn audio_transport_resamples_mutes_clears_and_limits_latency() {
     let audio = AudioBuffer::default();
     audio.set_playing(true);
-    audio.push(std::iter::repeat_n([16384, -16384], 2048));
+    audio.push(&[[16384, -16384]; 2048]);
     let mut output = [0.0_f32; 400];
     audio.render(&mut output, 2, 48_000, |s| s);
     for pair in output.as_chunks::<2>().0 {
@@ -122,7 +122,8 @@ fn audio_transport_resamples_mutes_clears_and_limits_latency() {
     audio.set_volume(100);
     audio.render(&mut output, 2, 48_000, |s| s);
     assert!(output.iter().all(|s| *s == 0.0));
-    audio.push(std::iter::repeat_n([123; 2], 10_000));
+    let oversized = vec![[123; 2]; 10_000];
+    audio.push(&oversized);
     assert_eq!(audio.stats().queued_frames, 4096);
     assert_eq!(audio.stats().dropped_frames, 5904);
     audio.clear();
