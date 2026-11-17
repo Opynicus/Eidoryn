@@ -410,6 +410,50 @@ mod tests {
     }
 
     #[test]
+    fn save_state_resumes_mdec_table_transfers_and_completed_idle() {
+        for (command, word_count) in [(0x4000_0000, 16), (0x4000_0001, 32), (0x6000_0000, 32)] {
+            let words: Vec<u32> = (0..word_count)
+                .map(|index| 0x0302_0100 + index as u32 * 0x0404_0404)
+                .collect();
+            for written in [0, word_count / 2, word_count - 1, word_count] {
+                let context = format!("command {command:#010x}, {written}/{word_count} words");
+                let mut original = Machine::demo();
+                original.bus.write32(0x1f80_1820, command).unwrap();
+                for &word in &words[..written] {
+                    original.bus.write32(0x1f80_1820, word).unwrap();
+                }
+                assert_eq!(
+                    original.bus.mdec.status() & (1 << 29) != 0,
+                    written < word_count,
+                    "{context}"
+                );
+                let bytes = original.save_state().unwrap();
+                let mut restored = Machine::load_state(&bytes)
+                    .unwrap_or_else(|error| panic!("{context}: {error}"));
+                assert_eq!(restored.save_state().unwrap(), bytes, "{context}");
+
+                for machine in [&mut original, &mut restored] {
+                    for &word in &words[written..] {
+                        machine.bus.write32(0x1f80_1820, word).unwrap();
+                    }
+                    assert_eq!(machine.bus.mdec.status() & (1 << 29), 0, "{context}");
+                    // A restored completed transfer must accept the next command.
+                    machine.bus.write32(0x1f80_1820, 0x2800_0001).unwrap();
+                    machine.bus.write32(0x1f80_1820, 0xfe00_0480).unwrap();
+                    assert_eq!(machine.bus.mdec.commands, 2, "{context}");
+                    assert_eq!(machine.bus.mdec.blocks_decoded, 1, "{context}");
+                    machine.run_steps(16).unwrap();
+                }
+                assert_eq!(
+                    restored.save_state().unwrap(),
+                    original.save_state().unwrap(),
+                    "continued execution: {context}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn save_state_preserves_voice_decoder_and_audio_output() {
         let mut machine = Machine::demo();
         let spu = &mut machine.bus.spu;

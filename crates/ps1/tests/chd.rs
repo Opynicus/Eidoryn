@@ -1,5 +1,8 @@
 use eidoryn_ps1::disc::{DiscImage, TrackKind};
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 const FRAME: usize = 2448;
 const HUNK: usize = FRAME * 2;
@@ -8,13 +11,21 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "eidoryn-chd-{}-{}",
-            std::process::id(),
+        Self::at_timestamp(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+        )
+    }
+
+    fn at_timestamp(timestamp: u128) -> Self {
+        // Concurrent tests can observe the same system-clock timestamp.
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "eidoryn-chd-{}-{timestamp}-{id}",
+            std::process::id(),
         ));
         std::fs::create_dir(&path).unwrap();
         Self(path)
@@ -31,6 +42,20 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn fixtures_with_the_same_timestamp_keep_files_and_cleanup_isolated() {
+    let first = Fixture::at_timestamp(0);
+    let second = Fixture::at_timestamp(0);
+    assert_ne!(first.0, second.0);
+    let first_image = first.image("same.chd", &[1]);
+    let second_image = second.image("same.chd", &[2]);
+    assert_eq!(std::fs::read(&first_image).unwrap(), [1]);
+    assert_eq!(std::fs::read(&second_image).unwrap(), [2]);
+    drop(first);
+    assert!(!first_image.exists());
+    assert_eq!(std::fs::read(second_image).unwrap(), [2]);
 }
 
 // Original test data in the documented uncompressed v5 layout; no chdman or

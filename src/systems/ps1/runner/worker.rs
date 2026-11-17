@@ -790,6 +790,80 @@ mod tests {
     }
 
     #[test]
+    fn hardware_validation_failure_preserves_running_and_paused_sessions() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-invalid-hardware-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for running in [false, true] {
+            let audio = AudioBuffer::default();
+            let mut worker = Worker::new(
+                Machine::demo(),
+                running,
+                CardStore::default(),
+                Some(audio.clone()),
+                SnapshotMode::Display,
+            );
+            worker.states = StateStore::new(&root, &worker.initial);
+            worker.apply(Command::SetButtons(0x8000));
+            worker.machine.run_slice().unwrap();
+            audio.set_playing(running);
+            // Use the normal encoders so both checksums pass and loading reaches
+            // Machine's hardware validation before the runner rejects the state.
+            let mut invalid = Machine::demo();
+            invalid.bus.ram.clear();
+            let path = worker.states.save(&invalid, &PadInput::default()).unwrap();
+            worker
+                .states
+                .save_quick(&invalid, &PadInput::default())
+                .unwrap();
+            for quick in [false, true] {
+                audio.push([[123, -123]; 64]);
+                let queued = audio.stats().queued_frames;
+                let before = worker.machine.save_state().unwrap();
+                let input = worker.input.save_state();
+                let pacing = worker.pacing;
+                let mut expected = worker.machine.clone();
+                worker.apply(if quick {
+                    Command::QuickLoad
+                } else {
+                    Command::LoadState { path: path.clone() }
+                });
+                assert!(
+                    worker
+                        .message
+                        .as_deref()
+                        .unwrap()
+                        .contains("Invalid saved RAM or BIOS size"),
+                    "running={running}, quick={quick}"
+                );
+                assert!(worker.success_message.is_none());
+                assert_eq!(worker.running, running);
+                assert_eq!(worker.machine.save_state().unwrap(), before);
+                assert_eq!(worker.input.save_state(), input);
+                assert_eq!(worker.pacing, pacing);
+                assert_eq!(audio.stats().queued_frames, queued);
+                audio.push([[123, -123]; 4]);
+                assert_eq!(
+                    audio.stats().queued_frames,
+                    queued + if running { 4 } else { 0 }
+                );
+                worker.machine.run_slice().unwrap();
+                expected.run_slice().unwrap();
+                assert_eq!(
+                    worker.machine.save_state().unwrap(),
+                    expected.save_state().unwrap()
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rename_reports_new_path_without_changing_execution() {
         let root = std::env::temp_dir().join(format!(
             "eidoryn-worker-rename-{}-{}",
