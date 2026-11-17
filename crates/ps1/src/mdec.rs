@@ -74,13 +74,19 @@ impl Mdec {
     }
 
     pub(crate) fn validate_state(&self) -> Result<(), String> {
-        let table_limit = match self.operation {
-            Operation::Quant => 128,
-            Operation::Scale => 64,
-            _ => usize::MAX,
+        let transfer = match self.operation {
+            Operation::Quant => Some((if self.command & 1 == 0 { 64 } else { 128 }, 4)),
+            Operation::Scale => Some((64, 2)),
+            _ => None,
         };
-        if (self.remaining != 0 && self.table_index >= table_limit)
-            || self.block > 5
+        if let Some((limit, stride)) = transfer
+            && (self.table_index > limit
+                || !self.table_index.is_multiple_of(stride)
+                || self.remaining as usize > (limit - self.table_index) / stride)
+        {
+            return Err("Invalid saved MDEC table transfer".into());
+        }
+        if self.block > 5
             || self.output_block > 5
             || self.coefficient_index.is_some_and(|index| index >= 64)
             || self.input.len() > 64
@@ -363,3 +369,102 @@ const SCAN: [usize; 64] = {
     }
     result
 };
+
+#[cfg(test)]
+mod game_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::machine::Machine;
+
+    fn invalid_table_transfers() -> impl Iterator<Item = Mdec> {
+        [
+            (0x4000_0000, 64, 4),
+            (0x4000_0001, 128, 4),
+            (0x6000_0000, 64, 2),
+        ]
+        .into_iter()
+        .flat_map(|(command, limit, stride)| {
+            [
+                (1, 1),
+                (limit - 1, 1),
+                (limit - 1, 0),
+                (limit - stride, 2),
+                (0, (limit / stride + 1) as u32),
+                (0, u32::MAX),
+                (limit, 1),
+                (limit + stride, 0),
+                (limit + stride, 1),
+                (usize::MAX, 1),
+            ]
+            .into_iter()
+            .map(move |(table_index, remaining)| {
+                let mut mdec = Mdec::default();
+                mdec.write_data(command).unwrap();
+                mdec.table_index = table_index;
+                mdec.remaining = remaining;
+                mdec
+            })
+        })
+    }
+
+    #[test]
+    fn rejects_invalid_table_transfers() {
+        for mdec in invalid_table_transfers() {
+            assert_eq!(
+                mdec.validate_state().err().as_deref(),
+                Some("Invalid saved MDEC table transfer"),
+                "command {:#010x}, index {}, remaining {}",
+                mdec.command,
+                mdec.table_index,
+                mdec.remaining,
+            );
+        }
+    }
+
+    #[test]
+    fn machine_load_rejects_invalid_mdec_transfers_with_valid_checksums() {
+        let mut machine = Machine::demo();
+        for mdec in invalid_table_transfers() {
+            machine.bus.mdec = mdec;
+            // The regular serializer supplies a valid header and payload checksum.
+            let bytes = machine.save_state().unwrap();
+            assert_eq!(
+                Machine::load_state(&bytes).err().as_deref(),
+                Some("Invalid saved MDEC table transfer"),
+                "command {:#010x}, index {}, remaining {}",
+                machine.bus.mdec.command,
+                machine.bus.mdec.table_index,
+                machine.bus.mdec.remaining,
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_bounded_partial_and_empty_table_transfers() {
+        for (command, limit, stride) in [
+            (0x4000_0000, 64, 4),
+            (0x4000_0001, 128, 4),
+            (0x6000_0000, 64, 2),
+        ] {
+            for (table_index, remaining) in [(0, 1), (stride, 1), (0, 0), (limit, 0)] {
+                let mut mdec = Mdec::default();
+                mdec.write_data(command).unwrap();
+                mdec.table_index = table_index;
+                mdec.remaining = remaining;
+                assert_eq!(
+                    mdec.validate_state(),
+                    Ok(()),
+                    "command {command:#010x}, index {table_index}, remaining {remaining}",
+                );
+                if remaining != 0 {
+                    mdec.write_data(0x1234_5678).unwrap();
+                    assert!(mdec.operation == Operation::Idle);
+                } else {
+                    assert!(mdec.write_data(0x1234_5678).is_err());
+                }
+            }
+        }
+    }
+}
