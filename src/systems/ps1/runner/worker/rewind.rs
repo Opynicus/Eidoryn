@@ -494,7 +494,7 @@ mod tests {
         }
         worker.apply(Command::SetButtons(0x4000));
         audio.set_playing(true);
-        audio.push([[100, 100]; 8]);
+        audio.push(&[[100, 100]; 8]);
         assert_eq!(audio.stats().queued_frames, 8);
         worker.apply(Command::SetRewinding(true));
         assert!(!worker.running);
@@ -526,7 +526,7 @@ mod tests {
             worker.machine.bus.gpu.renderer_mode(),
             RendererMode::Threaded
         );
-        audio.push([[100, 100]; 8]);
+        audio.push(&[[100, 100]; 8]);
         assert_eq!(audio.stats().queued_frames, 8);
         assert!(worker.flush_cards(true));
         assert_eq!(fs::read(&card_path).unwrap()[1024], initial_card_byte);
@@ -537,7 +537,7 @@ mod tests {
         worker.apply(Command::SetRewinding(true));
         worker.apply(Command::SetRewinding(false));
         assert!(!worker.running);
-        audio.push([[100, 100]; 8]);
+        audio.push(&[[100, 100]; 8]);
         assert_eq!(audio.stats().queued_frames, 0);
         drop(worker);
         fs::remove_dir_all(root).unwrap();

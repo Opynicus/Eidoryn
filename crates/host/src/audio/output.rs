@@ -84,11 +84,30 @@ mod tests {
     use cpal::Sample;
 
     #[test]
+    fn i16_and_f32_callbacks_preserve_levels_and_silence() {
+        let buffer = AudioBuffer::default();
+        buffer.set_volume(100);
+        buffer.set_playing(true);
+        buffer.push(&[[16_384, -16_384]; 2048]);
+        let mut signed = [0_i16; 2];
+        let mut float = [0.0_f32; 2];
+        buffer.render(&mut signed, 2, 48_000, i16::from_sample);
+        buffer.render(&mut float, 2, 48_000, f32::from_sample);
+        assert_eq!(signed, [16_384, -16_384]);
+        assert_eq!(float, [0.5, -0.5]);
+        buffer.set_playing(false);
+        buffer.render(&mut signed, 2, 48_000, i16::from_sample);
+        buffer.render(&mut float, 2, 48_000, f32::from_sample);
+        assert_eq!(signed, [0; 2]);
+        assert_eq!(float, [0.0; 2]);
+    }
+
+    #[test]
     fn pcm24_callbacks_preserve_levels_and_silence() {
         let buffer = AudioBuffer::default();
         buffer.set_volume(100);
         buffer.set_playing(true);
-        buffer.push(std::iter::repeat_n([16_384, -16_384], 2048));
+        buffer.push(&[[16_384, -16_384]; 2048]);
         let mut signed = [cpal::I24::from_sample(0.0); 2];
         let mut unsigned = [cpal::U24::from_sample(0.0); 2];
         buffer.render(&mut signed, 2, 48_000, cpal::I24::from_sample);
