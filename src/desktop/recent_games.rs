@@ -1,30 +1,53 @@
 use super::{
     Desktop,
-    components::{button, card, label, pair},
+    components::{button, card, label, pair, tooltip},
 };
 use eidoryn_psx::{
     i18n::Text,
     systems::ps1::runner::{Command, SelectedMedia, Snapshot},
 };
 use gpui::{Context, div, prelude::*, px};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 impl Desktop {
+    pub(super) fn bios_file(
+        &self,
+        id: &'static str,
+        title: Text,
+        path: Option<&Path>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let palette = self.themes.active().palette;
+        let name = path.map_or_else(
+            || self.tr(Text::NotSelected).into(),
+            |path| {
+                path.file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy()
+            },
+        );
+        pair(&palette, self.tr(title), name.into_owned())
+            .id(id)
+            .debug_selector(move || id.into())
+            .when_some(path, |row, path| {
+                let path = path.to_owned();
+                row.tooltip(move |_, cx| {
+                    let full_path = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+                    tooltip(palette, full_path.to_string_lossy().into_owned().into(), cx)
+                })
+            })
+    }
+
     pub(super) fn bios_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let bios = self
-            .bios
-            .as_ref()
-            .and_then(|path| path.file_name())
-            .map_or_else(
-                || self.tr(Text::NotSelected).into(),
-                |name| name.to_string_lossy().into_owned(),
-            );
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(pair(p, "BIOS", bios))
+            .child(self.bios_file(
+                "default-bios",
+                Text::DefaultBios,
+                self.preferences.bios_path.as_deref(),
+            ))
             .child(label(p, self.tr(Text::RememberBiosHint)))
             .when(self.preferences.bios_path.is_some(), |group| {
                 group.child(
