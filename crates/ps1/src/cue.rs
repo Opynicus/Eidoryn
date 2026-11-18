@@ -2,7 +2,7 @@
 //! INDEX positions address sectors within their FILE, not within the whole disc.
 use crate::{
     EmuError,
-    disc::{DiscImage, Track, TrackInfo, TrackKind, invalid},
+    disc::{DiscImage, DiscReader, Track, TrackInfo, TrackKind, invalid},
 };
 use std::{
     fs::File,
@@ -183,7 +183,10 @@ pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
                 source.display()
             )));
         }
-        sources.push((Arc::new(Mutex::new(file)), (metadata.len() / 2352) as u32));
+        sources.push((
+            Arc::new(Mutex::new(DiscReader::File(file))),
+            (metadata.len() / 2352) as u32,
+        ));
     }
     let mut result = Vec::new();
     let mut cursor = 0_u32;

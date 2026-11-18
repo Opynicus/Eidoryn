@@ -11,7 +11,7 @@ use crate::systems::ps1::{
     media::{load_disc, load_path},
     state_file::{SaveStateInfo, StateStore},
 };
-use eidoryn_host::audio::AudioBuffer;
+use eidoryn_host::audio::{AudioBuffer, StereoFrame};
 use rewind::RewindBuffer;
 use std::{
     path::{Path, PathBuf},
@@ -133,6 +133,7 @@ struct Worker {
     states: StateStore,
     save_states: Vec<SaveStateInfo>,
     audio: Option<AudioBuffer>,
+    audio_scratch: Vec<StereoFrame>,
     rewind: RewindBuffer,
 }
 
@@ -178,6 +179,7 @@ impl Worker {
             video_fps: 0.0,
             store,
             audio,
+            audio_scratch: Vec::new(),
             rewind: RewindBuffer::default(),
         };
         worker.refresh_states();
@@ -557,7 +559,10 @@ impl Worker {
     fn publish_audio(&mut self) {
         if let Some(audio) = &self.audio {
             audio.set_playing(self.running && self.rewind.active.is_none());
-            audio.push(self.machine.bus.spu.drain_audio());
+            self.audio_scratch
+                .extend(self.machine.bus.spu.drain_audio());
+            audio.push(&self.audio_scratch);
+            self.audio_scratch.clear();
         } else {
             self.machine.bus.spu.drain_audio().for_each(drop);
         }
@@ -680,6 +685,43 @@ mod tests {
     use crate::systems::ps1::{input::TurboConfig, timing::CPU_CLOCK_HZ};
 
     #[test]
+    fn audio_publication_drains_spu_and_reuses_staging_capacity() {
+        let audio = AudioBuffer::default();
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            Some(audio.clone()),
+            SnapshotMode::Display,
+        );
+        worker
+            .machine
+            .bus
+            .spu
+            .tick(crate::spu::SAMPLE_CLOCKS * 2048)
+            .unwrap();
+        worker.publish_audio();
+        assert_eq!(audio.stats().queued_frames, 2048);
+        let allocation = worker.audio_scratch.as_ptr();
+        let capacity = worker.audio_scratch.capacity();
+        for frames in [32, 256, 2048] {
+            audio.clear();
+            worker
+                .machine
+                .bus
+                .spu
+                .tick(crate::spu::SAMPLE_CLOCKS * frames)
+                .unwrap();
+            worker.publish_audio();
+            assert_eq!(audio.stats().queued_frames, frames as usize);
+            assert_eq!(worker.machine.bus.spu.drain_audio().count(), 0);
+            assert_eq!(worker.audio_scratch.len(), 0);
+            assert_eq!(worker.audio_scratch.capacity(), capacity);
+            assert_eq!(worker.audio_scratch.as_ptr(), allocation);
+        }
+    }
+
+    #[test]
     fn loads_preserve_execution_mode_and_resume_with_live_buttons() {
         let root = std::env::temp_dir().join(format!(
             "eidoryn-load-mode-{}-{}",
@@ -709,7 +751,7 @@ mod tests {
                 worker.apply(Command::SetButtons(held));
                 worker.machine.cpu.registers[5] = 99;
                 audio.set_playing(true);
-                audio.push([[123, -123]; 64]);
+                audio.push(&[[123, -123]; 64]);
                 worker.apply(if quick {
                     Command::QuickLoad
                 } else {
@@ -722,7 +764,7 @@ mod tests {
                 assert_eq!(worker.input.held_buttons(), buttons);
                 assert_eq!(worker.machine.bus.sio.buttons(), buttons);
                 assert_eq!(audio.stats().queued_frames, 0);
-                audio.push([[123, -123]; 4]);
+                audio.push(&[[123, -123]; 4]);
                 assert_eq!(audio.stats().queued_frames, if running { 4 } else { 0 });
                 if running {
                     worker.run_batch();
@@ -786,6 +828,80 @@ mod tests {
         assert!(worker.success_message.is_none());
         assert_eq!(worker.machine.save_state().unwrap(), saved);
         assert_eq!(worker.input.save_state(), input);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hardware_validation_failure_preserves_running_and_paused_sessions() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-invalid-hardware-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for running in [false, true] {
+            let audio = AudioBuffer::default();
+            let mut worker = Worker::new(
+                Machine::demo(),
+                running,
+                CardStore::default(),
+                Some(audio.clone()),
+                SnapshotMode::Display,
+            );
+            worker.states = StateStore::new(&root, &worker.initial);
+            worker.apply(Command::SetButtons(0x8000));
+            worker.machine.run_slice().unwrap();
+            audio.set_playing(running);
+            // Use the normal encoders so both checksums pass and loading reaches
+            // Machine's hardware validation before the runner rejects the state.
+            let mut invalid = Machine::demo();
+            invalid.bus.ram.clear();
+            let path = worker.states.save(&invalid, &PadInput::default()).unwrap();
+            worker
+                .states
+                .save_quick(&invalid, &PadInput::default())
+                .unwrap();
+            for quick in [false, true] {
+                audio.push(&[[123, -123]; 64]);
+                let queued = audio.stats().queued_frames;
+                let before = worker.machine.save_state().unwrap();
+                let input = worker.input.save_state();
+                let pacing = worker.pacing;
+                let mut expected = worker.machine.clone();
+                worker.apply(if quick {
+                    Command::QuickLoad
+                } else {
+                    Command::LoadState { path: path.clone() }
+                });
+                assert!(
+                    worker
+                        .message
+                        .as_deref()
+                        .unwrap()
+                        .contains("Invalid saved RAM or BIOS size"),
+                    "running={running}, quick={quick}"
+                );
+                assert!(worker.success_message.is_none());
+                assert_eq!(worker.running, running);
+                assert_eq!(worker.machine.save_state().unwrap(), before);
+                assert_eq!(worker.input.save_state(), input);
+                assert_eq!(worker.pacing, pacing);
+                assert_eq!(audio.stats().queued_frames, queued);
+                audio.push(&[[123, -123]; 4]);
+                assert_eq!(
+                    audio.stats().queued_frames,
+                    queued + if running { 4 } else { 0 }
+                );
+                worker.machine.run_slice().unwrap();
+                expected.run_slice().unwrap();
+                assert_eq!(
+                    worker.machine.save_state().unwrap(),
+                    expected.save_state().unwrap()
+                );
+            }
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -954,7 +1070,7 @@ mod tests {
         assert_eq!(worker.machine.save_state().unwrap(), saved);
         let path = worker.save_states[0].path.clone();
         worker.machine.run_slice().unwrap();
-        audio.push([[123, -123]; 64]);
+        audio.push(&[[123, -123]; 64]);
         worker.apply(Command::LoadState { path: path.clone() });
         assert!(worker.running);
         assert!(worker.message.is_none());
@@ -985,7 +1101,7 @@ mod tests {
         audio.set_playing(true);
         let before = worker.machine.save_state().unwrap();
         let pacing = worker.pacing;
-        audio.push([[123, -123]; 64]);
+        audio.push(&[[123, -123]; 64]);
         std::fs::write(&path, b"broken").unwrap();
         worker.apply(Command::LoadState { path });
         assert!(worker.running);
@@ -1105,7 +1221,7 @@ mod tests {
             let pacing = worker.pacing;
             let pc = worker.machine.cpu.pc;
             audio.set_playing(true);
-            audio.push([[123, -123]; 128]);
+            audio.push(&[[123, -123]; 128]);
             worker
                 .machine
                 .bus
@@ -1161,7 +1277,7 @@ mod tests {
             Some(audio.clone()),
             SnapshotMode::Display,
         );
-        audio.push([[123, -123]; 128]);
+        audio.push(&[[123, -123]; 128]);
         let queued = audio.stats().queued_frames;
         let pacing = worker.pacing;
         worker.apply(Command::SetTurbo(TurboConfig::new(0x8000, 10).unwrap()));
@@ -1242,7 +1358,7 @@ mod tests {
     fn snapshot_mode_does_not_reset_execution_audio_or_notifications() {
         let audio = AudioBuffer::default();
         audio.set_playing(true);
-        audio.push([[123, -123]; 2048]);
+        audio.push(&[[123, -123]; 2048]);
         let mut worker = Worker::new(
             Machine::demo(),
             true,

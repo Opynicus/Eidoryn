@@ -1,4 +1,4 @@
-//! Original ISO/BIN/CUE image and bounded ISO-9660 reader. No emulator dependencies.
+//! ISO/BIN/CUE/CHD image and bounded ISO-9660 reader. No emulator dependencies.
 //! Layout reference: https://psx-spx.consoledev.net/cdromformat/
 use crate::{EmuError, bus::RAM_SIZE};
 use sha2::{Digest, Sha256};
@@ -9,7 +9,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const SYNC: [u8; 12] = [0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0];
+pub(crate) const SYNC: [u8; 12] = [0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0];
+
+#[derive(Debug)]
+pub(crate) enum DiscReader {
+    File(File),
+    Chd(Box<crate::chd::Reader>),
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TrackKind {
@@ -78,7 +84,7 @@ pub struct TrackInfo {
 #[derive(Clone, Debug)]
 pub(crate) struct Track {
     pub info: TrackInfo,
-    pub file: Arc<Mutex<File>>,
+    pub file: Arc<Mutex<DiscReader>>,
     pub file_offset: u32,
     pub gap: u32,
     pub cooked: bool,
@@ -134,7 +140,13 @@ impl DiscImage {
             + self
                 .tracks
                 .iter()
-                .map(|track| crate::state::shared_bytes(track.file.as_ref()))
+                .map(|track| {
+                    crate::state::shared_bytes(track.file.as_ref())
+                        + track.file.lock().map_or(0, |reader| match &*reader {
+                            DiscReader::File(_) => 0,
+                            DiscReader::Chd(reader) => reader.heap_bytes(),
+                        })
+                })
                 .sum::<usize>()
     }
 
@@ -143,9 +155,12 @@ impl DiscImage {
         if ext.eq_ignore_ascii_case("cue") {
             return crate::cue::open(path);
         }
+        if ext.eq_ignore_ascii_case("chd") {
+            return crate::chd::open(path);
+        }
         if !["iso", "bin"].iter().any(|s| ext.eq_ignore_ascii_case(s)) {
             return Err(invalid(
-                "Supported disc formats: ISO, raw data BIN, and BINARY CUE/BIN; CHD is not implemented",
+                "Supported disc formats: ISO, raw data BIN, BINARY CUE/BIN, and CD-ROM CHD",
             ));
         }
         let metadata =
@@ -182,7 +197,7 @@ impl DiscImage {
                     start_lba: 0,
                     end_lba: sectors,
                 },
-                file: Arc::new(Mutex::new(file)),
+                file: Arc::new(Mutex::new(DiscReader::File(file))),
                 file_offset: 0,
                 gap: 0,
                 cooked: !raw,
@@ -228,9 +243,13 @@ impl DiscImage {
             digest.update((file_index as u32).to_le_bytes());
         }
         for file in files {
-            let mut file = file
+            let mut reader = file
                 .lock()
                 .map_err(|_| invalid("Disc image lock poisoned"))?;
+            let file = match &mut *reader {
+                DiscReader::File(file) => file,
+                DiscReader::Chd(reader) => reader.file(),
+            };
             let length = file
                 .metadata()
                 .map_err(|error| invalid(error.to_string()))?
@@ -306,13 +325,17 @@ impl DiscImage {
             .ok_or_else(|| invalid(format!("CD sector {lba} is beyond end of image")))?;
         let mut bytes = [0; 2352];
         let relative = lba - track.info.index0_lba;
-        if relative < track.gap {
-            return Ok(bytes);
-        } // Synthetic audio pregap is silence.
-        let mut file = track
+        let mut reader = track
             .file
             .lock()
             .map_err(|_| invalid("Disc reader lock poisoned"))?;
+        let file = match &mut *reader {
+            DiscReader::File(file) => file,
+            DiscReader::Chd(reader) => return reader.read_sector(track, lba),
+        };
+        if relative < track.gap {
+            return Ok(bytes);
+        } // Synthetic audio pregap is silence.
         let size = if track.cooked { 2048 } else { 2352 };
         file.seek(SeekFrom::Start(
             u64::from(track.file_offset + relative - track.gap) * size,
@@ -554,7 +577,7 @@ const EDC_TABLE: [u32; 256] = {
     table
 };
 
-fn edc(bytes: &[u8]) -> u32 {
+pub(crate) fn edc(bytes: &[u8]) -> u32 {
     bytes.iter().fold(0, |crc, &byte| {
         (crc >> 8) ^ EDC_TABLE[usize::from(crc as u8 ^ byte)]
     })

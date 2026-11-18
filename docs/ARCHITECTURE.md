@@ -19,7 +19,7 @@ Eidoryn (CLI / GPUI)
 | `crates/ps1/src/cpu_engine.rs`、`cpu/jit.rs` | 解释器/JIT 选择、缓存及逐指令异常/中断/代码失效检查 |
 | `crates/ps1/src/gpu/` | 自主软件光栅器、多线程绘图、共享 wgpu 计算管线与 WGSL；GP0/GP1 和显示时序位于 `gpu.rs` |
 | `crates/ps1/src/{gte,mdec,timers,sio,memory_card}.rs` | PS1 几何运算、解码、时钟、手柄和记忆卡协议 |
-| `crates/ps1/src/{disc,cue,cdrom}.rs` | 镜像读取与光驱控制器 |
+| `crates/ps1/src/{disc,cue,chd,cdrom}.rs` | 镜像读取与光驱控制器 |
 | `crates/ps1/src/spu/`、`{adpcm,xa,cd_audio}.rs` | PS1 合成、混响与光盘音频解码 |
 | `crates/ps1/src/demo.rs`、`error.rs` | 原创客体程序与 PS1 错误类型 |
 | `crates/jit-runtime/` | 原创 x86-64 发射器及隔离的 RW→RX/原生调用安全边界 |
