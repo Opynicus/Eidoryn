@@ -1,23 +1,19 @@
 use super::{
-    Desktop,
-    components::{button, card, label, pair, tooltip},
+    Desktop, WorkspacePage,
+    components::{button, card, ghost_button, label},
 };
 use eidoryn_psx::{
     i18n::Text,
     systems::ps1::runner::{Command, SelectedMedia, Snapshot},
 };
-use gpui::{Context, div, prelude::*, px};
-use std::path::{Path, PathBuf};
+use gpui::{Context, div, prelude::*, px, rgb};
+use std::path::PathBuf;
 
 impl Desktop {
-    pub(super) fn bios_file(
-        &self,
-        id: &'static str,
-        title: Text,
-        path: Option<&Path>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let palette = self.themes.active().palette;
-        let name = path.map_or_else(
+    pub(super) fn bios_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let current = self.bios.as_deref();
+        let name = current.map_or_else(
             || self.tr(Text::NotSelected).into(),
             |path| {
                 path.file_name()
@@ -25,47 +21,159 @@ impl Desktop {
                     .to_string_lossy()
             },
         );
-        pair(&palette, self.tr(title), name.into_owned())
-            .id(id)
-            .debug_selector(move || id.into())
-            .when_some(path, |row, path| {
-                let path = path.to_owned();
-                row.tooltip(move |_, cx| {
-                    let full_path = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-                    tooltip(palette, full_path.to_string_lossy().into_owned().into(), cx)
-                })
-            })
-    }
-
-    pub(super) fn bios_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
         div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(self.bios_file(
-                "default-bios",
-                Text::DefaultBios,
-                self.preferences.bios_path.as_deref(),
-            ))
-            .child(label(p, self.tr(Text::RememberBiosHint)))
-            .when(self.preferences.bios_path.is_some(), |group| {
-                group.child(
-                    button(
-                        &self.fonts,
-                        p,
-                        "clear-default-bios",
-                        self.tr(Text::ClearDefaultBios),
-                        false,
+            .p_3()
+            .gap_2()
+            .rounded_md()
+            .bg(rgb(p.inset_surface()))
+            .border_1()
+            .border_color(rgb(p.inset_border()))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(label(p, self.tr(Text::SelectedBios)))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font(self.fonts.semibold())
+                                    .truncate()
+                                    .debug_selector(|| "selected-bios".into())
+                                    .child(name.into_owned()),
+                            ),
                     )
-                    .debug_selector(|| "clear-default-bios".into())
+                    .child(
+                        button(
+                            &self.fonts,
+                            p,
+                            "open-bios",
+                            self.tr(if current.is_some() {
+                                Text::ChangeBios
+                            } else {
+                                Text::ChooseBios
+                            }),
+                            false,
+                        )
+                        .debug_selector(|| "open-bios".into())
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.pick_image(super::actions::ImagePicker::Bios, cx);
+                        })),
+                    ),
+            )
+            .child(label(p, self.tr(Text::BiosPurpose)))
+            .child(
+                div()
+                    .id("bios-details")
+                    .debug_selector(|| "bios-details".into())
+                    .tab_index(0)
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(rgb(p.primary))
+                    .focus(gpui::Styled::underline)
+                    .hover(gpui::Styled::underline)
+                    .child(format!(
+                        "{} {}",
+                        if self.bios_details_open { "▾" } else { "▸" },
+                        self.tr(Text::BiosDetails)
+                    ))
                     .on_click(cx.listener(|view, _, _, cx| {
-                        view.preferences.bios_path = None;
-                        view.save_preferences();
+                        view.bios_details_open = !view.bios_details_open;
                         cx.notify();
                     })),
-                )
+            )
+            .when(self.bios_details_open, |group| {
+                group.child(self.bios_details(cx))
             })
+    }
+
+    fn bios_details(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let current = self.bios.as_deref();
+        let default = self.preferences.bios_path.as_deref();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(
+                [(Text::SelectedBios, current), (Text::DefaultBios, default)]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (title, path))| {
+                        let full_path = path.map(|path| {
+                            std::path::absolute(path)
+                                .unwrap_or_else(|_| path.to_owned())
+                                .display()
+                                .to_string()
+                        });
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(label(p, self.tr(title)))
+                            .child(
+                                div()
+                                    .id(("bios-path", index))
+                                    .w_full()
+                                    .text_color(rgb(p.muted))
+                                    .overflow_x_scroll()
+                                    .child(div().whitespace_nowrap().text_xs().child(
+                                        full_path.unwrap_or_else(|| {
+                                            self.tr(Text::NotSelected).to_owned()
+                                        }),
+                                    )),
+                            )
+                    }),
+            )
+            .child(label(p, self.tr(Text::RememberBiosHint)))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .when(current.is_some() && current != default, |row| {
+                        row.child(
+                            button(
+                                &self.fonts,
+                                p,
+                                "set-default-bios",
+                                self.tr(Text::SetDefaultBios),
+                                false,
+                            )
+                            .debug_selector(|| "set-default-bios".into())
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if view.validate_current_bios(cx) {
+                                    view.preferences.bios_path.clone_from(&view.bios);
+                                    view.save_preferences();
+                                    cx.notify();
+                                }
+                            })),
+                        )
+                    })
+                    .when(default.is_some(), |row| {
+                        row.child(
+                            ghost_button(
+                                &self.fonts,
+                                p,
+                                "clear-default-bios",
+                                self.tr(Text::ClearDefaultBios),
+                                None,
+                            )
+                            .debug_selector(|| "clear-default-bios".into())
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.preferences.bios_path = None;
+                                view.save_preferences();
+                                cx.notify();
+                            })),
+                        )
+                    }),
+            )
     }
 
     pub(super) fn recent_games_card(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -231,14 +339,21 @@ impl Desktop {
         if snapshot.media_revision == self.snapshot.media_revision {
             return;
         }
+        if self.page == WorkspacePage::Console
+            && !self.graphics.open
+            && matches!(
+                snapshot.media_selection,
+                Some(SelectedMedia::Demo | SelectedMedia::Disc | SelectedMedia::Exe)
+            )
+        {
+            self.game_view = true;
+        }
         match snapshot.media_selection {
             Some(SelectedMedia::Bios) => {
                 if let Some(path) = &snapshot.bios_path {
                     match std::fs::canonicalize(path) {
                         Ok(path) => {
-                            self.bios = Some(path.clone());
-                            self.preferences.bios_path = Some(path);
-                            self.save_preferences();
+                            self.bios = Some(path);
                         }
                         Err(error) => self.notice = Some(format!("{}: {error}", path.display())),
                     }

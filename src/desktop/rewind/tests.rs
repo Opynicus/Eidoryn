@@ -156,6 +156,8 @@ fn mouse_release_and_disabling_rewind_end_playback(cx: &mut TestAppContext) {
     open_rewind_settings(&view, cx);
     let toggle = cx.debug_bounds("rewind-enabled").unwrap();
     cx.simulate_click(toggle.center(), Modifiers::none());
+    let confirm = cx.debug_bounds("rewind-confirm").unwrap();
+    cx.simulate_click(confirm.center(), Modifiers::none());
     receive_until(&view, cx, |view| {
         !view.snapshot.rewind_enabled && !view.snapshot.rewinding
     });
@@ -183,8 +185,11 @@ fn rewind_shortcut_is_blocked_by_settings_and_rename(cx: &mut TestAppContext) {
     press_keys(cx, "ctrl-z escape");
 
     view.update(cx, |view, cx| {
+        view.game_view = false;
+        view.page = crate::desktop::WorkspacePage::SaveStates;
         let path = std::path::PathBuf::from("rename-test.ps1state");
         view.snapshot.save_states = vec![SaveStateInfo {
+            modified: std::time::UNIX_EPOCH,
             path: path.clone(),
             name: "rename-test".into(),
         }];
@@ -192,7 +197,7 @@ fn rewind_shortcut_is_blocked_by_settings_and_rename(cx: &mut TestAppContext) {
         cx.notify();
     });
     cx.run_until_parked();
-    let rename = cx.debug_bounds("rename-state").unwrap();
+    let rename = cx.debug_bounds("rename-snapshot-0").unwrap();
     cx.simulate_click(rename.center(), Modifiers::none());
     assert!(cx.debug_bounds("rename-dialog").is_some());
     cx.simulate_keystrokes("ctrl-z");
@@ -264,9 +269,15 @@ fn recording_is_opt_in_and_settings_persist_duration_and_enabled_state(cx: &mut 
         35
     );
 
-    open_rewind_settings(&view, cx);
-    let toggle = cx.debug_bounds("rewind-enabled").unwrap();
-    cx.simulate_click(toggle.center(), Modifiers::none());
+    // From the drawer focus, traverse its tabs and reach the recording switch.
+    press_keys(cx, "f8 tab tab tab tab tab enter tab tab enter");
+    assert!(cx.debug_bounds("rewind-confirm").is_some());
+    press_keys(cx, "tab enter");
+    assert!(cx.debug_bounds("rewind-confirm").is_none());
+    assert!(view.read_with(cx, |v, _| v.snapshot.rewind_states > 0
+        && v.preferences.rewind_enabled));
+    // Cancel returns focus to the switch. Open again and activate the destructive action.
+    press_keys(cx, "enter tab tab enter");
     receive_until(&view, cx, |view| {
         !view.snapshot.rewind_enabled && view.snapshot.rewind_states == 0
     });

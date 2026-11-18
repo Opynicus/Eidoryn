@@ -1,12 +1,30 @@
 use super::{
     Desktop,
-    components::{button, card, label},
+    components::{button, card, ghost_button, label, page_heading},
 };
-use eidoryn_psx::{i18n::Text, systems::ps1::runner::Command};
-use gpui::{
-    Anchor, AnchoredPositionMode, Bounds, Context, Focusable, Window, anchored, deferred, div,
-    point, prelude::*, px, rgb, rgba, size,
+use eidoryn_psx::{
+    i18n::Text,
+    systems::ps1::{
+        runner::{Command, QuickSlot},
+        state_file::{SaveStateInfo, checkpoint_time},
+    },
 };
+use gpui::{Context, Focusable, Window, div, prelude::*, px, rgb, rgba};
+
+enum SnapshotAction {
+    OverwriteQuick {
+        slot: std::time::SystemTime,
+        revision: u64,
+        game: String,
+    },
+    Delete(SaveStateInfo),
+}
+
+pub(super) struct SnapshotConfirmation {
+    action: SnapshotAction,
+    cancel: gpui::FocusHandle,
+    confirm: gpui::FocusHandle,
+}
 
 pub(super) struct RenameState {
     pub path: std::path::PathBuf,
@@ -15,34 +33,97 @@ pub(super) struct RenameState {
 }
 
 impl Desktop {
-    pub(super) fn save_states_page(&self, cx: &mut Context<Self>) -> gpui::Div {
+    pub(super) fn save_states_page(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let stacked = self.content_width(window) < px(740.);
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .flex_wrap()
+            .child(page_heading(
+                &self.fonts,
+                p,
+                self.tr(Text::SaveAndReturn),
+                self.tr(Text::SaveStates),
+                self.tr(Text::SaveStatesHint),
+            ))
+            .child(
+                button(&self.fonts, p, "save-state", self.tr(Text::SaveState), true)
+                    .debug_selector(|| "save-state".into())
+                    .on_click(cx.listener(|view, _, _, cx| view.command(Command::SaveState, cx))),
+            );
+        let side = div()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .when(!stacked, |side| side.w(px(276.)).flex_shrink_0())
+            .child(self.quick_slot_card().child(self.quick_state_controls(cx)))
+            .child(
+                card(p)
+                    .p_4()
+                    .gap_2()
+                    .child(label(p, self.tr(Text::GameExecution)))
+                    .child(
+                        div()
+                            .font(self.fonts.semibold())
+                            .child(self.playback_label()),
+                    ),
+            );
         div()
             .debug_selector(|| "save-states-page".into())
             .flex()
             .flex_col()
             .gap_4()
+            .child(header)
             .child(
                 div()
-                    .text_size(px(26.))
-                    .font(self.fonts.semibold())
-                    .child(self.tr(Text::SaveStates)),
+                    .flex()
+                    .gap_4()
+                    .when(stacked, gpui::Styled::flex_col)
+                    .when(!stacked, gpui::Styled::items_start)
+                    .child(self.snapshot_history(cx))
+                    .child(side),
             )
-            .child(label(p, self.tr(Text::SaveStatesHint)).text_size(px(13.)))
+    }
+
+    fn snapshot_history(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        card(p)
+            .flex_1()
+            .min_w_0()
+            .p_4()
+            .gap_3()
             .child(
-                card(p)
-                    .p_4()
-                    .gap_3()
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
                     .child(
                         div()
-                            .text_sm()
-                            .font(self.fonts.medium())
-                            .child(self.display_title().to_owned()),
+                            .min_w_0()
+                            .flex_1()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font(self.fonts.semibold())
+                                    .child(self.tr(Text::SnapshotHistory)),
+                            )
+                            .child(
+                                label(
+                                    p,
+                                    format!(
+                                        "{}  ·  {}",
+                                        self.display_title(),
+                                        self.snapshot.save_states.len()
+                                    ),
+                                )
+                                .truncate(),
+                            ),
                     )
-                    .child(label(p, self.tr(Text::SaveStatesLocation)))
-                    .child(self.save_state_controls(cx))
-                    .child(self.quick_state_controls(cx))
-                    .child(self.rewind_controls(cx))
                     .child(
                         button(
                             &self.fonts,
@@ -56,9 +137,169 @@ impl Desktop {
                         })),
                     ),
             )
-            .when(self.snapshot.save_states.is_empty(), |page| {
-                page.child(card(p).p_4().child(self.tr(Text::NoSaveStates)))
+            .when(self.snapshot.save_states.is_empty(), |card| {
+                card.child(
+                    label(p, self.tr(Text::NoSaveStates))
+                        .w_full()
+                        .py_6()
+                        .text_center(),
+                )
             })
+            .children(
+                self.snapshot
+                    .save_states
+                    .iter()
+                    .enumerate()
+                    .map(|(index, state)| self.history_row(index, state, cx)),
+            )
+    }
+
+    fn history_row(
+        &self,
+        index: usize,
+        state: &SaveStateInfo,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let p = self.themes.active().palette;
+        let selected = self.selected_save_state.as_ref() == Some(&state.path);
+        let time = checkpoint_time(state.modified)
+            .unwrap_or_else(|| self.tr(Text::SnapshotTimeUnknown).to_owned());
+        let name = state.name.clone();
+        let path = state.path.display().to_string();
+        let info = div()
+            .id(("snapshot-info", index))
+            .min_w_0()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .tooltip(move |_, cx| super::components::tooltip(p, path.clone().into(), cx))
+            .child(div().text_sm().font(self.fonts.semibold()).child(name))
+            .child(label(&p, time))
+            .when(selected, |info| {
+                info.child(label(&p, self.tr(Text::SnapshotSelected)).text_color(rgb(p.primary)))
+            });
+
+        div()
+            .min_w_0()
+            .p_3()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if selected {
+                p.history_selected_border()
+            } else {
+                p.border
+            }))
+            .bg(rgb(if selected {
+                p.history_selected()
+            } else {
+                p.history_surface()
+            }))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_3()
+            .child(info)
+            .child(self.history_actions(index, state, cx))
+    }
+
+    fn history_actions(
+        &self,
+        index: usize,
+        state: &SaveStateInfo,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let loaded = state.path.clone();
+        let renamed = state.path.clone();
+        let delete_target = state.clone();
+        div()
+            .flex()
+            .gap_2()
+            .flex_wrap()
+            .child(
+                button(
+                    &self.fonts,
+                    p,
+                    ("load-snapshot", index),
+                    self.tr(Text::LoadState),
+                    false,
+                )
+                .debug_selector(move || format!("load-snapshot-{index}"))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.selected_save_state = Some(loaded.clone());
+                    view.command(
+                        Command::LoadState {
+                            path: loaded.clone(),
+                        },
+                        cx,
+                    );
+                })),
+            )
+            .child(
+                ghost_button(
+                    &self.fonts,
+                    p,
+                    ("rename-snapshot", index),
+                    self.tr(Text::RenameState),
+                    None,
+                )
+                .debug_selector(move || format!("rename-snapshot-{index}"))
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.selected_save_state = Some(renamed.clone());
+                    view.begin_rename(window, cx);
+                })),
+            )
+            .child(
+                button(
+                    &self.fonts,
+                    p,
+                    ("delete-snapshot", index),
+                    self.tr(Text::DeleteSnapshot),
+                    false,
+                )
+                .text_color(rgb(p.danger_text()))
+                .debug_selector(move || format!("delete-snapshot-{index}"))
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.confirm_snapshot_action(
+                        SnapshotAction::Delete(delete_target.clone()),
+                        window,
+                        cx,
+                    );
+                })),
+            )
+    }
+
+    pub(super) fn quick_slot_card(&self) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let (title, modified) = match self.snapshot.quick_slot {
+            QuickSlot::Saved(time) => (self.display_title(), Some(time)),
+            QuickSlot::Empty => (self.tr(Text::EmptyQuickSlot), None),
+            QuickSlot::Unavailable => (self.tr(Text::QuickSlotUnavailable), None),
+        };
+        card(p)
+            .p_4()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .font(self.fonts.semibold())
+                    .child(self.tr(Text::QuickSlot)),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .font(self.fonts.medium())
+                    .child(title.to_owned()),
+            )
+            .when_some(modified, |card, time| {
+                card.child(label(
+                    p,
+                    checkpoint_time(time)
+                        .unwrap_or_else(|| self.tr(Text::SnapshotTimeUnknown).to_owned()),
+                ))
+            })
+            .child(label(p, self.tr(Text::QuickStateHint)))
     }
 
     pub(super) fn sync_save_state_selection(&mut self) {
@@ -73,12 +314,17 @@ impl Desktop {
                 .save_states
                 .first()
                 .map(|state| state.path.clone());
-            self.save_state_picker_open = false;
         }
     }
 
     pub(super) fn quick_state_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let can_load = matches!(self.snapshot.quick_slot, QuickSlot::Saved(_));
+        if let Some(pending) = &self.snapshot_confirmation
+            && matches!(pending.action, SnapshotAction::OverwriteQuick { .. })
+        {
+            return self.snapshot_confirmation_controls(pending, cx);
+        }
         div()
             .flex()
             .flex_wrap()
@@ -89,171 +335,236 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "quick-save",
-                    format!("{} · Ctrl+Shift+S", self.tr(Text::QuickSave)),
+                    self.tr(Text::QuickSave),
                     false,
                 )
                 .debug_selector(|| "quick-save".into())
-                .on_click(cx.listener(|view, _, _, cx| view.command(Command::QuickSave, cx))),
+                .when(
+                    self.snapshot.quick_slot == QuickSlot::Unavailable,
+                    |button| button.tab_index(-1).opacity(0.45).cursor_default(),
+                )
+                .when(
+                    self.snapshot.quick_slot != QuickSlot::Unavailable,
+                    |button| {
+                        button.on_click(
+                            cx.listener(|view, _, window, cx| view.request_quick_save(window, cx)),
+                        )
+                    },
+                ),
             )
             .child(
                 button(
                     &self.fonts,
                     p,
                     "quick-load",
-                    format!("{} · Ctrl+Shift+L", self.tr(Text::QuickLoad)),
+                    self.tr(Text::QuickLoad),
                     false,
                 )
                 .debug_selector(|| "quick-load".into())
-                .on_click(cx.listener(|view, _, _, cx| view.command(Command::QuickLoad, cx))),
-            )
-            .child(label(p, self.tr(Text::QuickStateHint)))
-    }
-
-    pub(super) fn save_state_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
-        match key {
-            "up" | "down" | "home" | "end" => {
-                let states = &self.snapshot.save_states;
-                if !states.is_empty() {
-                    let current = states
-                        .iter()
-                        .position(|state| Some(&state.path) == self.selected_save_state.as_ref())
-                        .unwrap_or(0);
-                    let index = match key {
-                        "home" => 0,
-                        "end" => states.len() - 1,
-                        "up" => current.saturating_sub(1),
-                        _ => (current + 1).min(states.len() - 1),
-                    };
-                    self.selected_save_state = Some(states[index].path.clone());
-                }
-            }
-            "escape" | "enter" | "space" | "tab" => self.save_state_picker_open = false,
-            _ => {}
-        }
-        cx.notify();
-        key != "tab"
-    }
-
-    pub(super) fn save_state_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
-        let selected = self
-            .snapshot
-            .save_states
-            .iter()
-            .find(|state| Some(&state.path) == self.selected_save_state.as_ref());
-        let enabled = selected.is_some();
-        let title = selected.map_or_else(
-            || self.tr(Text::NoStateToLoad).to_owned(),
-            |state| state.name.clone(),
-        );
-        let picker_label = format!("{}: {title}", self.tr(Text::SelectSaveState));
-        let palette = *p;
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .child(
-                button(
-                    &self.fonts,
-                    p,
-                    "save-state",
-                    self.tr(Text::SaveState),
-                    false,
-                )
-                .debug_selector(|| "save-state".into())
-                .on_click(cx.listener(|view, _, _, cx| view.command(Command::SaveState, cx))),
-            )
-            .child(
-                div()
-                    .relative()
-                    .w(px(280.))
-                    .max_w_full()
-                    .child(
-                        button(&self.fonts, p, "save-state-picker", "", false)
-                            .tooltip(move |_, cx| {
-                                super::components::tooltip(palette, picker_label.clone().into(), cx)
-                            })
-                            .debug_selector(|| "save-state-picker".into())
-                            .w_full()
-                            .justify_between()
-                            .child(div().flex_1().min_w_0().truncate().child(title))
-                            .child("▾")
-                            .when(!enabled, |picker| {
-                                picker.opacity(0.45).tab_index(-1).cursor_default()
-                            })
-                            .when(enabled, |picker| {
-                                picker.on_click(cx.listener(|view, _, window, cx| {
-                                    view.release_buttons(cx);
-                                    view.save_state_picker_open = true;
-                                    view.command(Command::RefreshSaveStates, cx);
-                                    window.focus(&view.focus, cx);
-                                }))
-                            }),
+                .when(can_load, |button| {
+                    button.on_click(
+                        cx.listener(|view, _, _, cx| view.command(Command::QuickLoad, cx)),
                     )
-                    .when(self.save_state_picker_open && enabled, |picker| {
-                        picker.child(
-                            deferred(
-                                anchored()
-                                    .attach(
-                                        Bounds::new(point(px(0.), px(0.)), size(px(280.), px(36.))),
-                                        Anchor::BottomLeft,
-                                    )
-                                    .position_mode(AnchoredPositionMode::Local)
-                                    .child(self.save_state_options(cx)),
-                            )
-                            .with_priority(1),
-                        )
-                    }),
-            )
-            .child(
-                button(
-                    &self.fonts,
-                    p,
-                    "load-state",
-                    self.tr(Text::LoadState),
-                    false,
-                )
-                .debug_selector(|| "load-state".into())
-                .when(!enabled, |button| {
-                    button.opacity(0.45).tab_index(-1).cursor_default()
                 })
-                .when(enabled, |button| {
-                    button.on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(state) =
-                            view.snapshot.save_states.iter().find(|state| {
-                                Some(&state.path) == view.selected_save_state.as_ref()
-                            })
-                        {
-                            let path = state.path.clone();
-                            view.save_state_picker_open = false;
-                            view.command(Command::LoadState { path }, cx);
-                        }
-                    }))
+                .when(!can_load, |button| {
+                    button.tab_index(-1).opacity(0.45).cursor_default()
                 }),
             )
-            .child(self.rename_state_button(enabled, cx))
     }
 
-    fn rename_state_button(
-        &self,
-        enabled: bool,
+    fn request_quick_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let slot = self.snapshot.quick_slot;
+        let revision = self.snapshot.quick_slot_revision;
+        match slot {
+            QuickSlot::Unavailable => {}
+            QuickSlot::Empty => self.command(Command::QuickSaveIfUnchanged { revision, slot }, cx),
+            QuickSlot::Saved(slot) => self.confirm_snapshot_action(
+                SnapshotAction::OverwriteQuick {
+                    slot,
+                    revision,
+                    game: self.display_title().to_owned(),
+                },
+                window,
+                cx,
+            ),
+        }
+    }
+
+    fn confirm_snapshot_action(
+        &mut self,
+        action: SnapshotAction,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        button(
-            &self.fonts,
-            &self.themes.active().palette,
-            "rename-state",
-            self.tr(Text::RenameState),
-            false,
+    ) {
+        self.stop_input(cx);
+        let cancel = cx.focus_handle();
+        window.focus(&cancel, cx);
+        self.snapshot_confirmation = Some(SnapshotConfirmation {
+            action,
+            cancel,
+            confirm: cx.focus_handle(),
+        });
+        cx.notify();
+    }
+
+    pub(super) fn delete_snapshot_dialog(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<gpui::Div>> {
+        let pending = self.snapshot_confirmation.as_ref()?;
+        if !matches!(pending.action, SnapshotAction::Delete(_)) {
+            return None;
+        }
+        Some(
+            div()
+                .id("delete-snapshot-overlay")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .p_6()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(0x000000aa))
+                .child(
+                    self.snapshot_confirmation_controls(pending, cx)
+                        .w(px(440.))
+                        .max_w_full()
+                        .p_5(),
+                ),
         )
-        .debug_selector(|| "rename-state".into())
-        .when(!enabled, |button| {
-            button.opacity(0.45).tab_index(-1).cursor_default()
-        })
-        .when(enabled, |button| {
-            button.on_click(cx.listener(|view, _, window, cx| view.begin_rename(window, cx)))
-        })
+    }
+
+    fn snapshot_confirmation_controls(
+        &self,
+        pending: &SnapshotConfirmation,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let deleting = matches!(pending.action, SnapshotAction::Delete(_));
+        let (name, modified, title, confirm_label, confirm_id) = match &pending.action {
+            SnapshotAction::OverwriteQuick { game, slot, .. } => (
+                game,
+                *slot,
+                Text::OverwriteQuickSlotTitle,
+                Text::OverwriteQuickSlotAction,
+                "confirm-quick-save",
+            ),
+            SnapshotAction::Delete(state) => (
+                &state.name,
+                state.modified,
+                Text::DeleteSnapshotPrompt,
+                Text::DeleteSnapshot,
+                "confirm-delete-snapshot",
+            ),
+        };
+        let time = checkpoint_time(modified)
+            .unwrap_or_else(|| self.tr(Text::SnapshotTimeUnknown).to_owned());
+        div()
+            .on_mouse_down_out(cx.listener(|view, _, window, cx| {
+                view.finish_snapshot_action(false, window, cx);
+            }))
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .rounded_md()
+            .p_3()
+            .border_1()
+            .border_color(rgb(p.dialog_border()))
+            .bg(rgb(p.dialog_surface()))
+            .child(div().font(self.fonts.semibold()).child(self.tr(title)))
+            .child(label(p, format!("{name}  ·  {time}")))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        ghost_button(
+                            &self.fonts,
+                            p,
+                            "cancel-snapshot-action",
+                            self.tr(Text::RenameCancel),
+                            None,
+                        )
+                        .debug_selector(|| "cancel-snapshot-action".into())
+                        .track_focus(&pending.cancel)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.finish_snapshot_action(false, window, cx);
+                        })),
+                    )
+                    .child(
+                        button(
+                            &self.fonts,
+                            p,
+                            confirm_id,
+                            self.tr(confirm_label),
+                            !deleting,
+                        )
+                        .when(deleting, |button| button.text_color(rgb(p.danger_text())))
+                        .debug_selector(move || confirm_id.into())
+                        .track_focus(&pending.confirm)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.finish_snapshot_action(true, window, cx);
+                        })),
+                    ),
+            )
+    }
+
+    pub(super) fn snapshot_confirmation_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = &self.snapshot_confirmation else {
+            return;
+        };
+        let confirm = pending.confirm.is_focused(window);
+        match key {
+            "escape" => self.finish_snapshot_action(false, window, cx),
+            "tab" | "left" | "right" | "up" | "down" => {
+                window.focus(
+                    if confirm {
+                        &pending.cancel
+                    } else {
+                        &pending.confirm
+                    },
+                    cx,
+                );
+                cx.notify();
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    fn finish_snapshot_action(
+        &mut self,
+        confirmed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(pending) = self.snapshot_confirmation.take()
+            && confirmed
+        {
+            let command = match pending.action {
+                SnapshotAction::OverwriteQuick { slot, revision, .. } => {
+                    Command::QuickSaveIfUnchanged {
+                        revision,
+                        slot: QuickSlot::Saved(slot),
+                    }
+                }
+                SnapshotAction::Delete(state) => Command::DeleteState {
+                    path: state.path,
+                    modified: state.modified,
+                },
+            };
+            self.command(command, cx);
+        }
+        window.focus(&self.focus, cx);
+        cx.notify();
     }
 
     pub(super) fn rename_key(
@@ -280,6 +591,7 @@ impl Desktop {
     }
 
     pub(super) fn begin_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.snapshot_confirmation = None;
         self.stop_rewind(cx);
         let Some(state) = self
             .snapshot
@@ -292,7 +604,6 @@ impl Desktop {
         let path = state.path.clone();
         let name = state.name.clone();
         self.release_buttons(cx);
-        self.save_state_picker_open = false;
         self.notice = None;
         let palette = self.themes.active().palette;
         let input = cx.new(|cx| super::text_input::TextInput::new(name, palette, cx));
@@ -336,11 +647,13 @@ impl Desktop {
             .items_center()
             .justify_center()
             .p_6()
-            .bg(rgba(0x00000099))
+            .bg(rgba(0x000000aa))
             .on_click(cx.listener(|view, _, window, cx| view.close_rename(window, cx)))
             .child(
                 card(p)
                     .id("rename-dialog")
+                    .bg(rgb(p.dialog_surface()))
+                    .border_color(rgb(p.dialog_border()))
                     .debug_selector(|| "rename-dialog".into())
                     .track_focus(&rename.focus)
                     .tab_group()
@@ -363,12 +676,12 @@ impl Desktop {
                             .justify_end()
                             .gap_2()
                             .child(
-                                button(
+                                ghost_button(
                                     &self.fonts,
                                     p,
                                     "rename-cancel",
                                     self.tr(Text::RenameCancel),
-                                    false,
+                                    None,
                                 )
                                 .on_click(cx.listener(
                                     |view, _, window, cx| {
@@ -392,53 +705,6 @@ impl Desktop {
                                 )),
                             ),
                     ),
-            )
-    }
-
-    fn save_state_options(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let p = self.themes.active().palette;
-        card(&p)
-            .id("save-state-options")
-            .debug_selector(|| "save-state-options".into())
-            .occlude()
-            .w(px(280.))
-            .max_h(px(240.))
-            .p_1()
-            .gap_1()
-            .overflow_y_scroll()
-            .on_mouse_down_out(cx.listener(|view, _, _, cx| {
-                view.save_state_picker_open = false;
-                cx.notify();
-            }))
-            .children(
-                self.snapshot
-                    .save_states
-                    .iter()
-                    .enumerate()
-                    .map(|(index, state)| {
-                        let path = state.path.clone();
-                        let selected = self.selected_save_state.as_ref() == Some(&state.path);
-                        div()
-                            .id(("save-state-option", index))
-                            .debug_selector(move || format!("save-state-option-{index}"))
-                            .px_3()
-                            .py_2()
-                            .flex_shrink_0()
-                            .text_sm()
-                            .truncate()
-                            .rounded_md()
-                            .bg(rgb(if selected { p.tonal } else { p.surface }))
-                            .hover(move |style| style.bg(rgb(p.tonal_hover)))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.selected_save_state = Some(path.clone());
-                                view.save_state_picker_open = false;
-                                window.focus(&view.focus, cx);
-                                cx.stop_propagation();
-                                cx.notify();
-                            }))
-                            .child(state.name.clone())
-                    }),
             )
     }
 }

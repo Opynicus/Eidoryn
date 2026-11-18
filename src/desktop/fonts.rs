@@ -4,7 +4,7 @@ use std::{cell::OnceCell, sync::Arc};
 
 pub(super) struct Fonts {
     system: Arc<TextSystem>,
-    resolved: [OnceCell<Font>; 5],
+    resolved: [OnceCell<Font>; 6],
 }
 
 #[cfg(all(test, feature = "ui-tests"))]
@@ -62,6 +62,10 @@ impl Fonts {
 
     pub(super) fn mono(&self) -> Font {
         self.get(4, "monospace", FontWeight::NORMAL)
+    }
+
+    pub(super) fn title(&self) -> Font {
+        self.get(5, "serif", FontWeight::SEMIBOLD)
     }
 
     fn get(&self, slot: usize, family: &'static str, weight: FontWeight) -> Font {

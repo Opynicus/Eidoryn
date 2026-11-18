@@ -107,6 +107,10 @@ impl Machine {
         machine
     }
 
+    pub fn is_demo(&self) -> bool {
+        self.demo
+    }
+
     fn empty(pc: u32, title: &str) -> Self {
         Self {
             cpu: Cpu::new(pc),

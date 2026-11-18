@@ -1,6 +1,51 @@
 use super::*;
+use eidoryn_psx::i18n::Language;
 use eidoryn_psx::keybindings::{KeyBindings, PadButton};
 use gpui::{TestAppContext, VisualTestContext};
+
+#[gpui::test]
+fn default_workspace_paints_the_prototype_colors(cx: &mut TestAppContext) {
+    let (_view, cx) = cx.add_window_view(desktop);
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    cx.run_until_parked();
+    let inactive_nav = cx.debug_bounds("nav-debug").unwrap().center();
+    let active_nav = cx.debug_bounds("nav-console").unwrap().center();
+    let open_disc = cx.debug_bounds("open-disc").unwrap().center();
+    cx.update(|window, _| {
+        let quads = window.painted_quads();
+        for (position, expected) in [
+            (inactive_nav, 0x0015_191e),
+            (active_nav, 0x0029_332f),
+            (open_disc, 0x00b7_e4c8),
+        ] {
+            let point = position.scale(window.scale_factor());
+            let top_quad = quads
+                .iter()
+                .filter(|quad| {
+                    !quad.background.is_transparent()
+                        && quad
+                            .bounds
+                            .intersect(&quad.content_mask.bounds)
+                            .contains(&point)
+                })
+                .max_by_key(|quad| quad.order)
+                .expect("visible control has a painted background");
+            assert_eq!(top_quad.background, gpui::rgb(expected).into());
+        }
+        for (role, expected) in [
+            ("workspace", 0x0010_1317),
+            ("secondary button", 0x0028_3138),
+            ("paused indicator", 0x00e6_bf79),
+        ] {
+            assert!(
+                quads
+                    .iter()
+                    .any(|quad| quad.background == gpui::rgb(expected).into()),
+                "{role} should use #{expected:06x}"
+            );
+        }
+    });
+}
 
 #[gpui::test]
 fn video_updates_reuse_sidebar_but_ui_changes_invalidate_it(cx: &mut TestAppContext) {
@@ -26,10 +71,10 @@ fn video_updates_reuse_sidebar_but_ui_changes_invalidate_it(cx: &mut TestAppCont
         let before = sidebar.read_with(cx, |sidebar, _| sidebar.renders);
         view.update(cx, |view, cx| {
             match change {
-                0 => view.language = eidoryn_psx::i18n::Language::En,
+                0 => view.language = Language::En,
                 1 => view.themes.select("ocean").unwrap(),
                 2 => view.page = WorkspacePage::Debug,
-                _ => view.graphics.open = true,
+                _ => view.game_view = true,
             }
             cx.notify();
         });
@@ -54,6 +99,25 @@ fn video_updates_reuse_sidebar_but_ui_changes_invalidate_it(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn sidebar_paints_the_project_icon_at_both_widths(cx: &mut TestAppContext) {
+    let artwork = super::icons::app_icon().expect("bundled project icon decodes");
+    for width in [1280., 980.] {
+        let (_view, visual) = cx.add_window_view(desktop);
+        visual.simulate_resize(size(px(width), px(900.)));
+        visual.run_until_parked();
+        let bounds = visual
+            .debug_bounds("sidebar-app-icon")
+            .expect("the project icon is visible in the sidebar");
+        assert!(bounds.size.width > px(0.));
+        assert_eq!(bounds.size.width, bounds.size.height);
+        assert!(
+            visual.update(|window, _| window.has_image_atlas_entry(&artwork)),
+            "project artwork should be painted at window width {width}"
+        );
+    }
+}
+
+#[gpui::test]
 fn sidebar_clicks_navigate_between_workspaces(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(desktop);
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
@@ -70,6 +134,36 @@ fn sidebar_clicks_navigate_between_workspaces(cx: &mut TestAppContext) {
         cx.simulate_click(bounds.center(), gpui::Modifiers::none());
         assert_eq!(view.read_with(cx, |view, _| view.page), expected);
     }
+}
+
+#[gpui::test]
+fn sidebar_drag_and_toggle_preserve_game_context(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    cx.run_until_parked();
+    let modifiers = gpui::Modifiers::none();
+    let game = cx.debug_bounds("nav-game").unwrap();
+    cx.simulate_click(game.center(), modifiers);
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("game-controls").is_some());
+    let handle = cx.debug_bounds("sidebar-resize").unwrap().center();
+    let compact = gpui::point(px(82.), handle.y);
+    cx.simulate_mouse_down(handle, gpui::MouseButton::Left, modifiers);
+    cx.run_until_parked();
+    cx.simulate_mouse_move(compact, gpui::MouseButton::Left, modifiers);
+    cx.simulate_mouse_up(compact, gpui::MouseButton::Left, modifiers);
+    cx.run_until_parked();
+    let width = cx.debug_bounds("nav-game").unwrap().size.width;
+    assert!(width < game.size.width);
+    for visible in [false, true] {
+        let toggle = cx.debug_bounds("toggle-sidebar").unwrap();
+        cx.simulate_click(toggle.center(), modifiers);
+        cx.run_until_parked();
+        assert_eq!(cx.debug_bounds("nav-game").is_some(), visible);
+        assert!(view.read_with(cx, |v, _| v.game_view));
+    }
+    assert_eq!(cx.debug_bounds("nav-game").unwrap().size.width, width);
 }
 
 #[gpui::test]
@@ -92,7 +186,7 @@ fn ctrl_l_does_not_leave_the_game_or_release_input(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn snapshot_dropdown_selects_and_loads_the_chosen_state(cx: &mut TestAppContext) {
+fn snapshot_rows_load_the_chosen_state(cx: &mut TestAppContext) {
     use eidoryn_psx::systems::ps1::{input::PadInput, state_file::StateStore};
     let root = test_config_path().with_extension("states");
     let mut machine = Machine::from_exe(&eidoryn_psx::demo::executable(), "UI test").unwrap();
@@ -100,45 +194,28 @@ fn snapshot_dropdown_selects_and_loads_the_chosen_state(cx: &mut TestAppContext)
     machine.cpu.registers[5] = 17;
     let older = store.save(&machine, &PadInput::default()).unwrap();
     machine.cpu.registers[5] = 29;
-    let newer = store.save(&machine, &PadInput::default()).unwrap();
+    store.save(&machine, &PadInput::default()).unwrap();
     let (view, cx) = cx.add_window_view(desktop);
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1280.), px(900.)));
     view.update(cx, |view, cx| {
-        view.game_view = true;
+        view.page = WorkspacePage::SaveStates;
         view.snapshot.save_states = store.list().unwrap();
         cx.notify();
     });
     cx.run_until_parked();
-    for selector in ["save-state", "save-state-picker", "load-state"] {
-        assert!(cx.debug_bounds(selector).is_some());
-    }
-    let picker = cx.debug_bounds("save-state-picker").unwrap();
-    cx.simulate_click(picker.center(), gpui::Modifiers::none());
-    cx.run_until_parked();
-    let option = cx.debug_bounds("save-state-option-1").unwrap();
-    cx.simulate_click(option.center(), gpui::Modifiers::none());
-    cx.run_until_parked();
+    let load = cx.debug_bounds("load-snapshot-1").unwrap();
+    cx.simulate_click(load.center(), gpui::Modifiers::none());
     assert_eq!(
-        view.read_with(cx, |v, _| v.selected_save_state.clone()),
+        view.read_with(cx, |view, _| view.selected_save_state.clone()),
         Some(older)
     );
-    assert!(!view.read_with(cx, |v, _| v.save_state_picker_open));
-    cx.simulate_click(picker.center(), gpui::Modifiers::none());
-    press_keys(cx, "home enter");
-    assert_eq!(
-        view.read_with(cx, |v, _| v.selected_save_state.clone()),
-        Some(newer)
-    );
-    assert!(!view.read_with(cx, |v, _| v.save_state_picker_open));
-    let load = cx.debug_bounds("load-state").unwrap();
-    cx.simulate_click(load.center(), gpui::Modifiers::none());
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         if let Some(snapshot) = view.read_with(cx, |v, _| v.runner.take_snapshot())
             && snapshot.success_message.is_some()
         {
-            assert_eq!(snapshot.cpu.registers[5], 29);
+            assert_eq!(snapshot.cpu.registers[5], 17);
             assert!(!snapshot.running);
             assert!(snapshot.message.is_none());
             break;
@@ -156,8 +233,10 @@ fn snapshot_feedback_and_selection_follow_the_current_game(cx: &mut TestAppConte
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1280.), px(1000.)));
     view.update(cx, |view, cx| {
+        view.page = WorkspacePage::SaveStates;
         view.snapshot.success_message = Some("Saved state".into());
         view.snapshot.save_states = vec![SaveStateInfo {
+            modified: std::time::UNIX_EPOCH,
             path: "game-a/old.ps1state".into(),
             name: "A".into(),
         }];
@@ -171,9 +250,9 @@ fn snapshot_feedback_and_selection_follow_the_current_game(cx: &mut TestAppConte
         Some("game-a/old.ps1state".into())
     );
     view.update(cx, |view, cx| {
-        view.save_state_picker_open = true;
         view.snapshot.title = "Game B".into();
         view.snapshot.save_states = vec![SaveStateInfo {
+            modified: std::time::UNIX_EPOCH,
             path: "game-b/new.ps1state".into(),
             name: "B".into(),
         }];
@@ -187,77 +266,103 @@ fn snapshot_feedback_and_selection_follow_the_current_game(cx: &mut TestAppConte
         view.read_with(cx, |v, _| v.selected_save_state.clone()),
         Some("game-b/new.ps1state".into())
     );
-    assert!(!view.read_with(cx, |v, _| v.save_state_picker_open));
     view.update(cx, |view, cx| {
         view.snapshot.save_states.clear();
         cx.notify();
     });
     cx.run_until_parked();
     assert!(view.read_with(cx, |v, _| v.selected_save_state.is_none()));
-    for selector in ["save-state-picker", "load-state"] {
-        let center = cx.debug_bounds(selector).unwrap().center();
-        cx.simulate_click(center, gpui::Modifiers::none());
-        cx.run_until_parked();
-        assert!(!view.read_with(cx, |v, _| v.save_state_picker_open));
-    }
+    assert!(cx.debug_bounds("load-snapshot-0").is_none());
+    assert!(cx.debug_bounds("rename-snapshot-0").is_none());
+    assert!(cx.debug_bounds("delete-snapshot-0").is_none());
 }
 
 #[gpui::test]
-fn selected_bios_is_persisted_after_ack_and_clear_keeps_the_session(cx: &mut TestAppContext) {
+fn selecting_a_bios_is_session_only_until_set_as_default(cx: &mut TestAppContext) {
     use eidoryn_psx::preferences::Preferences;
-    let bios = TestConfig(test_config_path().with_extension("bios"));
-    std::fs::write(&bios.0, vec![0; 512 * 1024]).unwrap();
-    let bios_path = std::fs::canonicalize(&bios.0).unwrap();
+    let bios = TestConfig(test_config_path().with_extension("bin"));
+    let second_dir = test_config_path().with_extension("dir");
+    std::fs::create_dir(&second_dir).unwrap();
+    let second = second_dir.join(bios.0.file_name().unwrap());
+    for path in [&bios.0, &second] {
+        std::fs::write(path, vec![0; eidoryn_psx::bus::BIOS_SIZE]).unwrap();
+    }
+    let first = bios.0.canonicalize().unwrap();
+    let second = second.canonicalize().unwrap();
     let (view, cx) = cx.add_window_view(desktop);
     let config = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1400.), px(1000.)));
     view.update(cx, |view, cx| {
         view.save_preferences();
-        view.command(
-            Command::Load {
-                path: bios.0.clone(),
-                bios: true,
-            },
-            cx,
-        );
+        view.command(Command::Toggle, cx);
     });
-    assert!(view.read_with(cx, |v, _| v.bios.is_none()));
-    assert!(Preferences::load(&config.0).unwrap().bios_path.is_none());
-    wait_for_snapshot(&view, cx, |snapshot| snapshot.media_revision == 1);
-    assert_eq!(
-        Preferences::load(&config.0).unwrap().bios_path,
-        Some(bios_path.clone())
-    );
+    wait_for_snapshot(&view, cx, |snapshot| snapshot.running);
+    let title = view.read_with(cx, |v, _| v.snapshot.title.clone());
+    cx.run_until_parked();
+    let click = |selector, cx: &mut VisualTestContext| {
+        let control = cx.debug_bounds(selector).unwrap();
+        cx.simulate_click(control.center(), gpui::Modifiers::none());
+    };
+    click("open-bios", cx);
+    cx.simulate_path_prompt_response(|_| Some(vec![bios.0.clone()]));
+    cx.run_until_parked();
     assert_eq!(
         view.read_with(cx, |v, _| v.bios.clone()),
-        Some(bios_path.clone())
+        Some(first.clone())
     );
-
-    let missing = test_config_path().with_extension("bios");
-    view.update(cx, |view, cx| {
-        view.command(
-            Command::Load {
-                path: missing,
-                bios: true,
-            },
-            cx,
-        );
-    });
-    wait_for_snapshot(&view, cx, |snapshot| snapshot.message.is_some());
+    assert!(Preferences::load(&config.0).unwrap().bios_path.is_none());
+    click("bios-details", cx);
+    click("set-default-bios", cx);
     assert_eq!(
         Preferences::load(&config.0).unwrap().bios_path,
-        Some(bios_path.clone())
+        Some(first.clone())
     );
-    assert_eq!(view.read_with(cx, |v, _| v.snapshot.media_revision), 1);
 
+    click("open-bios", cx);
+    cx.simulate_path_prompt_response(|_| Some(vec![test_config_path()]));
     cx.run_until_parked();
-    let clear = cx.debug_bounds("clear-default-bios").unwrap();
-    cx.simulate_click(clear.center(), gpui::Modifiers::none());
+    assert!(view.read_with(cx, |v, _| v.notice.is_some()
+        && v.bios.as_ref() == Some(&first)));
+
+    // Supersede a pending picker. Its later response must not replace the current selection.
+    click("open-bios", cx);
+    click("open-bios", cx);
+    cx.simulate_path_prompt_response(|_| Some(vec![second.clone()]));
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |v, _| v.bios.clone()),
+        Some(first.clone())
+    );
+    cx.simulate_path_prompt_response(|_| Some(vec![second.clone()]));
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.notice.is_none()
+        && v.bios.as_ref() == Some(&second)));
+    assert_eq!(
+        Preferences::load(&config.0).unwrap().bios_path,
+        Some(first.clone())
+    );
+    click("set-default-bios", cx);
+    assert_eq!(
+        Preferences::load(&config.0).unwrap().bios_path,
+        Some(second.clone())
+    );
+    click("clear-default-bios", cx);
     assert!(Preferences::load(&config.0).unwrap().bios_path.is_none());
-    assert_eq!(view.read_with(cx, |v, _| v.bios.clone()), Some(bios_path));
-    assert!(bios.0.is_file());
-    view.update(cx, Desktop::receive_snapshot);
-    assert!(Preferences::load(&config.0).unwrap().bios_path.is_none());
+    assert_eq!(
+        view.read_with(cx, |v, _| v.bios.clone()),
+        Some(second.clone())
+    );
+
+    // Wait for a new worker snapshot after all picker responses.
+    view.update(cx, |v, cx| v.command(Command::SetRewindSeconds(45), cx));
+    wait_for_snapshot(&view, cx, |snapshot| snapshot.rewind_max_seconds == 45);
+    view.read_with(cx, |v, _| {
+        assert!(v.snapshot.running);
+        assert_eq!(v.snapshot.media_revision, 0);
+        assert_eq!(v.snapshot.title, title);
+    });
+    assert!(second.is_file());
+    std::fs::remove_dir_all(second_dir).unwrap();
 }
 
 #[gpui::test]
@@ -324,6 +429,8 @@ fn recent_games_clicks_record_only_successful_loads_and_move_them_to_front(
         assert!(!saved.recent_discs[0].fast_boot);
     }
     for (selector, revision) in [("recent-game-1", 3), ("recent-game-0", 4)] {
+        assert!(view.read_with(cx, |view, _| view.game_view));
+        press_keys(cx, "f6");
         cx.run_until_parked();
         let recent = cx.debug_bounds(selector).unwrap();
         cx.simulate_click(recent.center(), gpui::Modifiers::none());
@@ -339,6 +446,7 @@ fn recent_games_clicks_record_only_successful_loads_and_move_them_to_front(
             std::fs::canonicalize(&discs[1].0).unwrap()
         );
     }
+    press_keys(cx, "f6");
     let before = Preferences::load(&config.0).unwrap().recent_discs;
     let invalid = TestConfig(test_config_path().with_extension("iso"));
     std::fs::write(&invalid.0, b"invalid image").unwrap();
@@ -347,6 +455,7 @@ fn recent_games_clicks_record_only_successful_loads_and_move_them_to_front(
     });
     wait_for_snapshot(&view, cx, |snapshot| snapshot.message.is_some());
     assert_eq!(view.read_with(cx, |v, _| v.snapshot.media_revision), 4);
+    assert!(!view.read_with(cx, |v, _| v.game_view));
     assert_eq!(Preferences::load(&config.0).unwrap().recent_discs, before);
     assert!(Preferences::load(&config.0).unwrap().bios_path.is_none());
 }
@@ -480,12 +589,14 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
     let snapshot = Snapshot::capture_with_mode(&machine, false, None, 0., SnapshotMode::Display);
     let focus = cx.focus_handle();
     window.focus(&focus, cx);
-    let mut themes = ThemeCatalog::default();
-    themes.select("midnight").unwrap();
     Desktop {
         sidebar: None,
+        navigation: sidebar::Navigation::default(),
+        bios_details_open: false,
+        bios_selection: None,
+        memory_details_open: false,
         fonts: fonts::Fonts::new(Arc::clone(cx.text_system())),
-        language: eidoryn_psx::i18n::Language::ZhCn,
+        language: Language::ZhCn,
         preferences: eidoryn_psx::preferences::Preferences::default(),
         preferences_path: Some(test_config_path()),
         theme_paths: std::collections::HashMap::new(),
@@ -503,7 +614,6 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
             .with_backends(Vec::new()),
         snapshot,
         image: None,
-        icon: OnceCell::new(),
         debugger_enabled: false,
         snapshot_mode: SnapshotMode::Display,
         crt: CrtState::new(eidoryn_psx::video_filter::CrtFilter::Off),
@@ -520,13 +630,15 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
         bios: None,
         game_view: false,
         page: WorkspacePage::Console,
-        themes,
+        themes: ThemeCatalog::default(),
         settings_tab: SettingsTab::Graphics,
+        closed_settings_groups: std::collections::HashSet::new(),
         pressed_buttons: 0,
         selected_save_state: None,
-        save_state_picker_open: false,
+        snapshot_confirmation: None,
         renaming_state: None,
         rewind_sources: 0,
+        rewind_disable_origin: None,
         rebinding: None,
         keybindings_draft: None,
         probe: None,
@@ -581,10 +693,7 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
     ] {
         visual.simulate_resize(size(px(width), px(height)));
         for theme in ["midnight", "lavender", "ocean", "forest"] {
-            for language in [
-                eidoryn_psx::i18n::Language::En,
-                eidoryn_psx::i18n::Language::ZhCn,
-            ] {
+            for &language in Language::ALL {
                 for (page, game, settings, tab) in [
                     (WorkspacePage::Console, false, false, SettingsTab::Graphics),
                     (WorkspacePage::Debug, false, false, SettingsTab::Graphics),
@@ -617,6 +726,7 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
                                         .into_iter()
                                         .map(|title| {
                                             eidoryn_psx::systems::ps1::state_file::SaveStateInfo {
+                                                modified: std::time::UNIX_EPOCH,
                                                 path: std::path::PathBuf::from(
                                                     "layout-test.ps1state",
                                                 ),
@@ -635,7 +745,12 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
                         .unwrap();
                     visual.run_until_parked();
                     if page == WorkspacePage::SaveStates {
-                        for selector in ["save-state", "save-state-picker", "load-state"] {
+                        for selector in [
+                            "save-state",
+                            "load-snapshot-0",
+                            "rename-snapshot-0",
+                            "delete-snapshot-0",
+                        ] {
                             let bounds = visual
                                 .debug_bounds(selector)
                                 .expect("snapshot controls share one page");
@@ -656,12 +771,9 @@ fn console_cards_fit_and_reflow_across_window_sizes(cx: &mut TestAppContext) {
     view.update(cx, |view, _| {
         view.bios = Some(format!("firmware/{}.bin", "long-name-".repeat(20)).into());
     });
-    for width in [980., 1250., 1251., 1280., 1600.] {
-        cx.simulate_resize(size(px(width), px(1400.)));
-        for language in [
-            eidoryn_psx::i18n::Language::En,
-            eidoryn_psx::i18n::Language::ZhCn,
-        ] {
+    for (width, height) in [(980., 680.), (1040., 760.), (1280., 900.), (1600., 1000.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        for &language in Language::ALL {
             view.update(cx, |view, cx| {
                 view.language = language;
                 view.themes.select("midnight").unwrap();
@@ -669,42 +781,100 @@ fn console_cards_fit_and_reflow_across_window_sizes(cx: &mut TestAppContext) {
             });
             cx.run_until_parked();
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let [selected_bios, display, stage, transport, session, memory] = [
+            let [launch, bios, disc, session, stage, play] = [
+                "launch-card",
                 "selected-bios",
-                "display-card",
-                "display-stage",
-                "transport",
+                "open-disc",
                 "session-card",
-                "memory-card",
+                "display-stage",
+                "transport-run",
             ]
             .map(|selector| {
                 let bounds = cx
                     .debug_bounds(selector)
-                    .expect("console element is visible");
+                    .expect("startup control is rendered");
                 assert!(
-                    bounds.origin.x >= px(0.) && bounds.right() <= px(width),
-                    "{selector} overflows the {width}px window in {language:?}: {bounds:?}"
+                    bounds.origin.x >= px(0.)
+                        && bounds.right() <= px(width)
+                        && bounds.origin.y >= px(0.)
+                        && bounds.bottom() <= px(height),
+                    "{selector} overflows {width} × {height} in {language:?}: {bounds:?}"
                 );
                 bounds
             });
-            assert!(selected_bios.bottom() <= display.origin.y);
-            let nav = cx.debug_bounds("nav-console").unwrap();
-            assert!(display.origin.x >= nav.right());
-            for child in [stage, transport] {
-                assert!(child.origin.x >= display.origin.x && child.right() <= display.right());
-                assert!(child.origin.y >= display.origin.y && child.bottom() <= display.bottom());
+            assert!(launch.right() <= session.left());
+            for control in [bios, disc] {
+                assert!(
+                    launch.contains(&control.origin) && launch.contains(&control.bottom_right())
+                );
             }
-            let volume = cx.debug_bounds("volume-slider").unwrap();
-            assert!(volume.origin.x >= transport.origin.x && volume.right() <= transport.right());
-            if width <= 1250. {
-                assert!(session.origin.y >= display.bottom());
-                assert_eq!(session.origin.y, memory.origin.y);
-                assert!(session.right() <= memory.origin.x);
-            } else {
-                assert!(session.origin.x >= display.right());
-                assert_eq!(session.origin.x, memory.origin.x);
-                assert!(memory.origin.y >= session.bottom());
+            for control in [stage, play] {
+                assert!(
+                    session.contains(&control.origin) && session.contains(&control.bottom_right())
+                );
             }
+        }
+    }
+}
+
+#[gpui::test]
+fn standby_marks_only_the_unstarted_builtin_demo(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    let mut demo = Machine::demo();
+    let same_title = Machine::from_exe(&eidoryn_psx::demo::executable(), &demo.title).unwrap();
+    for (machine, running, standby) in [
+        (&demo, false, true),
+        (&demo, true, false),
+        (&same_title, false, false),
+    ] {
+        view.update(cx, |view, cx| {
+            view.snapshot = Snapshot::capture(machine, running, None, 0.);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.debug_bounds("demo-standby").is_some(), standby);
+    }
+    demo.step().unwrap();
+    view.update(cx, |view, cx| {
+        view.snapshot = Snapshot::capture(&demo, false, None, 0.);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("demo-standby").is_none());
+}
+
+#[gpui::test]
+fn game_view_keeps_playback_and_quick_actions_below_the_frame(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    press_keys(cx, "f6");
+    for (width, height) in [(980., 680.), (1440., 1000.)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        for &language in Language::ALL {
+            view.update(cx, |view, cx| {
+                view.language = language;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let stage = cx.debug_bounds("display-stage").unwrap();
+            for selector in [
+                "transport-run",
+                "quick-save",
+                "manage-states",
+                "volume-slider",
+            ] {
+                let button = cx.debug_bounds(selector).expect("game control is rendered");
+                assert!(
+                    button.top() >= stage.bottom()
+                        && button.left() >= stage.left()
+                        && button.right() <= stage.right()
+                        && button.bottom() <= px(height),
+                    "{selector} outside the visible toolbar at {width} × {height}: {button:?}"
+                );
+            }
+            let rewind = cx.debug_bounds("rewind-hold").unwrap();
+            assert!(rewind.left() >= stage.right() || rewind.top() >= stage.bottom());
         }
     }
 }
@@ -715,10 +885,7 @@ fn debugger_columns_keep_details_readable(cx: &mut TestAppContext) {
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     for width in [980., 1280., 1600.] {
         cx.simulate_resize(size(px(width), px(1400.)));
-        for language in [
-            eidoryn_psx::i18n::Language::En,
-            eidoryn_psx::i18n::Language::ZhCn,
-        ] {
+        for &language in Language::ALL {
             view.update(cx, |view, cx| {
                 view.language = language;
                 view.page = WorkspacePage::Debug;
@@ -743,7 +910,8 @@ fn debugger_columns_keep_details_readable(cx: &mut TestAppContext) {
             );
             assert_eq!(registers.origin.x, gpu.origin.x);
             assert!(gpu.origin.y >= registers.bottom());
-            if width < 1000. {
+            let stacked = cx.update(|window, cx| view.read(cx).content_width(window) < px(760.));
+            if stacked {
                 assert!(registers.origin.y >= instructions.bottom());
             } else {
                 assert!(registers.origin.x >= instructions.right());
@@ -767,18 +935,28 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
         view.read_with(cx, |v, _| v.settings_tab),
         SettingsTab::Appearance
     );
-    press_keys(cx, "tab tab tab enter");
-    assert_eq!(
-        view.read_with(cx, |v, _| v.language),
-        eidoryn_psx::i18n::Language::En
-    );
+    press_keys(cx, "tab tab tab tab enter");
+    let first = Language::ALL[0];
+    assert_eq!(view.read_with(cx, |v, _| v.language), first);
     assert_eq!(
         eidoryn_psx::preferences::Preferences::load(&path)
             .unwrap()
             .language
             .as_deref(),
-        Some("en")
+        Some(first.id())
     );
+    for &language in Language::ALL {
+        let button = cx.debug_bounds(language.id()).unwrap();
+        cx.simulate_click(button.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| v.language), language);
+        assert_eq!(
+            eidoryn_psx::preferences::Preferences::load(&path)
+                .unwrap()
+                .language(),
+            language
+        );
+    }
     for _ in 0..24 {
         press_keys(cx, "tab");
         view.update_in(cx, |v, window, cx| {
@@ -845,8 +1023,8 @@ fn turbo_settings_persist_and_input_releases_at_ui_boundaries(cx: &mut TestAppCo
     press_keys(cx, "z");
     assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
     press_keys(cx, "f8 tab tab tab tab enter");
-    // Skip fourteen bindings and their three actions to reach the turbo controls.
-    press_keys(cx, &"tab ".repeat(20));
+    // Pass the rewind tab, both group headings and the bindings to reach Square.
+    press_keys(cx, &"tab ".repeat(19));
     press_keys(cx, "enter");
     assert_eq!(
         view.read_with(cx, |v, _| v.settings_tab),
@@ -1011,7 +1189,7 @@ fn binding_capture_handles_cancel_and_keyboard_activation(cx: &mut TestAppContex
     });
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1280.), px(1000.)));
-    press_keys(cx, "f8 tab tab tab tab enter tab tab enter");
+    press_keys(cx, "f8 tab tab tab tab enter tab tab tab enter");
     assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
     for key in ["f5", "tab", "f8", "f11", "f12", "ctrl-r", "shift-j"] {
         press_keys(cx, key);

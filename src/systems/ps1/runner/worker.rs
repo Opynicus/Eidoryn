@@ -1,7 +1,9 @@
 //! PlayStation session scheduling and transitions. No frontend dependencies.
 mod rewind;
 
-use super::{Command, SelectedMedia, SharedSnapshot, Snapshot, SnapshotMode, pacing::FramePacing};
+use super::{
+    Command, QuickSlot, SelectedMedia, SharedSnapshot, Snapshot, SnapshotMode, pacing::FramePacing,
+};
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
@@ -57,9 +59,11 @@ pub(super) fn run(
             Some(
                 Command::SaveState
                     | Command::QuickSave
+                    | Command::QuickSaveIfUnchanged { .. }
                     | Command::QuickLoad
                     | Command::LoadState { .. }
                     | Command::RenameState { .. }
+                    | Command::DeleteState { .. }
                     | Command::RefreshSaveStates
                     | Command::SetRewinding(true)
             )
@@ -132,6 +136,8 @@ struct Worker {
     store: CardStore,
     states: StateStore,
     save_states: Vec<SaveStateInfo>,
+    quick_slot: QuickSlot,
+    quick_slot_revision: u64,
     audio: Option<AudioBuffer>,
     audio_scratch: Vec<StereoFrame>,
     rewind: RewindBuffer,
@@ -160,6 +166,8 @@ impl Worker {
             cpu_mode: machine.cpu_mode(),
             states: StateStore::new(Path::new("saves"), &machine),
             save_states: Vec::new(),
+            quick_slot: QuickSlot::Empty,
+            quick_slot_revision: 0,
             machine,
             running,
             message: None,
@@ -218,6 +226,7 @@ impl Worker {
         self.release_input();
         self.initial.clone_from(&self.machine);
         self.states = StateStore::new(Path::new("saves"), &self.initial);
+        self.quick_slot_revision = self.quick_slot_revision.wrapping_add(1);
         self.save_states.clear();
         self.renamed_state = None;
         self.message = None;
@@ -301,7 +310,15 @@ impl Worker {
         self.reset_pacing();
     }
 
+    fn refresh_quick_slot(&mut self) {
+        self.quick_slot = QuickSlot::inspect(&self.states, &mut self.message);
+        if self.quick_slot == QuickSlot::Unavailable {
+            self.success_message = None;
+        }
+    }
+
     fn refresh_states(&mut self) {
+        self.refresh_quick_slot();
         match self.states.list() {
             Ok(states) => self.save_states = states,
             Err(error) => {
@@ -321,6 +338,7 @@ impl Worker {
             Ok(path) => {
                 self.message = None;
                 let action = if quick {
+                    self.quick_slot_revision = self.quick_slot_revision.wrapping_add(1);
                     "Quick-saved state"
                 } else {
                     "Saved state"
@@ -411,7 +429,7 @@ impl Worker {
                 self.rewind.active.as_mut().expect("active rewind").held = buttons & !6;
                 return false;
             }
-            Command::SetSnapshotMode(_) => {}
+            Command::SetSnapshotMode(_) | Command::DeleteState { .. } => {}
             _ => {
                 self.end_rewind();
             }
@@ -427,8 +445,22 @@ impl Worker {
                 self.save_state(matches!(command, Command::QuickSave));
                 return false;
             }
+            Command::QuickSaveIfUnchanged { revision, slot } => {
+                self.refresh_quick_slot();
+                if self.quick_slot != QuickSlot::Unavailable {
+                    if self.quick_slot == slot && self.quick_slot_revision == revision {
+                        self.save_state(true);
+                    } else {
+                        self.message = Some(
+                            "Quick slot changed. Check the current slot and try again.".into(),
+                        );
+                    }
+                }
+                return false;
+            }
             Command::QuickLoad => {
                 self.load_state(&self.states.quick_path());
+                self.refresh_quick_slot();
                 return false;
             }
             Command::LoadState { path } => {
@@ -437,6 +469,19 @@ impl Worker {
             }
             Command::RenameState { path, name } => {
                 self.rename_state(&path, &name);
+                return false;
+            }
+            Command::DeleteState { path, modified } => {
+                match self.states.delete(&path, modified) {
+                    Ok(()) => {
+                        self.save_states.retain(|state| state.path != path);
+                        self.message = None;
+                        self.success_message =
+                            Some(format!("Deleted snapshot: {}", path.display()));
+                    }
+                    Err(error) => self.message = Some(error),
+                }
+                self.refresh_states();
                 return false;
             }
             Command::RefreshSaveStates => {
@@ -517,8 +562,10 @@ impl Worker {
             | Command::SetRewindSeconds(_)
             | Command::QuickSave
             | Command::QuickLoad
+            | Command::QuickSaveIfUnchanged { .. }
             | Command::LoadState { .. }
             | Command::RenameState { .. }
+            | Command::DeleteState { .. }
             | Command::RefreshSaveStates => {
                 unreachable!("handled before card persistence")
             }
@@ -661,6 +708,8 @@ impl Worker {
             snapshot.success_message.clone_from(&self.success_message);
         }
         snapshot.save_states.clone_from(&self.save_states);
+        snapshot.quick_slot = self.quick_slot;
+        snapshot.quick_slot_revision = self.quick_slot_revision;
         snapshot.renderer_revision = self.renderer_revision;
         snapshot.cards = self.store.status(&self.machine.bus.sio.cards);
         snapshot.video_fps = if self.running { self.video_fps } else { 0.0 };
@@ -808,9 +857,16 @@ mod tests {
         worker.apply(Command::SetButtons(0x8000));
         let saved = worker.machine.save_state().unwrap();
         let input = worker.input.save_state();
+        let old_revision = worker.quick_slot_revision;
         worker.apply(Command::QuickSave);
         assert!(worker.save_states.is_empty());
         worker.machine.run_slice().unwrap();
+        // An earlier confirmation must fail even on a filesystem with coarse timestamps.
+        worker.apply(Command::QuickSaveIfUnchanged {
+            revision: old_revision,
+            slot: worker.quick_slot,
+        });
+        assert!(worker.message.as_ref().unwrap().contains("slot changed"));
         worker.apply(Command::QuickLoad);
         assert!(worker.running);
         assert!(worker.message.is_none());
@@ -828,6 +884,12 @@ mod tests {
         assert!(worker.success_message.is_none());
         assert_eq!(worker.machine.save_state().unwrap(), saved);
         assert_eq!(worker.input.save_state(), input);
+        std::fs::remove_file(worker.states.quick_path()).unwrap();
+        worker.apply(Command::QuickLoad);
+        assert_eq!(worker.quick_slot, QuickSlot::Empty);
+        std::fs::create_dir(worker.states.quick_path()).unwrap();
+        worker.apply(Command::RefreshSaveStates);
+        assert_eq!(worker.quick_slot, QuickSlot::Unavailable);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -961,6 +1023,59 @@ mod tests {
             output.lock().unwrap().as_ref().unwrap().renamed_state,
             worker.renamed_state
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deleting_history_refreshes_the_list_and_preserves_playback() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-worker-delete-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        worker.states = StateStore::new(&root, &worker.initial);
+        worker.apply(Command::QuickSave);
+        worker.apply(Command::SaveState);
+        worker.apply(Command::SaveState);
+        let saved = worker.save_states.clone();
+        let machine = worker.machine.save_state().unwrap();
+        let slot = worker.quick_slot;
+        let pacing = worker.pacing;
+        for (index, state) in saved.iter().enumerate() {
+            worker.running = index == 0;
+            let command = || Command::DeleteState {
+                path: state.path.clone(),
+                modified: state.modified,
+            };
+            worker.apply(command());
+            assert_eq!(worker.save_states.len(), saved.len() - index - 1);
+            assert!(!state.path.exists());
+            assert!(worker.message.is_none());
+            assert!(
+                worker
+                    .success_message
+                    .as_ref()
+                    .unwrap()
+                    .contains(&state.name)
+            );
+            worker.apply(command());
+            assert!(worker.message.is_some());
+            assert!(worker.success_message.is_none());
+            assert_eq!(worker.running, index == 0);
+            assert_eq!(worker.machine.save_state().unwrap(), machine);
+            assert_eq!(worker.quick_slot, slot);
+            assert_eq!(worker.pacing, pacing);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1137,6 +1252,10 @@ mod tests {
         assert!(worker.save_states.is_empty());
         worker.apply(Command::SaveState);
         let saved_a = worker.save_states[0].path.clone();
+        worker.apply(Command::QuickSave);
+        let slot_a = worker.quick_slot;
+        let revision_a = worker.quick_slot_revision;
+        assert!(matches!(slot_a, QuickSlot::Saved(_)));
         worker.apply(Command::Load {
             path: game_b.clone(),
             bios: false,
@@ -1145,6 +1264,12 @@ mod tests {
         assert!(worker.success_message.is_none());
         worker.apply(Command::SaveState);
         let saved_b = worker.save_states[0].path.clone();
+        worker.apply(Command::QuickSaveIfUnchanged {
+            revision: revision_a,
+            slot: slot_a,
+        });
+        assert!(!worker.states.quick_path().exists());
+        assert_eq!(worker.quick_slot, QuickSlot::Empty);
         assert_ne!(saved_a.parent(), saved_b.parent());
         for (game, saved) in [
             (&game_a, &saved_a),
@@ -1157,6 +1282,14 @@ mod tests {
             });
             assert_eq!(worker.save_states.len(), 1);
             assert_eq!(&worker.save_states[0].path, saved);
+            assert_eq!(
+                worker.quick_slot,
+                if game == &game_a {
+                    slot_a
+                } else {
+                    QuickSlot::Empty
+                }
+            );
         }
         worker.apply(Command::Load {
             path: root.join("missing.exe"),
@@ -1174,6 +1307,7 @@ mod tests {
         assert!(!snapshot.running);
         assert_eq!(snapshot.save_states.len(), 1);
         assert_eq!(snapshot.save_states[0].path, saved_a);
+        assert_eq!(snapshot.quick_slot, slot_a);
         drop(restarted);
         for path in [saved_a, saved_b] {
             std::fs::remove_dir_all(path.parent().unwrap()).unwrap();

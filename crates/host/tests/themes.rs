@@ -42,6 +42,8 @@ fn plugin() -> Value {
 fn themes_switch_and_plugins_inherit_then_reload_without_duplicate_entries() {
     let fixture = Fixture::new();
     let mut catalog = ThemeCatalog::default();
+    assert_eq!(catalog.active().id, "midnight");
+    assert_eq!(catalog.active().palette, Palette::MIDNIGHT);
     for id in ["lavender", "midnight", "ocean", "forest"] {
         catalog.select(id).unwrap();
         assert_eq!(catalog.active().id, id);
@@ -60,6 +62,34 @@ fn themes_switch_and_plugins_inherit_then_reload_without_duplicate_entries() {
     catalog.load_plugin(&path).unwrap();
     assert_eq!(catalog.themes().len(), 5);
     assert_eq!(catalog.active().palette.primary, 0x0012_3456);
+}
+
+#[test]
+fn component_colors_follow_base_overrides_and_allow_individual_customization() {
+    let fixture = Fixture::new();
+    let mut catalog = ThemeCatalog::default();
+    let mut manifest = plugin();
+    manifest["colors"] = json!({
+        "button_surface": "#445566",
+        "surface_variant": "#223344",
+        "muted": "#99AABB"
+    });
+    let id = catalog
+        .load_plugin(&fixture.write("theme.json", &manifest))
+        .unwrap();
+    catalog.select(&id).unwrap();
+    let p = &catalog.active().palette;
+    assert_eq!(p.button_surface(), 0x0044_5566);
+    assert_eq!(p.settings_group(), 0x0022_3344);
+    assert_eq!(p.soft_text(), 0x0099_aabb);
+    assert_eq!(p.sidebar(), Palette::MIDNIGHT.sidebar());
+
+    manifest["base"] = json!("ocean");
+    manifest["colors"] = json!({});
+    catalog
+        .load_plugin(&fixture.write("theme.json", &manifest))
+        .unwrap();
+    assert_eq!(catalog.active().palette, Palette::OCEAN);
 }
 
 #[test]

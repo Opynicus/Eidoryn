@@ -15,6 +15,7 @@ const MAX_SIZE: u64 = 128 * 1024 * 1024;
 pub struct SaveStateInfo {
     pub path: PathBuf,
     pub name: String,
+    pub modified: SystemTime,
 }
 
 pub struct StateStore {
@@ -85,17 +86,19 @@ impl StateStore {
                     .metadata()
                     .and_then(|metadata| metadata.modified())
                     .map_err(|e| e.to_string())?;
-                states.push((
+                states.push(SaveStateInfo {
+                    name: name.into_owned(),
+                    path,
                     modified,
-                    SaveStateInfo {
-                        name: name.into_owned(),
-                        path,
-                    },
-                ));
+                });
             }
         }
-        states.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.path.cmp(&a.1.path)));
-        Ok(states.into_iter().map(|(_, state)| state).collect())
+        states.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| b.path.cmp(&a.path))
+        });
+        Ok(states)
     }
 
     /// Rename a checkpoint inside this game's directory without replacing another file.
@@ -125,20 +128,8 @@ impl StateStore {
         {
             return Err("Choose a nonempty snapshot name without path separators or reserved filename characters (up to 240 UTF-8 bytes)".into());
         }
-        let directory = fs::canonicalize(&self.directory)
-            .map_err(|e| format!("Cannot rename snapshot: {e}"))?;
-        let parent = path.parent().ok_or("Snapshot needs a parent directory")?;
-        if fs::canonicalize(parent).map_err(|e| e.to_string())? != directory
-            || path
-                .extension()
-                .is_none_or(|extension| extension != "ps1state")
-            || !fs::symlink_metadata(path)
-                .map_err(|e| e.to_string())?
-                .file_type()
-                .is_file()
-        {
-            return Err("Only snapshots in the current game's directory can be renamed".into());
-        }
+        self.history_metadata(path)
+            .map_err(|error| format!("Cannot rename snapshot {}: {error}", path.display()))?;
         let destination = path.with_file_name(format!("{name}.ps1state"));
         if destination == path {
             return Ok(destination);
@@ -166,6 +157,39 @@ impl StateStore {
         Ok(destination)
     }
 
+    /// Delete one historical checkpoint if it still has the modification time shown to the user.
+    pub fn delete(&self, path: &Path, modified: SystemTime) -> Result<(), String> {
+        let failure = |error| format!("Cannot delete snapshot {}: {error}", path.display());
+        let metadata = self.history_metadata(path).map_err(failure)?;
+        if metadata.modified().map_err(failure)? != modified {
+            return Err(format!(
+                "Snapshot changed since it was selected: {}",
+                path.display()
+            ));
+        }
+        fs::remove_file(path).map_err(failure)
+    }
+
+    fn history_metadata(&self, path: &Path) -> std::io::Result<fs::Metadata> {
+        let invalid = || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Expected a history snapshot in the current game's directory",
+            )
+        };
+        let parent = path.parent().ok_or_else(invalid)?;
+        if path.extension().is_none_or(|ext| ext != "ps1state")
+            || fs::canonicalize(parent)? != fs::canonicalize(&self.directory)?
+        {
+            return Err(invalid());
+        }
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_file() {
+            return Err(invalid());
+        }
+        Ok(metadata)
+    }
+
     pub fn save(&self, machine: &Machine, input: &PadInput) -> Result<PathBuf, String> {
         let bytes = self.encode(machine, input)?;
         fs::create_dir_all(&self.directory)
@@ -188,6 +212,21 @@ impl StateStore {
             }
         }
         Err("Cannot create a unique save state timestamp".into())
+    }
+
+    pub(crate) fn quick_slot_modified(&self) -> Result<Option<SystemTime>, String> {
+        let path = self.quick_path();
+        match fs::metadata(&path) {
+            Ok(file) if file.is_file() => {
+                file.modified().map(Some).map_err(|error| error.to_string())
+            }
+            Ok(_) => Err(format!("Quick slot is not a file: {}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "Cannot inspect quick slot {}: {error}",
+                path.display()
+            )),
+        }
     }
 
     pub fn quick_path(&self) -> PathBuf {
@@ -306,6 +345,13 @@ fn timestamp(seconds: u64) -> Result<String, String> {
     ))
 }
 
+/// Human-readable UTC date and time for a checkpoint, independent of its filename.
+pub fn checkpoint_time(modified: SystemTime) -> Option<String> {
+    let stamp = timestamp(modified.duration_since(UNIX_EPOCH).ok()?.as_secs()).ok()?;
+    let (date, clock) = stamp.split_once('T')?;
+    Some(format!("{date} {} UTC", clock.replace('-', ":")))
+}
+
 fn leap_year(year: u64) -> bool {
     year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
 }
@@ -317,6 +363,10 @@ mod tests {
     #[test]
     fn timestamps_sort_in_calendar_order() {
         assert_eq!(timestamp(0).unwrap(), "1970-01-01T00-00-00");
+        assert_eq!(
+            checkpoint_time(UNIX_EPOCH).as_deref(),
+            Some("1970-01-01 00:00:00 UTC")
+        );
         assert_eq!(timestamp(951_782_400).unwrap(), "2000-02-29T00-00-00");
         assert_eq!(timestamp(1_794_700_800).unwrap(), "2026-11-15T00-00-00");
     }
@@ -391,7 +441,12 @@ mod tests {
         let historical = store.save(&machine, &input).unwrap();
         let historical = store.rename(&historical, "quick").unwrap();
         let historical_bytes = fs::read(&historical).unwrap();
+        assert!(store.quick_slot_modified().unwrap().is_none());
         let first = store.save_quick(&machine, &input).unwrap();
+        assert_eq!(
+            store.quick_slot_modified().unwrap(),
+            Some(fs::metadata(&first).unwrap().modified().unwrap())
+        );
         assert_eq!(first, store.quick_path());
         machine.run_slice().unwrap();
         input.set_buttons(0x8020, machine.bus.elapsed_cycles());
@@ -448,6 +503,64 @@ mod tests {
             assert_eq!(state.name, name);
             assert_eq!(store.rename(path, &state.name).unwrap(), *path);
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn delete_requires_the_selected_history_file_and_its_original_timestamp() {
+        let root = std::env::temp_dir().join(format!(
+            "eidoryn-delete-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let machine = Machine::demo();
+        let store = StateStore::new(&root, &machine);
+        fs::create_dir_all(store.quick_path().parent().unwrap()).unwrap();
+        let history = store.directory.join("桥前.ps1state");
+        fs::write(&history, b"first").unwrap();
+        let selected = store.list().unwrap().pop().unwrap();
+
+        let foreign = root.join("other-game.ps1state");
+        let card = store.directory.join("card.mcd");
+        let quick = store.quick_path();
+        for protected in [&foreign, &card, &quick] {
+            fs::write(protected, b"other").unwrap();
+            let modified = fs::metadata(protected).unwrap().modified().unwrap();
+            assert!(store.delete(protected, modified).is_err());
+            assert_eq!(fs::read(protected).unwrap(), b"other");
+        }
+        #[cfg(unix)]
+        {
+            let link = store.directory.join("link.ps1state");
+            std::os::unix::fs::symlink(&foreign, &link).unwrap();
+            let modified = fs::symlink_metadata(&link).unwrap().modified().unwrap();
+            assert!(store.delete(&link, modified).is_err());
+            assert!(link.is_symlink());
+        }
+
+        fs::remove_file(&history).unwrap();
+        fs::write(&history, b"replacement").unwrap();
+        File::options()
+            .write(true)
+            .open(&history)
+            .unwrap()
+            .set_modified(UNIX_EPOCH)
+            .unwrap();
+        assert!(store.delete(&history, selected.modified).is_err());
+        assert_eq!(fs::read(&history).unwrap(), b"replacement");
+        let replacement = store.list().unwrap().pop().unwrap();
+        store
+            .delete(&replacement.path, replacement.modified)
+            .unwrap();
+        assert!(store.list().unwrap().is_empty());
+        assert!(
+            store
+                .delete(&replacement.path, replacement.modified)
+                .is_err()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

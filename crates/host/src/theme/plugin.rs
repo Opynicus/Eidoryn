@@ -63,19 +63,24 @@ fn parse(bytes: &[u8]) -> Result<Theme, String> {
     if BUILTINS.iter().any(|theme| theme.id == manifest.id) {
         return Err("Theme plugin id must differ from built-in theme ids".into());
     }
-    let mut palette = BUILTINS
+    let base = BUILTINS
         .iter()
         .find(|theme| theme.id == manifest.base)
         .ok_or_else(|| format!("Unknown base theme: {}", manifest.base))?
         .palette;
+    let mut palette = base;
+    let mut component_overrides = BTreeMap::new();
     for (key, value) in manifest.colors {
         let hex = value
             .strip_prefix('#')
             .filter(|hex| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or_else(|| format!("Color {key} must use #RRGGBB"))?;
         let color = u32::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
-        palette.set(&key, color)?;
+        if !palette.set_base(&key, color) {
+            component_overrides.insert(key, color);
+        }
     }
+    palette.apply_component_overrides(&base, component_overrides)?;
     Ok(Theme {
         id: manifest.id,
         name: manifest.name.trim().into(),

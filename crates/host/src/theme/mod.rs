@@ -2,7 +2,7 @@
 mod palette;
 mod plugin;
 
-pub use palette::Palette;
+pub use palette::{ComponentColors, Palette};
 use std::path::Path;
 
 #[derive(Clone, Debug)]
@@ -20,14 +20,14 @@ struct BuiltinTheme {
 
 static BUILTINS: [BuiltinTheme; 4] = [
     BuiltinTheme {
-        id: "lavender",
-        name: "Lavender",
-        palette: Palette::LAVENDER,
-    },
-    BuiltinTheme {
         id: "midnight",
         name: "Midnight",
         palette: Palette::MIDNIGHT,
+    },
+    BuiltinTheme {
+        id: "lavender",
+        name: "Lavender",
+        palette: Palette::LAVENDER,
     },
     BuiltinTheme {
         id: "ocean",
@@ -40,6 +40,10 @@ static BUILTINS: [BuiltinTheme; 4] = [
         palette: Palette::FOREST,
     },
 ];
+
+const DEFAULT_INDEX: usize = 0;
+/// Theme selected at first launch or when a saved theme cannot be restored.
+pub const DEFAULT_THEME_ID: &str = BUILTINS[DEFAULT_INDEX].id;
 
 pub fn builtins() -> Vec<Theme> {
     BUILTINS
@@ -61,7 +65,7 @@ impl Default for ThemeCatalog {
     fn default() -> Self {
         Self {
             themes: builtins(),
-            selected: 0,
+            selected: DEFAULT_INDEX,
         }
     }
 }

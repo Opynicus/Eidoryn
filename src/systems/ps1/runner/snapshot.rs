@@ -7,13 +7,20 @@ use crate::systems::ps1::{
     machine::Machine,
     state_file::SaveStateInfo,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::SystemTime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionState {
     Running,
     Paused,
     Stopped,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuickSlot {
+    Empty,
+    Saved(SystemTime),
+    Unavailable,
 }
 
 /// Display clients do not need formatted CPU instructions.
@@ -34,6 +41,9 @@ pub enum SelectedMedia {
 #[allow(clippy::struct_excessive_bools)] // Independent media, execution, and shutdown flags.
 pub struct Snapshot {
     pub save_states: Vec<SaveStateInfo>,
+    pub quick_slot: QuickSlot,
+    /// Increments after a session replacement or a successful quick save.
+    pub quick_slot_revision: u64,
     pub renamed_state: Option<(PathBuf, PathBuf)>,
     pub mode: SnapshotMode,
     pub cards: [Option<CardStatus>; 2],
@@ -51,6 +61,7 @@ pub struct Snapshot {
     pub cpu_mode: CpuMode,
     pub cpu_stats: CpuStats,
     pub title: String,
+    pub is_demo: bool,
     pub running: bool,
     pub rewind_enabled: bool,
     pub rewind_max_seconds: u16,
@@ -126,6 +137,8 @@ impl Snapshot {
         let halted = machine.halted.is_some() || renderer_error.is_some();
         Self {
             save_states: Vec::new(),
+            quick_slot: QuickSlot::Empty,
+            quick_slot_revision: 0,
             renamed_state: None,
             mode,
             cards: std::array::from_fn(|slot| {
@@ -149,6 +162,7 @@ impl Snapshot {
             cpu_mode: machine.cpu_mode(),
             cpu_stats: machine.cpu_stats(),
             title: machine.title.clone(),
+            is_demo: machine.is_demo(),
             running: running && !halted,
             rewind_enabled: false,
             rewind_max_seconds: super::DEFAULT_REWIND_SECONDS,

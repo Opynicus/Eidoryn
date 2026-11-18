@@ -7,16 +7,30 @@ use crate::systems::ps1::card_file::CardStore;
 use crate::systems::ps1::machine::Machine;
 use crate::systems::ps1::state_file::StateStore;
 use eidoryn_host::audio::AudioBuffer;
-pub use snapshot::{ExecutionState, SelectedMedia, Snapshot, SnapshotMode};
+pub use snapshot::{ExecutionState, QuickSlot, SelectedMedia, Snapshot, SnapshotMode};
 // Preserve the existing loader entry points while keeping file I/O outside the worker.
 pub use crate::systems::ps1::media::{load_disc, load_path};
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     thread,
+    time::SystemTime,
 };
 
 type SharedSnapshot = Arc<Mutex<Option<Snapshot>>>;
+
+impl QuickSlot {
+    fn inspect(store: &StateStore, message: &mut Option<String>) -> Self {
+        match store.quick_slot_modified() {
+            Ok(Some(modified)) => Self::Saved(modified),
+            Ok(None) => Self::Empty,
+            Err(error) => {
+                message.get_or_insert(error);
+                Self::Unavailable
+            }
+        }
+    }
+}
 
 pub const MIN_REWIND_SECONDS: u16 = 5;
 pub const MAX_REWIND_SECONDS: u16 = 120;
@@ -39,6 +53,11 @@ pub enum Command {
     FlushCards,
     SaveState,
     QuickSave,
+    /// Save only to the session and slot shown when the user made the decision.
+    QuickSaveIfUnchanged {
+        revision: u64,
+        slot: QuickSlot,
+    },
     QuickLoad,
     LoadState {
         path: PathBuf,
@@ -46,6 +65,10 @@ pub enum Command {
     RenameState {
         path: PathBuf,
         name: String,
+    },
+    DeleteState {
+        path: PathBuf,
+        modified: SystemTime,
     },
     RefreshSaveStates,
     Load {
@@ -101,7 +124,9 @@ impl Runner {
         let (sender, receiver) = mpsc::channel();
         let mut snapshot = Snapshot::capture_with_mode(&machine, auto_run, None, 0.0, mode);
         snapshot.cards = store.status(&machine.bus.sio.cards);
-        match StateStore::new(Path::new("saves"), &machine).list() {
+        let states = StateStore::new(Path::new("saves"), &machine);
+        snapshot.quick_slot = QuickSlot::inspect(&states, &mut snapshot.message);
+        match states.list() {
             Ok(states) => snapshot.save_states = states,
             Err(error) => {
                 snapshot.message.get_or_insert(error);

@@ -100,7 +100,6 @@ impl Desktop {
         cx.notify();
     }
 
-    #[allow(clippy::too_many_lines)] // Keep the binding draft, feedback and confirmation controls together.
     fn keybindings_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let bindings = self
@@ -117,12 +116,9 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3()
-            .child(
-                div()
-                    .text_sm()
-                    .font(self.fonts.semibold())
-                    .child(self.tr(Text::KeyBindings)),
-            )
+            .when(bindings != &self.preferences.keybindings, |panel| {
+                panel.child(label(p, self.tr(Text::BindingDraft)).text_color(rgb(p.primary)))
+            })
             .child(label(p, self.tr(Text::KeyBindingsHint)))
             .child(label(p, self.tr(Text::BindingCancelHint)))
             .when(!conflicts.is_empty(), |panel| {
@@ -181,53 +177,56 @@ impl Desktop {
                                 view.rebinding = Some(pad);
                                 view.notice = None;
                                 // Capture Enter/Space without activating the focused button again.
-                                window.focus(&view.focus, cx);
+                                window.focus(&view.settings_focus, cx);
                                 cx.notify();
                             }))
                     })),
             )
-            .child(
-                div().flex().flex_wrap().gap_2().children(
-                    [
-                        ("bindings-apply", Text::ApplyBindings),
-                        ("bindings-reset", Text::ResetBindings),
-                        ("bindings-cancel", Text::CancelBindings),
-                    ]
-                    .into_iter()
-                    .map(|(id, text)| {
-                        button(&self.fonts, p, id, self.tr(text), id == "bindings-apply")
-                            .debug_selector(move || id.into())
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.rebinding = None;
-                                view.notice = None;
-                                match id {
-                                    "bindings-apply" => view.apply_bindings(cx),
-                                    "bindings-reset" => {
-                                        view.keybindings_draft = Some(KeyBindings::default());
-                                    }
-                                    _ => view.keybindings_draft = None,
-                                }
-                                cx.notify();
-                            }))
-                    }),
-                ),
-            )
+    }
+
+    pub(super) fn binding_actions(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        div().flex().flex_wrap().gap_2().children(
+            [
+                ("bindings-apply", Text::ApplyBindings),
+                ("bindings-reset", Text::ResetBindings),
+                ("bindings-cancel", Text::CancelBindings),
+            ]
+            .into_iter()
+            .map(|(id, text)| {
+                button(&self.fonts, p, id, self.tr(text), id == "bindings-apply")
+                    .debug_selector(move || id.into())
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.rebinding = None;
+                        view.notice = None;
+                        match id {
+                            "bindings-apply" => view.apply_bindings(cx),
+                            "bindings-reset" => {
+                                view.keybindings_draft = Some(KeyBindings::default());
+                            }
+                            _ => view.keybindings_draft = None,
+                        }
+                        cx.notify();
+                    }))
+            }),
+        )
     }
 
     pub(super) fn controller_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(self.setting_group(Text::KeyBindings, cx, |cx| self.keybindings_panel(cx)))
+            .child(self.setting_group(Text::Turbo, cx, |cx| self.turbo_settings(cx)))
+    }
+
+    fn turbo_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.keybindings_panel(cx))
-            .child(
-                div()
-                    .mt_4()
-                    .text_sm()
-                    .font(self.fonts.semibold())
-                    .child(self.tr(Text::Turbo)),
-            )
             .child(label(p, self.tr(Text::TurboHint)))
             .child(
                 div().flex().flex_wrap().gap_2().children(

@@ -8,6 +8,7 @@ use crate::{
         input::TurboConfig,
         runner::{DEFAULT_REWIND_SECONDS, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS},
     },
+    theme::DEFAULT_THEME_ID,
     video_filter::CrtFilter,
 };
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,7 @@ pub struct RecentDisc {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
+    /// Keep the saved tag even when this build does not include that catalog.
     pub language: Option<String>,
     pub theme: String,
     pub theme_plugin: Option<PathBuf>,
@@ -48,7 +50,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             language: None,
-            theme: "midnight".into(),
+            theme: DEFAULT_THEME_ID.into(),
             theme_plugin: None,
             crt: "off".into(),
             volume: 75,
@@ -150,9 +152,6 @@ impl Preferences {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if let Some(language) = &self.language {
-            language.parse::<Language>()?;
-        }
         self.crt.parse::<CrtFilter>()?;
         self.renderer.parse::<RendererMode>()?;
         self.turbo()?;
@@ -233,6 +232,21 @@ pub fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_language_survives_loading_and_saving_other_preferences() {
+        let path = std::env::temp_dir().join(format!("eidoryn-locale-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"language":"qaa-x-eidoryn","volume":42}"#).unwrap();
+        let mut settings = Preferences::load(&path).unwrap();
+        assert_eq!(settings.language(), Language::preferred());
+        assert_eq!(settings.volume, 42);
+        settings.muted = true;
+        settings.save(&path).unwrap();
+        let reloaded = Preferences::load(&path).unwrap();
+        assert_eq!(reloaded.language.as_deref(), Some("qaa-x-eidoryn"));
+        assert!(reloaded.muted);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn recent_discs_are_persistent_unique_and_bounded() {
