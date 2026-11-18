@@ -1524,6 +1524,7 @@ dependencies = [
  "bytemuck",
  "chd",
  "eidoryn-jit-runtime",
+ "flate2",
  "pollster 1.0.1",
  "serde",
  "sha2",

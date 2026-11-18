@@ -1,3 +1,4 @@
+use crate::state::v1::{MachineV1, impl_serde_v1};
 use crate::{
     EmuError,
     bus::{BIOS_SIZE, Bus, RAM_SIZE, physical},
@@ -10,7 +11,7 @@ use std::sync::Arc;
 
 pub const INSTRUCTIONS_PER_SLICE: usize = 20_000;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Clone)]
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: Bus,
@@ -18,8 +19,40 @@ pub struct Machine {
     pub halted: Option<EmuError>,
     pub slices: u64,
     demo: bool,
-    #[serde(skip)]
     execution: Execution,
+}
+
+impl_serde_v1!(Machine, MachineV1);
+
+impl TryFrom<&Machine> for MachineV1 {
+    type Error = String;
+
+    fn try_from(machine: &Machine) -> Result<Self, Self::Error> {
+        Ok(Self {
+            cpu: (&machine.cpu).into(),
+            bus: (&machine.bus).try_into()?,
+            title: machine.title.clone(),
+            halted: machine.halted.as_ref().map(Into::into),
+            slices: machine.slices,
+            demo: machine.demo,
+        })
+    }
+}
+
+impl TryFrom<MachineV1> for Machine {
+    type Error = String;
+
+    fn try_from(saved: MachineV1) -> Result<Self, Self::Error> {
+        Ok(Self {
+            cpu: saved.cpu.try_into()?,
+            bus: saved.bus.try_into()?,
+            title: saved.title,
+            halted: saved.halted.map(EmuError::try_from).transpose()?,
+            slices: saved.slices,
+            demo: saved.demo,
+            execution: Execution::default(),
+        })
+    }
 }
 
 impl Machine {

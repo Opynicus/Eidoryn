@@ -92,29 +92,40 @@ impl Desktop {
             .child(
                 div()
                     .flex()
+                    .flex_col()
                     .flex_shrink_0()
+                    .items_end()
                     .gap_2()
                     .child(
-                        action(
-                            fonts,
-                            p,
-                            "open-bios",
-                            self.tr(Text::ChooseBios),
-                            Some("plus"),
-                            false,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| view.open(true, cx))),
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                action(
+                                    fonts,
+                                    p,
+                                    "open-bios",
+                                    self.tr(Text::ChooseBios),
+                                    Some("plus"),
+                                    false,
+                                )
+                                .on_click(cx.listener(|view, _, _, cx| view.open(true, cx))),
+                            )
+                            .child(
+                                action(
+                                    fonts,
+                                    p,
+                                    "open-disc",
+                                    self.tr(Text::OpenDisc),
+                                    Some("disc"),
+                                    true,
+                                )
+                                .on_click(cx.listener(|view, _, _, cx| view.open_disc(false, cx))),
+                            ),
                     )
                     .child(
-                        action(
-                            fonts,
-                            p,
-                            "open-disc",
-                            self.tr(Text::OpenDisc),
-                            Some("disc"),
-                            true,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| view.open_disc(false, cx))),
+                        self.bios_file("selected-bios", Text::SelectedBios, self.bios.as_deref())
+                            .max_w(px(320.)),
                     ),
             )
     }

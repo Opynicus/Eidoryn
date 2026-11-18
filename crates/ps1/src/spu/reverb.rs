@@ -1,11 +1,42 @@
 //! Stereo reflection/comb/all-pass network in the guest's SPU RAM.
 //! The half-rate resampling currently uses a box filter and linear reconstruction.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[derive(Clone, Default)]
 pub(super) struct Reverb {
     pub cursor: usize,
     previous_input: [i32; 2],
     output: [i32; 2],
     odd: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "Reverb")]
+pub(super) struct ReverbV1 {
+    cursor: usize,
+    previous_input: [i32; 2],
+    output: [i32; 2],
+    odd: bool,
+}
+
+impl From<&Reverb> for ReverbV1 {
+    fn from(state: &Reverb) -> Self {
+        Self {
+            cursor: state.cursor,
+            previous_input: state.previous_input,
+            output: state.output,
+            odd: state.odd,
+        }
+    }
+}
+
+impl From<ReverbV1> for Reverb {
+    fn from(state: ReverbV1) -> Self {
+        Self {
+            cursor: state.cursor,
+            previous_input: state.previous_input,
+            output: state.output,
+            odd: state.odd,
+        }
+    }
 }
 
 struct Buffer<'a> {
@@ -39,6 +70,16 @@ impl Buffer<'_> {
 }
 
 impl Reverb {
+    pub(super) fn valid_state(&self) -> bool {
+        self.cursor < super::RAM_SIZE
+            && self.cursor & 1 == 0
+            && self
+                .previous_input
+                .iter()
+                .chain(&self.output)
+                .all(|&sample| i16::try_from(sample).is_ok())
+    }
+
     pub fn sample(
         &mut self,
         input: [i32; 2],

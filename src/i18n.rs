@@ -145,6 +145,8 @@ messages! {
     ConsoleEyebrow => ("PLAYSTATION / WORKSPACE", "PLAYSTATION / WORKSPACE"),
     Welcome => ("当前游玩", "Now playing"),
     WelcomeHint => ("打开本地游戏，或继续内置演示。", "Open a local game or continue the built-in demo."),
+    SelectedBios => ("已选 BIOS", "Selected BIOS"),
+    DefaultBios => ("默认 BIOS", "Default BIOS"),
     ChooseBios => ("选择 BIOS", "Choose BIOS"),
     OpenDisc => ("打开光盘镜像", "Open disc image"),
     RecentGames => ("最近打开的游戏", "Recent games"),

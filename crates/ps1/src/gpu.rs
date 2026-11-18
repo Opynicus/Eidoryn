@@ -12,10 +12,12 @@ mod compute;
 mod rasterizer;
 mod renderer;
 mod renderer_engine;
+mod state;
 use rasterizer::{DrawState, RasterCommand};
 pub use renderer::RendererMode;
 use renderer::{FrameReadback, Renderer};
 pub use renderer_engine::{RendererAvailability, hardware_backends};
+pub(crate) use state::GpuV1;
 
 #[derive(Clone, Copy)]
 struct DisplaySettings {
@@ -29,33 +31,33 @@ pub const VRAM_WIDTH: usize = 1024;
 pub const VRAM_HEIGHT: usize = 512;
 /// Immutable pixels from the end of the visible field, before the guest's
 /// VBlank handler can swap or clear its drawing buffers.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone)]
 pub struct DisplayFrame {
     pub dimensions: (usize, usize),
     pub rgb: Arc<[u8]>,
 }
 
-#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Default)]
 struct Vertex {
     position: (i32, i32),
     color: [i64; 3],
     uv: [i64; 2],
 }
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy)]
 struct Texture {
     clut: u16,
     raw: bool,
 }
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy)]
 struct DrawStyle {
     texture: Option<Texture>,
     transparent: bool,
     dither: bool,
 }
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy)]
 struct Polyline {
     previous: Vertex,
     next_color: Option<[i64; 3]>,
@@ -63,7 +65,7 @@ struct Polyline {
     style: DrawStyle,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug)]
 struct Transfer {
     x: usize,
     y: usize,
@@ -96,7 +98,6 @@ impl Transfer {
 
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)] // Independent GPU hardware control bits.
-#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Gpu {
     renderer: Renderer,
     pub commands: u64,
@@ -181,14 +182,16 @@ impl Gpu {
             })
     }
 
-    pub(crate) fn validate_state(&self) -> Result<(), String> {
-        self.renderer.validate_state()?;
+    fn validate_state(&self) -> Result<(), String> {
         let transfer_valid = |transfer: &Transfer| {
             transfer.x < VRAM_WIDTH
                 && transfer.y < VRAM_HEIGHT
                 && (1..=VRAM_WIDTH).contains(&transfer.width)
                 && (1..=VRAM_HEIGHT).contains(&transfer.height)
-                && transfer.index <= transfer.width * transfer.height
+                // Each GP0 write or GPUREAD consumes two pixels. The final
+                // word removes the transfer, including for odd-sized regions.
+                && transfer.index.is_multiple_of(2)
+                && transfer.index < transfer.width * transfer.height
         };
         let divider = if self.display_mode & 0x40 != 0 {
             7
@@ -198,6 +201,12 @@ impl Gpu {
         if self.packet.len() > 12
             || self.packet_words > 12
             || (!self.packet.is_empty() && self.packet.len() >= self.packet_words)
+            || self.packet.first().is_some_and(|word| {
+                Self::packet_size(*word) != Some(self.packet_words)
+                    || self.upload.is_some()
+                    || self.polyline.is_some()
+            })
+            || (self.upload.is_some() && self.polyline.is_some())
             || self.upload.as_ref().is_some_and(|t| !transfer_valid(t))
             || self.download.as_ref().is_some_and(|t| !transfer_valid(t))
             || !(0..VRAM_WIDTH as i32).contains(&self.draw_min.0)
@@ -207,7 +216,10 @@ impl Gpu {
             || !(-1024..=1023).contains(&self.offset.0)
             || !(-1024..=1023).contains(&self.offset.1)
             || self.polyline.as_ref().is_some_and(|line| {
-                !(-2048..=2046).contains(&line.previous.position.0)
+                line.style.texture.is_some()
+                    || (!line.shaded && line.next_color.is_some())
+                    || line.previous.uv != [0; 2]
+                    || !(-2048..=2046).contains(&line.previous.position.0)
                     || !(-2048..=2046).contains(&line.previous.position.1)
                     || line
                         .previous
@@ -222,6 +234,14 @@ impl Gpu {
             })
             || self.display_start.0 >= VRAM_WIDTH
             || self.display_start.1 >= VRAM_HEIGHT
+            || self.display_mode > 0x7f
+            || self.dma_direction > 3
+            || self.draw_mode > 0x3fff
+            || self.texture_window > 0xfffff
+            || self.horizontal_range.0 > 4095
+            || self.horizontal_range.1 > 4095
+            || self.vertical_range.0 > 1023
+            || self.vertical_range.1 > 1023
             || self.video_fraction >= 451_584
             || self.line_clock >= 3413
             || self.scanline >= 314
@@ -550,6 +570,25 @@ impl Gpu {
         self.read_latch
     }
 
+    fn packet_size(word: u32) -> Option<usize> {
+        let count = match word >> 24 {
+            0x00 | 0x01 | 0x04..=0x1f | 0xe0..=0xef => 1,
+            0x02 | 0xa0 | 0xc0 => 3,
+            0x80 => 4,
+            opcode @ 0x20..=0x3f => {
+                let count = if opcode & 8 != 0 { 4 } else { 3 };
+                1 + count * (1 + usize::from(opcode & 4 != 0))
+                    + if opcode & 16 != 0 { count - 1 } else { 0 }
+            }
+            opcode @ 0x40..=0x5f => 3 + usize::from(opcode & 16 != 0),
+            opcode @ 0x60..=0x7f => {
+                2 + usize::from(opcode & 4 != 0) + usize::from(opcode & 0x18 == 0)
+            }
+            _ => return None,
+        };
+        Some(count)
+    }
+
     pub fn gp0(&mut self, word: u32) -> Result<(), EmuError> {
         if let Some(mut transfer) = self.upload.take() {
             for color in [word as u16, (word >> 16) as u16] {
@@ -586,21 +625,8 @@ impl Gpu {
             return Ok(());
         }
         if self.packet.is_empty() {
-            self.packet_words = match word >> 24 {
-                0x00 | 0x01 | 0x04..=0x1f | 0xe0..=0xef => 1,
-                0x02 | 0xa0 | 0xc0 => 3,
-                0x80 => 4,
-                opcode @ 0x20..=0x3f => {
-                    let count = if opcode & 8 != 0 { 4 } else { 3 };
-                    1 + count * (1 + usize::from(opcode & 4 != 0))
-                        + if opcode & 16 != 0 { count - 1 } else { 0 }
-                }
-                opcode @ 0x40..=0x5f => 3 + usize::from(opcode & 16 != 0),
-                opcode @ 0x60..=0x7f => {
-                    2 + usize::from(opcode & 4 != 0) + usize::from(opcode & 0x18 == 0)
-                }
-                _ => return Err(EmuError::GpuCommand((word >> 24) as u8)),
-            };
+            self.packet_words =
+                Self::packet_size(word).ok_or(EmuError::GpuCommand((word >> 24) as u8))?;
         }
         self.packet.push(word);
         if self.packet.len() == self.packet_words {

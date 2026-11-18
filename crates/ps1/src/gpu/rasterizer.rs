@@ -11,7 +11,7 @@ const DITHER: [[i64; 4]; 4] = [
     [3, -1, 2, -2],
 ];
 
-#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct DrawState {
     pub draw_min: (i32, i32),
     pub draw_max: (i32, i32),
@@ -29,10 +29,79 @@ pub(super) enum RasterCommand {
     Pixel(usize, u16, DrawState),
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone)]
 pub(super) struct Rasterizer {
     pub vram: Vec<u16>,
     state: DrawState,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "DrawState")]
+struct DrawStateV1 {
+    draw_min: (i32, i32),
+    draw_max: (i32, i32),
+    offset: (i32, i32),
+    mask_set: bool,
+    mask_check: bool,
+    draw_mode: u32,
+    texture_window: u32,
+}
+
+impl From<DrawState> for DrawStateV1 {
+    fn from(value: DrawState) -> Self {
+        Self {
+            draw_min: value.draw_min,
+            draw_max: value.draw_max,
+            offset: value.offset,
+            mask_set: value.mask_set,
+            mask_check: value.mask_check,
+            draw_mode: value.draw_mode,
+            texture_window: value.texture_window,
+        }
+    }
+}
+
+impl From<DrawStateV1> for DrawState {
+    fn from(value: DrawStateV1) -> Self {
+        Self {
+            draw_min: value.draw_min,
+            draw_max: value.draw_max,
+            offset: value.offset,
+            mask_set: value.mask_set,
+            mask_check: value.mask_check,
+            draw_mode: value.draw_mode,
+            texture_window: value.texture_window,
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "Rasterizer")]
+pub(super) struct RasterizerV1 {
+    vram: Vec<u16>,
+    state: DrawStateV1,
+}
+
+impl From<Rasterizer> for RasterizerV1 {
+    fn from(value: Rasterizer) -> Self {
+        Self {
+            vram: value.vram,
+            state: value.state.into(),
+        }
+    }
+}
+
+impl TryFrom<RasterizerV1> for Rasterizer {
+    type Error = String;
+
+    fn try_from(value: RasterizerV1) -> Result<Self, Self::Error> {
+        let state = Self {
+            vram: value.vram,
+            state: value.state.into(),
+        };
+        state.validate_state()?;
+        Ok(state)
+    }
 }
 
 impl Default for Rasterizer {
@@ -45,12 +114,14 @@ impl Default for Rasterizer {
 }
 
 impl Rasterizer {
-    pub(super) fn validate_state(&self) -> Result<(), String> {
+    fn validate_state(&self) -> Result<(), String> {
         let valid_position = |position: (i32, i32)| {
             (0..VRAM_WIDTH as i32).contains(&position.0)
                 && (0..VRAM_HEIGHT as i32).contains(&position.1)
         };
         if self.vram.len() != VRAM_WIDTH * VRAM_HEIGHT
+            || self.state.draw_mode > 0x3fff
+            || self.state.texture_window > 0xfffff
             || !valid_position(self.state.draw_min)
             || !valid_position(self.state.draw_max)
             || !(-1024..=1023).contains(&self.state.offset.0)

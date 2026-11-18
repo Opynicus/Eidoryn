@@ -1,7 +1,7 @@
 //! Original XA packet decoder and 37.8/18.9 kHz to 44.1 kHz reconstruction.
 use crate::{adpcm::Predictor, spu::StereoFrame};
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct XaDecoder {
     predictors: [Predictor; 2],
     history: [[i32; 2]; 32],
@@ -9,10 +9,50 @@ pub(crate) struct XaDecoder {
     sixstep: usize,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "XaDecoder")]
+pub(crate) struct XaDecoderV1 {
+    predictors: [crate::adpcm::PredictorV1; 2],
+    history: [[i32; 2]; 32],
+    cursor: usize,
+    sixstep: usize,
+}
+
+impl From<&XaDecoder> for XaDecoderV1 {
+    fn from(state: &XaDecoder) -> Self {
+        Self {
+            predictors: state.predictors.each_ref().map(Into::into),
+            history: state.history,
+            cursor: state.cursor,
+            sixstep: state.sixstep,
+        }
+    }
+}
+
+impl From<XaDecoderV1> for XaDecoder {
+    fn from(state: XaDecoderV1) -> Self {
+        Self {
+            predictors: state.predictors.map(Into::into),
+            history: state.history,
+            cursor: state.cursor,
+            sixstep: state.sixstep,
+        }
+    }
+}
+
 impl XaDecoder {
     pub(crate) fn validate_state(&self) -> Result<(), String> {
         if self.cursor >= 32 || self.sixstep >= 6 {
             return Err("Invalid saved XA resampler position".into());
+        }
+        if !self.predictors.into_iter().all(Predictor::valid_history)
+            || self
+                .history
+                .iter()
+                .flatten()
+                .any(|&sample| i16::try_from(sample).is_err())
+        {
+            return Err("Invalid saved XA sample history".into());
         }
         Ok(())
     }

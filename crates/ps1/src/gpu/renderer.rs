@@ -50,27 +50,13 @@ impl Clone for FrameReadback {
     }
 }
 
-impl serde::Serialize for FrameReadback {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.get().serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for FrameReadback {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let frame = DisplayFrame::deserialize(deserializer)?;
-        let (width, height) = frame.dimensions;
-        if ![256, 320, 368, 512, 640].contains(&width)
-            || ![240, 480].contains(&height)
-            || frame.rgb.len() != width * height * 3
-        {
-            return Err(serde::de::Error::custom("Invalid completed display frame"));
-        }
-        Ok(Self {
+impl From<DisplayFrame> for FrameReadback {
+    fn from(frame: DisplayFrame) -> Self {
+        Self {
             dimensions: frame.dimensions,
             ready: OnceLock::from(frame),
             pending: RefCell::new(None),
-        })
+        }
     }
 }
 
@@ -166,38 +152,20 @@ impl Clone for Renderer {
     }
 }
 
-impl serde::Serialize for Renderer {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let raster = self.snapshot();
-        if let Some(error) = self.error() {
-            return Err(serde::ser::Error::custom(error));
-        }
-        raster.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Renderer {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raster = Rasterizer::deserialize(deserializer)?;
-        raster.validate_state().map_err(serde::de::Error::custom)?;
-        Ok(Self {
+impl Renderer {
+    pub(super) fn from_raster(raster: Rasterizer) -> Self {
+        Self {
             backend: RefCell::new(Backend::Serial(raster)),
             inherited_error: None,
-        })
+        }
     }
-}
 
-impl Renderer {
     pub(super) fn rewind_heap_bytes(&self) -> usize {
         let Backend::Serial(raster) = &*self.backend.borrow() else {
             unreachable!("rewind snapshots contain only serial renderers");
         };
         raster.vram.capacity() * size_of::<u16>()
             + self.inherited_error.as_ref().map_or(0, String::capacity)
-    }
-
-    pub(super) fn validate_state(&self) -> Result<(), String> {
-        self.snapshot().validate_state()
     }
 
     pub(super) fn mode(&self) -> RendererMode {

@@ -2,12 +2,57 @@
 //! https://psx-spx.consoledev.net/geometrytransformationenginegte/
 //! Results are synchronous. Command busy times and register pipeline hazards are not modeled.
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Gte {
     data: [u32; 32],
     control: [u32; 32],
     pub commands: u64,
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "Gte")]
+pub(crate) struct GteV1 {
+    data: [u32; 32],
+    control: [u32; 32],
+    commands: u64,
+}
+
+impl From<&Gte> for GteV1 {
+    fn from(value: &Gte) -> Self {
+        Self {
+            data: value.data,
+            control: value.control,
+            commands: value.commands,
+        }
+    }
+}
+
+impl TryFrom<GteV1> for Gte {
+    type Error = String;
+
+    fn try_from(value: GteV1) -> Result<Self, Self::Error> {
+        // These registers are sign- or zero-extended by every hardware write.
+        let signed_halfword = |word: u32| i32::from(word as i16) as u32 == word;
+        if [1, 3, 5, 8, 9, 10, 11]
+            .iter()
+            .any(|&n| !signed_halfword(value.data[n]))
+            || [4, 12, 20, 26, 27, 29, 30]
+                .iter()
+                .any(|&n| !signed_halfword(value.control[n]))
+            || [7, 16, 17, 18, 19].iter().any(|&n| value.data[n] > 0xffff)
+            || value.data[31] > 32
+        {
+            return Err("Invalid saved GTE register".into());
+        }
+        Ok(Self {
+            data: value.data,
+            control: value.control,
+            commands: value.commands,
+        })
+    }
+}
+
+crate::state::v1::impl_serde_v1!(Gte, GteV1);
 
 #[derive(Clone, Copy)]
 struct Mode {

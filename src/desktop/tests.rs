@@ -653,6 +653,9 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
 fn console_cards_fit_and_reflow_across_window_sizes(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(desktop);
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    view.update(cx, |view, _| {
+        view.bios = Some(format!("firmware/{}.bin", "long-name-".repeat(20)).into());
+    });
     for width in [980., 1250., 1251., 1280., 1600.] {
         cx.simulate_resize(size(px(width), px(1400.)));
         for language in [
@@ -666,7 +669,8 @@ fn console_cards_fit_and_reflow_across_window_sizes(cx: &mut TestAppContext) {
             });
             cx.run_until_parked();
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let [display, stage, transport, session, memory] = [
+            let [selected_bios, display, stage, transport, session, memory] = [
+                "selected-bios",
                 "display-card",
                 "display-stage",
                 "transport",
@@ -683,6 +687,7 @@ fn console_cards_fit_and_reflow_across_window_sizes(cx: &mut TestAppContext) {
                 );
                 bounds
             });
+            assert!(selected_bios.bottom() <= display.origin.y);
             let nav = cx.debug_bounds("nav-console").unwrap();
             assert!(display.origin.x >= nav.right());
             for child in [stage, transport] {

@@ -5,9 +5,11 @@ use std::collections::VecDeque;
 mod envelope;
 mod gaussian;
 mod reverb;
+mod state;
 mod voice;
 use envelope::{Envelope, Phase};
 use reverb::Reverb;
+pub(crate) use state::SpuV1;
 use voice::Voice;
 
 pub const SAMPLE_RATE: u32 = 44_100;
@@ -20,9 +22,8 @@ const RAM_CONTROL: usize = 0x1ac / 2;
 /// Approximate control latch delay, expressed in CPU-clock cycles.
 pub const CONTROL_CLOCKS: u32 = 768;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Clone)]
 pub struct Spu {
-    #[serde(with = "crate::state::array")]
     registers: [u16; 256],
     ram: Vec<u8>,
     fifo: VecDeque<u16>,
@@ -44,6 +45,8 @@ pub struct Spu {
     pub nonzero_samples: u64,
     pub transferred_halfwords: u64,
 }
+crate::state::v1::impl_serde_v1!(Spu, SpuV1);
+
 impl Default for Spu {
     fn default() -> Self {
         Self {
@@ -77,7 +80,7 @@ impl Spu {
             + self.output.capacity() * size_of::<StereoFrame>()
     }
 
-    pub(crate) fn validate_state(&self) -> Result<(), String> {
+    fn validate_state(&self) -> Result<(), String> {
         if self.ram.len() != RAM_SIZE
             || self.cursor >= RAM_SIZE
             || self.cursor & 1 != 0
@@ -85,8 +88,13 @@ impl Spu {
             || self.capture_cursor >= 1024
             || self.capture_cursor & 1 != 0
             || self.fifo.len() > 32
-            || self.reverb.cursor >= RAM_SIZE
-            || self.reverb.cursor & 1 != 0
+            || self.output.len() > 8192
+            || self.applied & !0x3f != 0
+            || self.control_delay > CONTROL_CLOCKS
+            || self.transfer_clock >= 16
+            || !(0..0x20000).contains(&self.noise_timer)
+            || !self.reverb.valid_state()
+            || !self.main_volume.into_iter().all(Envelope::valid_state)
         {
             return Err("Invalid saved SPU state".into());
         }
