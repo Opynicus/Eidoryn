@@ -5,6 +5,7 @@ mod audio_controls;
 mod components;
 mod console;
 mod controller;
+mod drawer;
 mod fonts;
 mod graphics;
 mod icons;
@@ -32,12 +33,10 @@ use eidoryn_psx::{
     },
     theme::ThemeCatalog,
 };
-use gpui::{
-    App, Bounds, FocusHandle, RenderImage, WindowBounds, WindowOptions, prelude::*, px, size,
-};
+use gpui::{App, Bounds, FocusHandle, WindowBounds, WindowOptions, prelude::*, px, size};
 pub use probe::ProbeOptions;
 use std::{
-    cell::{OnceCell, RefCell},
+    cell::RefCell,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -180,6 +179,10 @@ fn open_window(
                         Desktop::start_snapshot_updates(cx);
                         Desktop {
                             sidebar: None,
+                            navigation: sidebar::Navigation::default(),
+                            bios_details_open: false,
+                            bios_selection: None,
+                            memory_details_open: false,
                             fonts: fonts::Fonts::new(Arc::clone(cx.text_system())),
                             graphics: graphics::GraphicsControls::new(
                                 snapshot.renderer,
@@ -195,7 +198,6 @@ fn open_window(
                             snapshot_mode: snapshot.mode,
                             snapshot,
                             image: None,
-                            icon: OnceCell::new(),
                             debugger_enabled: options.debugger,
                             crt: CrtState::new(startup.crt),
                             last_redraw: Instant::now(),
@@ -211,11 +213,13 @@ fn open_window(
                             },
                             themes: startup.themes,
                             settings_tab: SettingsTab::Graphics,
+                            closed_settings_groups: std::collections::HashSet::new(),
                             pressed_buttons: 0,
                             selected_save_state: None,
-                            save_state_picker_open: false,
+                            snapshot_confirmation: None,
                             renaming_state: None,
                             rewind_sources: 0,
+                            rewind_disable_origin: None,
                             rebinding: None,
                             keybindings_draft: None,
                             probe,
@@ -243,6 +247,10 @@ fn open_window(
 #[allow(clippy::struct_excessive_bools)] // Independent view, debugger, and appearance preferences.
 struct Desktop {
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
+    navigation: sidebar::Navigation,
+    bios_details_open: bool,
+    bios_selection: Option<gpui::Task<()>>,
+    memory_details_open: bool,
     fonts: fonts::Fonts,
     language: eidoryn_psx::i18n::Language,
     preferences: eidoryn_psx::preferences::Preferences,
@@ -253,7 +261,6 @@ struct Desktop {
     runner: Runner,
     snapshot: Snapshot,
     image: Option<VideoImage>,
-    icon: OnceCell<Option<Arc<RenderImage>>>,
     debugger_enabled: bool,
     snapshot_mode: SnapshotMode,
     crt: CrtState,
@@ -266,14 +273,16 @@ struct Desktop {
     page: WorkspacePage,
     pressed_buttons: u16,
     selected_save_state: Option<std::path::PathBuf>,
-    save_state_picker_open: bool,
+    snapshot_confirmation: Option<save_states::SnapshotConfirmation>,
     renaming_state: Option<save_states::RenameState>,
     rewind_sources: u8,
+    rewind_disable_origin: Option<FocusHandle>,
     rebinding: Option<eidoryn_psx::keybindings::PadButton>,
     keybindings_draft: Option<eidoryn_psx::keybindings::KeyBindings>,
     probe: Option<probe::Probe>,
     themes: ThemeCatalog,
     settings_tab: SettingsTab,
+    closed_settings_groups: std::collections::HashSet<eidoryn_psx::i18n::Text>,
     graphics: graphics::GraphicsControls,
     _subscriptions: Vec<gpui::Subscription>,
 }
@@ -359,6 +368,7 @@ impl Desktop {
             let redraw = frame_changed
                 || snapshot.rewinding != self.snapshot.rewinding
                 || snapshot.rewind_states != self.snapshot.rewind_states
+                || snapshot.quick_slot != self.snapshot.quick_slot
                 || snapshot.success_message != self.snapshot.success_message
                 || snapshot.message != self.snapshot.message
                 || !snapshot.save_states.iter().map(|state| &state.path).eq(self
@@ -412,7 +422,7 @@ impl Desktop {
     }
 
     fn display_title(&self) -> &str {
-        if self.snapshot.title == "Built-in MIPS demo" {
+        if self.snapshot.is_demo {
             self.tr(eidoryn_psx::i18n::Text::BuiltinDemo)
         } else {
             &self.snapshot.title

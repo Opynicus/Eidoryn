@@ -1,13 +1,13 @@
 use super::{
     Desktop,
-    components::{button, label},
+    components::{button, ghost_button, label, pair},
     graphics::switch,
 };
 use eidoryn_psx::{
     i18n::Text,
     systems::ps1::runner::{Command, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS},
 };
-use gpui::{Context, MouseButton, div, prelude::*};
+use gpui::{Context, MouseButton, div, prelude::*, px, relative, rgb};
 
 pub(super) enum RewindSource {
     Keyboard = 1,
@@ -55,11 +55,27 @@ impl Desktop {
                 self.snapshot.rewind_seconds
             )
         };
+        let fraction =
+            self.snapshot.rewind_seconds / f64::from(self.snapshot.rewind_max_seconds.max(1));
         div()
             .flex()
-            .flex_wrap()
-            .items_center()
+            .flex_col()
             .gap_2()
+            .child(label(p, status).debug_selector(|| "rewind-status".into()))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(5.))
+                    .rounded_full()
+                    .bg(rgb(p.rewind_track()))
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(fraction.clamp(0., 1.) as f32))
+                            .rounded_full()
+                            .bg(rgb(p.primary)),
+                    ),
+            )
             .child(
                 button(
                     &self.fonts,
@@ -94,47 +110,142 @@ impl Desktop {
                     }),
                 ),
             )
-            .child(label(p, status).debug_selector(|| "rewind-status".into()))
     }
 
     pub(super) fn rewind_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(self.setting_group(Text::RewindRecording, cx, |cx| self.recording_controls(cx)))
+            .child(self.setting_group(Text::RewindDuration, cx, |cx| self.history_duration(cx)))
+    }
+
+    fn recording_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let toggle = switch(
+            &self.fonts,
+            p,
+            "rewind-enabled",
+            self.tr(Text::EnableRewind),
+            self.tr(Text::RewindSettingsHint),
+            self.preferences.rewind_enabled,
+            true,
+        )
+        .debug_selector(|| "rewind-enabled".into())
+        .on_click(cx.listener(|view, _, window, cx| {
+            if !view.preferences.rewind_enabled {
+                view.set_recording(true, cx);
+            } else if view.rewind_disable_origin.is_some() {
+                view.dismiss_rewind_confirmation(window, cx);
+            } else {
+                view.rewind_disable_origin = Some(
+                    window
+                        .focused(cx)
+                        .unwrap_or_else(|| view.settings_focus.clone()),
+                );
+                cx.notify();
+            }
+        }));
+        div().flex().flex_col().gap_3().child(toggle).when(
+            self.rewind_disable_origin.is_some(),
+            |group| {
+                group.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .p_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(p.dialog_border()))
+                        .bg(rgb(p.dialog_surface()))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font(self.fonts.semibold())
+                                .child(self.tr(Text::DisableRewindTitle)),
+                        )
+                        .child(label(p, self.tr(Text::DisableRewindDetail)))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .flex_wrap()
+                                .child(
+                                    ghost_button(
+                                        &self.fonts,
+                                        p,
+                                        "rewind-cancel",
+                                        self.tr(Text::RenameCancel),
+                                        None,
+                                    )
+                                    .debug_selector(|| "rewind-cancel".into())
+                                    .on_click(cx.listener(
+                                        |view, _, window, cx| {
+                                            view.dismiss_rewind_confirmation(window, cx);
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    button(
+                                        &self.fonts,
+                                        p,
+                                        "rewind-confirm",
+                                        self.tr(Text::DisableRewindAction),
+                                        false,
+                                    )
+                                    .text_color(rgb(p.danger_text()))
+                                    .debug_selector(|| "rewind-confirm".into())
+                                    .on_click(cx.listener(
+                                        |view, _, window, cx| {
+                                            view.dismiss_rewind_confirmation(window, cx);
+                                            view.set_recording(false, cx);
+                                        },
+                                    )),
+                                ),
+                        ),
+                )
+            },
+        )
+    }
+
+    pub(super) fn dismiss_rewind_confirmation(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(origin) = self.rewind_disable_origin.take() {
+            window.focus(&origin, cx);
+            cx.notify();
+        }
+    }
+
+    fn set_recording(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.stop_rewind(cx);
+        match self.runner.send(Command::SetRewindEnabled(enabled)) {
+            Ok(()) => {
+                self.preferences.rewind_enabled = enabled;
+                self.notice = None;
+                self.save_preferences();
+            }
+            Err(error) => self.notice = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn history_duration(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let seconds = self.preferences.rewind_seconds;
         div()
             .flex()
             .flex_col()
-            .gap_4()
-            .child(
-                switch(
-                    &self.fonts,
-                    p,
-                    "rewind-enabled",
-                    self.tr(Text::EnableRewind),
-                    self.tr(Text::RewindSettingsHint),
-                    self.preferences.rewind_enabled,
-                    true,
-                )
-                .debug_selector(|| "rewind-enabled".into())
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.stop_rewind(cx);
-                    let enabled = !view.preferences.rewind_enabled;
-                    match view.runner.send(Command::SetRewindEnabled(enabled)) {
-                        Ok(()) => {
-                            view.preferences.rewind_enabled = enabled;
-                            view.notice = None;
-                            view.save_preferences();
-                        }
-                        Err(error) => view.notice = Some(error),
-                    }
-                    cx.notify();
-                })),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .font(self.fonts.semibold())
-                    .child(self.tr(Text::RewindDuration)),
-            )
+            .gap_3()
+            .child(pair(
+                p,
+                self.tr(Text::RewindAvailable),
+                format!("{:.1} s", self.snapshot.rewind_seconds),
+            ))
             .child(label(p, self.tr(Text::RewindDurationHint)))
             .child(
                 div()

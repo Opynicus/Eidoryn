@@ -3,13 +3,16 @@ use eidoryn_psx::i18n::Text;
 use eidoryn_psx::systems::ps1::runner::Command;
 use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
 
+#[derive(Clone, Copy)]
+pub(super) enum ImagePicker {
+    Bios,
+    Exe,
+}
+
 impl Desktop {
     pub(super) fn stop_input(&mut self, cx: &mut Context<Self>) {
         self.stop_rewind(cx);
-        if self.save_state_picker_open {
-            self.save_state_picker_open = false;
-            cx.notify();
-        }
+        self.navigation.cancel_drag();
         if self.rebinding.take().is_some() {
             cx.notify();
         }
@@ -105,42 +108,56 @@ impl Desktop {
             self.command(Command::SetButtons(self.pressed_buttons), cx);
         }
     }
-    pub(super) fn open(&mut self, bios: bool, cx: &mut Context<Self>) {
+    pub(super) fn pick_image(&mut self, kind: ImagePicker, cx: &mut Context<Self>) {
+        let prompt = self.tr(match kind {
+            ImagePicker::Bios => Text::BiosPicker,
+            ImagePicker::Exe => Text::ExePicker,
+        });
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some(
-                if bios {
-                    self.tr(Text::BiosPicker)
-                } else {
-                    self.tr(Text::ExePicker)
-                }
-                .into(),
-            ),
+            prompt: Some(prompt.into()),
         });
-        cx.spawn(async move |this, cx| {
-            let result = picker.await;
+        let error_title = self.tr(Text::FilePickerError);
+        let task = cx.spawn(async move |this, cx| {
+            let result = match picker.await {
+                Ok(Ok(paths)) => Ok(paths.and_then(|paths| paths.into_iter().next())),
+                Ok(Err(error)) => Err(format!("{error_title}: {error}")),
+                Err(error) => Err(format!("{error_title}: {error}")),
+            };
+            let result = match (kind, result) {
+                (ImagePicker::Bios, Ok(Some(path))) => {
+                    cx.background_executor()
+                        .spawn(async move {
+                            eidoryn_psx::systems::ps1::media::validate_bios_path(&path).map(Some)
+                        })
+                        .await
+                }
+                (_, result) => result,
+            };
             let _ = this.update(cx, |view, cx| {
                 match result {
-                    Ok(Ok(Some(paths))) => {
-                        if let Some(path) = paths.into_iter().next() {
-                            view.command(Command::Load { path, bios }, cx);
+                    Ok(Some(path)) => match kind {
+                        ImagePicker::Bios => {
+                            view.bios = Some(path);
+                            view.notice = None;
                         }
-                    }
-                    Ok(Ok(None)) => {}
-                    Ok(Err(error)) => {
-                        view.notice = Some(format!("{}: {error}", view.tr(Text::FilePickerError)));
-                    }
-                    Err(error) => {
-                        view.notice = Some(format!("{}: {error}", view.tr(Text::FilePickerError)));
-                    }
+                        ImagePicker::Exe => view.command(Command::Load { path, bios: false }, cx),
+                    },
+                    Ok(None) => return,
+                    Err(error) => view.notice = Some(error),
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        match kind {
+            // A newer selection cancels the pending picker or validation before it can update the UI.
+            ImagePicker::Bios => self.bios_selection = Some(task),
+            ImagePicker::Exe => task.detach(),
+        }
     }
+
     pub(super) fn open_disc(&mut self, fast_boot: bool, cx: &mut Context<Self>) {
         if (!fast_boot || self.bios.is_some()) && !self.validate_current_bios(cx) {
             return;
@@ -194,8 +211,8 @@ impl Desktop {
             self.rename_key(event, window, cx);
             return;
         }
-        if self.save_state_picker_open && self.save_state_key(key, cx) {
-            cx.stop_propagation();
+        if self.snapshot_confirmation.is_some() {
+            self.snapshot_confirmation_key(key, window, cx);
             return;
         }
         if key == "tab" {
@@ -213,6 +230,9 @@ impl Desktop {
         }
         if self.graphics.open {
             match event.keystroke.key.as_str() {
+                "escape" if self.rewind_disable_origin.is_some() => {
+                    self.dismiss_rewind_confirmation(window, cx);
+                }
                 "escape" | "f8" => {
                     self.close_settings(window, cx);
                 }
@@ -265,7 +285,7 @@ impl Desktop {
             "f6" => self.toggle_view(window, cx),
             "f7" => self.toggle_crt(cx),
             "f8" => {
-                self.open_settings(false, cx);
+                self.open_settings(cx);
             }
             "f11" | "escape" if key == "f11" || window.is_fullscreen() => {
                 window.toggle_fullscreen();
@@ -284,8 +304,8 @@ impl Desktop {
         }
     }
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.snapshot_confirmation = None;
         self.stop_rewind(cx);
-        self.save_state_picker_open = false;
         if window.is_fullscreen() {
             window.toggle_fullscreen();
             self.game_view = false;
@@ -302,63 +322,71 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.snapshot_confirmation = None;
         self.stop_rewind(cx);
         if window.is_fullscreen() {
             window.toggle_fullscreen();
         }
         self.game_view = false;
         self.page = page;
-        self.save_state_picker_open = false;
         if page == WorkspacePage::SaveStates {
             self.release_buttons(cx);
             self.command(Command::RefreshSaveStates, cx);
         }
         self.rebinding = None;
         self.keybindings_draft = None;
+        self.rewind_disable_origin = None;
         self.graphics.open = false;
         window.focus(&self.focus, cx);
         cx.notify();
     }
 
-    pub(super) fn open_settings(&mut self, appearance: bool, cx: &mut Context<Self>) {
+    pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.snapshot_confirmation = None;
         self.stop_rewind(cx);
-        self.save_state_picker_open = false;
         self.release_buttons(cx);
         self.rebinding = None;
         self.keybindings_draft = None;
         self.graphics.open = true;
-        self.settings_tab = if appearance {
-            SettingsTab::Appearance
-        } else {
-            SettingsTab::Graphics
-        };
+        self.settings_tab = SettingsTab::Graphics;
         cx.notify();
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rebinding = None;
         self.keybindings_draft = None;
+        self.rewind_disable_origin = None;
         self.graphics.open = false;
         window.focus(&self.focus, cx);
         cx.notify();
     }
 
     pub(super) fn move_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // The drawer is modal: skip background tab stops, including on wraparound.
-        for _ in 0..128 {
+        let scope = self
+            .renaming_state
+            .as_ref()
+            .map(|state| &state.focus)
+            .or_else(|| self.graphics.open.then_some(&self.settings_focus));
+        let mut first = None;
+        loop {
             if backwards {
                 window.focus_prev(cx);
             } else {
                 window.focus_next(cx);
             }
-            let within_scope = if let Some(rename) = &self.renaming_state {
-                rename.focus.contains_focused(window, cx)
-            } else {
-                !self.graphics.open || self.settings_focus.contains_focused(window, cx)
-            };
-            if within_scope {
+            let Some(scope) = scope else { break };
+            if scope.contains_focused(window, cx) {
                 break;
             }
+            // A large snapshot history may put hundreds of tab stops behind the modal.
+            let Some(focused) = window.focused(cx) else {
+                break;
+            };
+            if first.as_ref() == Some(&focused) {
+                window.focus(scope, cx);
+                break;
+            }
+            first.get_or_insert(focused);
         }
         cx.notify();
     }

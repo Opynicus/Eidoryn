@@ -34,9 +34,13 @@ eidoryn-host = { path = "crates/host", default-features = false }
 # Follow official main; Cargo.lock pins the exact tested revision for both crates.
 gpui = { git = "https://github.com/zed-industries/zed", branch = "main", version = "0.2.2", default-features = false, optional = true }
 gpui_platform = { git = "https://github.com/zed-industries/zed", branch = "main", version = "0.1.0", default-features = false, features = ["font-kit"], optional = true }
-image = { version = "0.25", default-features = false, optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
+
+[build-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 
 [patch.crates-io]
 # Match Zed main's task-waker fix until it is released on crates.io.

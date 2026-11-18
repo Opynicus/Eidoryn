@@ -366,6 +366,7 @@ impl Options {
 }
 
 pub(super) fn print_help() {
+    let languages = Language::supported_ids();
     println!(
         "{NAME} {VERSION}\n\n\
         Usage: {BINARY_NAME} [--exe PATH | --bios PATH] [--headless]\n\
@@ -382,7 +383,7 @@ pub(super) fn print_help() {
         --renderer MODE     GPU: serial, threaded, hardware, dx12, vulkan, opengl, metal\n\
         --list-renderers    Detect usable hardware backends and exit\n\
         --cpu MODE          CPU: interpreter (default), jit (experimental)\n\
-        --language LANG     Interface language: en or zh-CN\n\
+        --language LANG     Interface language: {languages}\n\
         --theme ID          Start with a built-in or discovered theme\n\
         --theme-plugin PATH Load and select a theme JSON plugin\n\
         --card1 PATH        Slot 1 card (default saves/card1.mcd)\n\

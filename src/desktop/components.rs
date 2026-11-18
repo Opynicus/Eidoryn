@@ -20,10 +20,38 @@ pub(super) fn action(
     symbol: Option<&'static str>,
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
-    let (background, foreground, hover, pressed) = if primary {
-        (p.primary, p.on_primary, p.primary_hover, p.primary_pressed)
+    let (background, hover) = if primary {
+        (p.primary, p.primary_hover)
     } else {
-        (p.surface, p.text, p.tonal_hover, p.tonal_pressed)
+        (p.button_surface(), p.tonal_hover)
+    };
+    action_content(fonts, p, id, text, symbol, primary)
+        .bg(rgb(background))
+        .hover(move |style| style.bg(rgb(hover)))
+}
+
+pub(super) fn ghost_button(
+    fonts: &Fonts,
+    p: &Palette,
+    id: impl Into<gpui::ElementId>,
+    text: impl Into<SharedString>,
+    symbol: Option<&'static str>,
+) -> gpui::Stateful<gpui::Div> {
+    ghost(action_content(fonts, p, id, text, symbol, false), p)
+}
+
+fn action_content(
+    fonts: &Fonts,
+    p: &Palette,
+    id: impl Into<gpui::ElementId>,
+    text: impl Into<SharedString>,
+    symbol: Option<&'static str>,
+    primary: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let (foreground, pressed) = if primary {
+        (p.on_primary, p.primary_pressed)
+    } else {
+        (p.text, p.tonal_pressed)
     };
     let text = text.into();
     let tooltip_text = text.clone();
@@ -38,11 +66,10 @@ pub(super) fn action(
         .items_center()
         .justify_center()
         .gap_2()
-        .rounded(px(6.))
+        .rounded(px(7.))
         .cursor_pointer()
         .text_size(px(12.))
         .font(fonts.medium())
-        .bg(rgb(background))
         .border_1()
         .border_color(rgb(if primary { p.primary } else { p.border }))
         .focus(move |style| {
@@ -56,7 +83,6 @@ pub(super) fn action(
             button.tooltip(move |_, cx| tooltip(palette, tooltip_text.clone(), cx))
         })
         .text_color(rgb(foreground))
-        .hover(move |style| style.bg(rgb(hover)))
         .active(move |style| style.bg(rgb(pressed)))
         .children(symbol.map(|symbol| icon(symbol, foreground)))
         .child(text)
@@ -69,6 +95,26 @@ pub(super) fn icon_button(
     title: &'static str,
 ) -> gpui::Stateful<gpui::Div> {
     let hover = p.tonal_hover;
+    icon_button_content(p, id, symbol, title)
+        .bg(rgb(p.button_surface()))
+        .hover(move |style| style.bg(rgb(hover)))
+}
+
+pub(super) fn ghost_icon_button(
+    p: &Palette,
+    id: impl Into<gpui::ElementId>,
+    symbol: &'static str,
+    title: &'static str,
+) -> gpui::Stateful<gpui::Div> {
+    ghost(icon_button_content(p, id, symbol, title), p)
+}
+
+fn icon_button_content(
+    p: &Palette,
+    id: impl Into<gpui::ElementId>,
+    symbol: &'static str,
+    title: &'static str,
+) -> gpui::Stateful<gpui::Div> {
     let palette = *p;
     div()
         .id(id)
@@ -78,16 +124,21 @@ pub(super) fn icon_button(
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.))
+        .rounded(px(7.))
         .border_1()
         .border_color(rgb(p.border))
         .focus(move |style| style.border_color(rgb(palette.primary)))
         .tooltip(move |_, cx| tooltip(palette, title.into(), cx))
-        .bg(rgb(p.surface))
         .cursor_pointer()
-        .hover(move |style| style.bg(rgb(hover)))
         .active(move |style| style.bg(rgb(palette.tonal_pressed)))
-        .child(icon(symbol, p.muted))
+        .child(icon(symbol, p.text))
+}
+
+fn ghost(button: gpui::Stateful<gpui::Div>, p: &Palette) -> gpui::Stateful<gpui::Div> {
+    let hover = p.ghost_hover();
+    button
+        .bg(gpui::transparent_black())
+        .hover(move |style| style.bg(rgb(hover)))
 }
 
 pub(super) fn tooltip(palette: Palette, text: SharedString, cx: &mut gpui::App) -> gpui::AnyView {
@@ -123,7 +174,7 @@ pub(super) fn card(p: &Palette) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .rounded(px(8.))
+        .rounded(px(10.))
         .bg(rgb(p.surface))
         .border_1()
         .border_color(rgb(p.border))
@@ -149,6 +200,32 @@ pub(super) fn heading(
         .gap_3()
         .child(div().text_size(px(13.)).font(fonts.semibold()).child(title))
         .child(label(p, detail))
+}
+
+pub(super) fn page_heading(
+    fonts: &Fonts,
+    p: &Palette,
+    eyebrow: &'static str,
+    title: impl Into<SharedString>,
+    description: &'static str,
+) -> gpui::Div {
+    div()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            label(p, eyebrow)
+                .text_color(rgb(p.soft_text()))
+                .font(fonts.bold()),
+        )
+        .child(
+            div()
+                .text_size(px(30.))
+                .font(fonts.title())
+                .child(title.into()),
+        )
+        .child(label(p, description).text_size(px(14.)))
 }
 
 pub(super) fn pair(

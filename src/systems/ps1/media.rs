@@ -18,6 +18,15 @@ pub fn load_path(path: &std::path::Path, bios: bool) -> Result<Machine, String> 
     .map_err(|e| e.to_string())
 }
 
+/// Verify a firmware selection before storing its canonical path for a future disc launch.
+pub fn validate_bios_path(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let path = path
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    read_image(&path, true)?;
+    Ok(path)
+}
+
 fn read_image(path: &std::path::Path, bios: bool) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let metadata = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;

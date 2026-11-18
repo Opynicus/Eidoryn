@@ -1,18 +1,28 @@
-//! Embedded vector icons from the interface prototype.
+//! Embedded project artwork and interface icons.
 use gpui::{AssetSource, RenderImage, SharedString, Styled, svg};
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    sync::{Arc, LazyLock},
+};
 
-/// The sidebar displays 38 logical pixels. 256 pixels cover up to 6.7x scaling
-/// without keeping the 1254px packaging artwork decoded in the window cache.
-pub(super) fn app_icon() -> image::ImageResult<Arc<RenderImage>> {
-    let mut pixels = image::load_from_memory(include_bytes!("../../assets/eidoryn.png"))?
-        .resize(256, 256, image::imageops::FilterType::Triangle)
-        .into_rgba8();
-    // GPUI RenderImage consumes BGRA, including images not produced by the GPU.
-    for pixel in pixels.pixels_mut() {
-        pixel.0.swap(0, 2);
-    }
-    Ok(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])))
+pub(super) fn app_icon() -> Option<Arc<RenderImage>> {
+    static ICON: LazyLock<Option<Arc<RenderImage>>> = LazyLock::new(|| {
+        let artwork = image::load_from_memory_with_format(
+            include_bytes!("../../assets/eidoryn.png"),
+            image::ImageFormat::Png,
+        )
+        .inspect_err(|error| eprintln!("Cannot decode the Eidoryn icon: {error}"))
+        .ok()?;
+        // Retain a high-DPI thumbnail of the packaging artwork in GPUI's BGRA format.
+        let mut pixels = artwork
+            .resize(256, 256, image::imageops::FilterType::Triangle)
+            .into_rgba8();
+        for pixel in pixels.pixels_mut() {
+            pixel.0.swap(0, 2);
+        }
+        Some(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])))
+    });
+    ICON.clone()
 }
 
 pub(super) struct Icons;
@@ -20,6 +30,7 @@ pub(super) struct Icons;
 impl AssetSource for Icons {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         let bytes: &'static [u8] = match path {
+            "menu" => include_bytes!("../../assets/icons/menu.svg"),
             "grid" => include_bytes!("../../assets/icons/grid.svg"),
             "screen" => include_bytes!("../../assets/icons/screen.svg"),
             "code" => include_bytes!("../../assets/icons/code.svg"),

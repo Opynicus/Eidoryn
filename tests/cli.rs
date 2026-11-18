@@ -42,7 +42,13 @@ fn help_does_not_require_display_server() {
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("--headless"));
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--headless"));
+    let language_help = help
+        .lines()
+        .find(|line| line.contains("--language"))
+        .unwrap();
+    assert!(language_help.ends_with(&eidoryn_psx::i18n::Language::supported_ids()));
 }
 
 #[test]
@@ -97,7 +103,7 @@ fn invalid_options_fail_without_opening_a_window() {
         vec!["--headless", "--clean-fullscreen"],
         vec!["--export-demo", "a.exe", "--fullscreen-controls"],
         vec!["--language"],
-        vec!["--language", "fr"],
+        vec!["--language", "!invalid-locale"],
         vec!["--language", "en", "--language", "zh-CN"],
         vec!["--headless", "--language", "en"],
         vec!["--export-demo", "a.exe", "--language", "en"],

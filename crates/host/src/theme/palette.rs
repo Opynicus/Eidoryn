@@ -1,6 +1,9 @@
 //! Semantic colors shared by every desktop component.
 #![allow(clippy::unreadable_literal)]
 
+mod components;
+pub use components::ComponentColors;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub background: u32,
@@ -22,10 +25,13 @@ pub struct Palette {
     pub success: u32,
     pub on_success: u32,
     pub video_background: u32,
+    /// Optional component colors. Themes without overrides derive them from the base colors.
+    pub components: Option<ComponentColors>,
 }
 
 impl Palette {
     pub const LAVENDER: Self = Self {
+        components: None,
         background: 0xf7f5fb,
         surface: 0xfffbff,
         surface_variant: 0xf0edf5,
@@ -48,25 +54,26 @@ impl Palette {
     };
 
     pub const MIDNIGHT: Self = Self {
-        background: 0x0d0d10,
-        surface: 0x151518,
-        surface_variant: 0x1c1c20,
-        border: 0x303036,
-        text: 0xf5f5f5,
-        muted: 0xaaaab3,
-        primary: 0xf4f4f5,
-        on_primary: 0x18181b,
-        primary_hover: 0xd4d4d8,
-        primary_pressed: 0xb8b8c0,
-        tonal: 0x30273e,
-        on_tonal: 0xd5c4ef,
-        tonal_hover: 0x29292e,
-        tonal_pressed: 0x35353c,
-        error: 0x352326,
-        on_error: 0xffb6b6,
-        success: 0x21372d,
-        on_success: 0x9cdebb,
-        video_background: 0x09090b,
+        components: Some(ComponentColors::MIDNIGHT),
+        background: 0x101317,
+        surface: 0x1c2228,
+        surface_variant: 0x222a31,
+        border: 0x333d45,
+        text: 0xeef2ef,
+        muted: 0xaab6b3,
+        primary: 0xb7e4c8,
+        on_primary: 0x12251a,
+        primary_hover: 0xd2f3dc,
+        primary_pressed: 0x9cccaf,
+        tonal: 0x29332f,
+        on_tonal: 0xc5e9d0,
+        tonal_hover: 0x354149,
+        tonal_pressed: 0x3d4b50,
+        error: 0x3c2929,
+        on_error: 0xffd4c9,
+        success: 0x22372d,
+        on_success: 0xd2f4dd,
+        video_background: 0x11181b,
     };
 
     pub const OCEAN: Self = Self {
@@ -88,6 +95,7 @@ impl Palette {
     };
 
     pub const FOREST: Self = Self {
+        components: None,
         background: 0x101b16,
         surface: 0x1a2921,
         surface_variant: 0x26372c,
@@ -105,7 +113,7 @@ impl Palette {
         ..Self::MIDNIGHT
     };
 
-    pub(super) fn set(&mut self, key: &str, value: u32) -> Result<(), String> {
+    pub(super) fn set_base(&mut self, key: &str, value: u32) -> bool {
         let color = match key {
             "background" => &mut self.background,
             "surface" => &mut self.surface,
@@ -126,9 +134,9 @@ impl Palette {
             "success" => &mut self.success,
             "on_success" => &mut self.on_success,
             "video_background" => &mut self.video_background,
-            _ => return Err(format!("Unknown theme color: {key}")),
+            _ => return false,
         };
         *color = value;
-        Ok(())
+        true
     }
 }

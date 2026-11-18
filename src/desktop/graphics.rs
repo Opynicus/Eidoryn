@@ -1,6 +1,6 @@
 use super::{
     Desktop,
-    components::{button, label},
+    components::{button, label, pair},
 };
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
@@ -141,7 +141,6 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_2()
-            .child(label(p, self.tr(Text::HardwareBackend)))
             .children(modes.into_iter().map(|mode| {
                 let available = ready && self.graphics.available(mode);
                 let selected = mode == self.graphics.hardware;
@@ -286,45 +285,50 @@ impl Desktop {
 
     pub(super) fn graphics_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let fonts = &self.fonts;
-        let hardware = self.snapshot.renderer.is_hardware();
         let ready = self.graphics.pending.is_none() && self.graphics.pending_cpu.is_none();
-        let software_threads = self.graphics.software == RendererMode::Threaded;
         div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(
+            .gap_4()
+            .child(self.setting_group(Text::Performance, cx, |cx| self.render_settings(ready, cx)))
+            .child(self.setting_group(Text::DisplayOptions, cx, |cx| {
                 div()
-                    .text_sm()
-                    .font(self.fonts.semibold())
-                    .child(self.tr(Text::Crt)),
-            )
-            .child(label(p, self.tr(Text::CrtHint)))
-            .child(self.crt_choices(cx))
-            .child(
-                div()
-                    .mt_4()
-                    .text_sm()
-                    .font(self.fonts.semibold())
-                    .child(self.tr(Text::Performance)),
-            )
-            .child(label(p, self.tr(Text::PerformanceHint)))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(label(p, self.tr(Text::Crt)))
+                    .child(self.crt_choices(cx))
+                    .child(self.clean_fullscreen_control(cx))
+                    .child(self.jit_control(ready, cx))
+            }))
+            .child(self.setting_group(Text::HardwareBackend, cx, |cx| {
+                self.backend_choices(ready, cx)
+            }))
+    }
+
+    fn render_settings(&self, ready: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let hardware = self.snapshot.renderer.is_hardware();
+        let software_threads = self.snapshot.renderer == RendererMode::Threaded;
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(pair(p, self.tr(Text::Renderer), self.renderer_label()))
             .child(self.hardware_control(ready, cx))
-            .child(self.backend_choices(ready, cx))
             .child(
                 switch(
-                    fonts,
+                    &self.fonts,
                     p,
                     "threaded-switch",
                     self.tr(Text::Threaded),
                     self.tr(Text::ThreadedHint),
                     software_threads,
-                    ready && !hardware,
+                    ready,
                 )
-                .when(ready && !hardware, |element| {
+                .when(ready, |element| {
                     element.on_click(cx.listener(|view, _, _, cx| {
-                        let mode = if view.graphics.software == RendererMode::Threaded {
+                        let mode = if view.snapshot.renderer == RendererMode::Threaded {
                             RendererMode::Serial
                         } else {
                             RendererMode::Threaded
@@ -333,8 +337,6 @@ impl Desktop {
                     }))
                 }),
             )
-            .child(self.jit_control(ready, cx))
-            .child(self.clean_fullscreen_control(cx))
             .child(label(
                 p,
                 if !ready {
@@ -395,19 +397,23 @@ pub(super) fn switch(
         )
         .child(
             div()
-                .w(px(36.))
-                .h(px(20.))
-                .px(px(2.))
+                .w(px(42.))
+                .h(px(24.))
+                .px(px(3.))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
                 .rounded_full()
-                .bg(rgb(if enabled { p.primary } else { p.border }))
-                .when(enabled, gpui::Styled::justify_end)
-                .child(div().size(px(16.)).rounded_full().bg(rgb(if enabled {
-                    p.on_primary
+                .bg(rgb(if enabled {
+                    p.switch_on()
                 } else {
-                    p.text
+                    p.switch_off()
+                }))
+                .when(enabled, gpui::Styled::justify_end)
+                .child(div().size(px(18.)).rounded_full().bg(rgb(if enabled {
+                    p.switch_thumb_on()
+                } else {
+                    p.switch_thumb_off()
                 }))),
         )
 }

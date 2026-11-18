@@ -2,7 +2,7 @@ use super::{
     Desktop,
     components::{action, label},
 };
-use eidoryn_psx::i18n::Text;
+use eidoryn_psx::i18n::{Language, Text};
 use gpui::{Context, PathPromptOptions, SharedString, div, prelude::*, px, rgb};
 
 impl Desktop {
@@ -11,22 +11,24 @@ impl Desktop {
         div()
             .flex()
             .flex_col()
+            .gap_4()
+            .child(self.setting_group(Text::Language, cx, |cx| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(label(p, self.tr(Text::LanguageHint)))
+                    .child(self.language_choices(cx))
+            }))
+            .child(self.setting_group(Text::Theme, cx, |cx| self.theme_choices(cx)))
+    }
+
+    fn theme_choices(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        div()
+            .flex()
+            .flex_col()
             .gap_3()
-            .child(
-                div()
-                    .text_sm()
-                    .font(self.fonts.semibold())
-                    .child(self.tr(Text::Language)),
-            )
-            .child(label(p, self.tr(Text::LanguageHint)))
-            .child(self.language_choices(cx))
-            .child(
-                div()
-                    .mt_4()
-                    .text_sm()
-                    .font(self.fonts.semibold())
-                    .child(self.tr(Text::Theme)),
-            )
             .child(label(p, self.tr(Text::ThemeHint)))
             .child(
                 div()
@@ -104,24 +106,27 @@ impl Desktop {
 
     fn language_choices(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        div().flex().gap_2().children(
-            [
-                (eidoryn_psx::i18n::Language::En, "English"),
-                (eidoryn_psx::i18n::Language::ZhCn, "简体中文"),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(index, (language, name))| {
-                super::components::button(&self.fonts, p, ("language", index), name, false)
-                    .when(self.language == language, |button| {
-                        button
-                            .bg(rgb(p.tonal))
-                            .border_color(rgb(p.primary))
-                            .text_color(rgb(p.on_tonal))
-                    })
-                    .on_click(cx.listener(move |view, _, _, cx| view.set_language(language, cx)))
-            }),
-        )
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .children(Language::ALL.iter().map(|&language| {
+                super::components::button(
+                    &self.fonts,
+                    p,
+                    language.id(),
+                    language.native_name(),
+                    false,
+                )
+                .debug_selector(move || language.id().into())
+                .when(self.language == language, |button| {
+                    button
+                        .bg(rgb(p.tonal))
+                        .border_color(rgb(p.primary))
+                        .text_color(rgb(p.on_tonal))
+                })
+                .on_click(cx.listener(move |view, _, _, cx| view.set_language(language, cx)))
+            }))
     }
 
     fn open_theme(&mut self, cx: &mut Context<Self>) {

@@ -58,7 +58,6 @@ fn load_at(
     }
     let bios = options.bios.clone().or(saved_bios);
     let mut themes = ThemeCatalog::default();
-    themes.select("midnight")?;
     errors.extend(themes.discover(std::path::Path::new("plugins/themes")));
     let mut theme_paths = HashMap::new();
     if let Some(path) = &preferences.theme_plugin {
@@ -266,6 +265,10 @@ mod tests {
     fn cli_overrides_saved_preferences_without_rewriting_them() {
         let path =
             std::env::temp_dir().join(format!("eidoryn-startup-{}.json", std::process::id()));
+        let mut machine = Machine::demo();
+        let fresh = load_at(&mut machine, &Options::default(), None).unwrap();
+        assert_eq!(fresh.themes.active().id, "midnight");
+        assert_eq!(fresh.preferences.theme, fresh.themes.active().id);
         let mut saved = Preferences {
             theme: "ocean".into(),
             language: Some("zh-CN".into()),
@@ -281,7 +284,6 @@ mod tests {
             .rebind(eidoryn_psx::keybindings::PadButton::Cross, "j")
             .unwrap();
         saved.save(&path).unwrap();
-        let mut machine = Machine::demo();
         let startup = load_at(&mut machine, &Options::default(), Some(path.clone())).unwrap();
         assert_eq!(startup.themes.active().id, "ocean");
         assert_eq!(startup.language, Language::ZhCn);

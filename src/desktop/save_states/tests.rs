@@ -1,12 +1,12 @@
 use crate::desktop::{
-    Desktop,
+    Desktop, WorkspacePage,
     tests::{desktop, press_keys},
 };
 use eidoryn_psx::systems::ps1::{
     card_file::CardStore,
     input::PadInput,
     machine::Machine,
-    runner::{Command, Runner, Snapshot, SnapshotMode},
+    runner::{Command, QuickSlot, Runner, Snapshot, SnapshotMode},
     state_file::StateStore,
 };
 use gpui::{
@@ -30,12 +30,12 @@ impl Drop for SnapshotFiles {
     }
 }
 
-fn rename_window(
+fn history_window(
     cx: &mut TestAppContext,
 ) -> (Entity<Desktop>, &mut VisualTestContext, SnapshotFiles) {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let title = format!(
-        "rename-ui-{}-{}",
+        "snapshot-ui-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     );
@@ -63,7 +63,7 @@ fn rename_window(
             SnapshotMode::Display,
         )
         .unwrap();
-        view.game_view = true;
+        view.page = WorkspacePage::SaveStates;
         view
     });
     cx.simulate_resize(size(px(1280.), px(900.)));
@@ -72,7 +72,7 @@ fn rename_window(
 }
 
 fn open_rename(cx: &mut VisualTestContext) {
-    let bounds = cx.debug_bounds("rename-state").unwrap();
+    let bounds = cx.debug_bounds("rename-snapshot-1").unwrap();
     cx.simulate_click(bounds.center(), Modifiers::none());
     cx.run_until_parked();
     assert!(cx.debug_bounds("rename-dialog").is_some());
@@ -102,8 +102,75 @@ fn receive_until(
 }
 
 #[gpui::test]
+fn delete_removes_only_the_confirmed_history_row(cx: &mut TestAppContext) {
+    let (view, cx, files) = history_window(cx);
+    let quick = files.original.parent().unwrap().join("quick/slot.ps1state");
+    press_keys(cx, "ctrl-shift-s");
+    receive_until(&view, cx, |view| {
+        matches!(view.snapshot.quick_slot, QuickSlot::Saved(_))
+    });
+    let quick_bytes = fs::read(&quick).unwrap();
+    let other_bytes = fs::read(&files.other).unwrap();
+
+    let delete = cx.debug_bounds("delete-snapshot-1").unwrap().center();
+    for cancel in ["escape", "enter"] {
+        cx.simulate_click(delete, Modifiers::none());
+        assert!(cx.debug_bounds("confirm-delete-snapshot").is_some());
+        press_keys(cx, cancel);
+        assert!(cx.debug_bounds("confirm-delete-snapshot").is_none());
+        assert!(files.original.is_file());
+    }
+
+    cx.simulate_click(delete, Modifiers::none());
+    press_keys(cx, "tab enter");
+    receive_until(&view, cx, |view| view.snapshot.save_states.len() == 1);
+    assert!(!files.original.exists());
+    assert_eq!(fs::read(&files.other).unwrap(), other_bytes);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.snapshot.save_states[0].path, files.other);
+        assert_eq!(view.selected_save_state.as_ref(), Some(&files.other));
+        assert!(!view.snapshot.running);
+        assert!(view.snapshot.message.is_none());
+    });
+
+    let last = cx.debug_bounds("delete-snapshot-0").unwrap().center();
+    cx.simulate_click(last, Modifiers::none());
+    let confirm = cx.debug_bounds("confirm-delete-snapshot").unwrap().center();
+    cx.simulate_click(confirm, Modifiers::none());
+    receive_until(&view, cx, |view| view.snapshot.save_states.is_empty());
+    assert!(!files.other.exists());
+    assert!(cx.debug_bounds("delete-snapshot-0").is_none());
+    assert!(view.read_with(cx, |view, _| view.selected_save_state.is_none()));
+    assert_eq!(fs::read(quick).unwrap(), quick_bytes);
+}
+
+#[gpui::test]
+fn delete_reports_a_snapshot_changed_during_confirmation(cx: &mut TestAppContext) {
+    let (view, cx, files) = history_window(cx);
+    let delete = cx.debug_bounds("delete-snapshot-1").unwrap().center();
+    cx.simulate_click(delete, Modifiers::none());
+    assert!(cx.debug_bounds("confirm-delete-snapshot").is_some());
+
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&files.original)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(60))
+        .unwrap();
+    press_keys(cx, "tab enter");
+    receive_until(&view, cx, |view| view.snapshot.message.is_some());
+    assert!(cx.debug_bounds("error-notice").is_some());
+    assert!(files.original.is_file());
+    assert!(files.other.is_file());
+    assert_eq!(
+        view.read_with(cx, |view, _| view.snapshot.save_states.len()),
+        2
+    );
+}
+
+#[gpui::test]
 fn quick_controls_reuse_one_slot_without_using_the_snapshot_selection(cx: &mut TestAppContext) {
-    let (view, cx, files) = rename_window(cx);
+    let (view, cx, files) = history_window(cx);
     let quick = files.original.parent().unwrap().join("quick/slot.ps1state");
     for (index, path) in [&files.original, &files.other].into_iter().enumerate() {
         let register = if index == 0 { 17 } else { 29 };
@@ -117,6 +184,12 @@ fn quick_controls_reuse_one_slot_without_using_the_snapshot_selection(cx: &mut T
         } else {
             let button = cx.debug_bounds("quick-save").unwrap();
             cx.simulate_click(button.center(), Modifiers::none());
+            assert!(cx.debug_bounds("confirm-quick-save").is_some());
+            press_keys(cx, "escape");
+            assert!(cx.debug_bounds("confirm-quick-save").is_none());
+            assert_eq!(fs::read(&quick).ok(), before);
+            cx.simulate_click(button.center(), Modifiers::none());
+            press_keys(cx, "tab enter");
         }
         receive_until(&view, cx, |_| {
             fs::read(&quick).is_ok_and(|bytes| before.as_ref().is_none_or(|old| old != &bytes))
@@ -167,7 +240,7 @@ fn quick_controls_reuse_one_slot_without_using_the_snapshot_selection(cx: &mut T
 
 #[gpui::test]
 fn quick_shortcuts_are_blocked_by_rename_and_settings(cx: &mut TestAppContext) {
-    let (view, cx, files) = rename_window(cx);
+    let (view, cx, files) = history_window(cx);
     let quick = files.original.parent().unwrap().join("quick/slot.ps1state");
     for mode in [SnapshotMode::Debug, SnapshotMode::Display] {
         if mode == SnapshotMode::Debug {
@@ -199,7 +272,7 @@ fn quick_shortcuts_are_blocked_by_rename_and_settings(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rename_accepts_unicode_and_keeps_the_renamed_snapshot_selected(cx: &mut TestAppContext) {
-    let (view, cx, files) = rename_window(cx);
+    let (view, cx, files) = history_window(cx);
     open_rename(cx);
     let os = cx.read(|cx| cx.platform_info().os);
     for key in ["tab", "shift-tab"] {
@@ -266,7 +339,7 @@ fn rename_accepts_unicode_and_keeps_the_renamed_snapshot_selected(cx: &mut TestA
 
 #[gpui::test]
 fn cancel_and_conflicting_names_preserve_files_and_game_input(cx: &mut TestAppContext) {
-    let (view, cx, files) = rename_window(cx);
+    let (view, cx, files) = history_window(cx);
     let original_bytes = fs::read(&files.original).unwrap();
     let other_bytes = fs::read(&files.other).unwrap();
     open_rename(cx);
@@ -274,7 +347,8 @@ fn cancel_and_conflicting_names_preserve_files_and_game_input(cx: &mut TestAppCo
     cx.simulate_keystrokes("z up f6 f8");
     view.read_with(cx, |view, _| {
         assert_eq!(view.pressed_buttons, 0);
-        assert!(view.game_view);
+        assert_eq!(view.page, WorkspacePage::SaveStates);
+        assert!(!view.game_view);
         assert!(!view.graphics.open);
     });
     cx.simulate_keystrokes("escape");
