@@ -101,6 +101,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: linux-x86_64-*
@@ -115,7 +119,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_COMMIT: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -127,24 +130,9 @@ jobs:
             sha256sum --check --strict "${archive}.sha256"
             files+=("$archive" "${archive}.sha256")
           done
-          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          Desktop compatibility prerelease with fixes for CD-ROM read stalls and DMA transfers. This is a branch prerelease and is not marked as the latest release.
-
-          Experimental project developed with extensive AI assistance. Hardware accuracy and game compatibility are still under active development.
-
-          Restarted CD-ROM reads now discard stale staged sectors while preserving accepted data. CD-ROM chopping observes CPU windows, valid long GPU DMA lists are accepted, and cyclic lists remain busy until software aborts them. The current Midnight desktop interface is included.
-
-          Runtime archives contain only the executable and the Ember theme JSON. Icons and shaders are embedded in the executable; documentation and other development files are not bundled.
-
-          The fixes were tested locally with an SCPH-5501 BIOS: Tekken 3 completed 2.399 billion emulation steps and reached gameplay; Crash Bandicoot passed a 1.5-billion-step menu/attract-mode run and a separate manual run into N. Sanity Beach. This covers the reported failures, not full game compatibility.
-
-          Experimental, unsigned Linux x86-64 desktop packages. Choose the Wayland archive for a Wayland session, or the X11 archive for an X11 session. Each build enables only its named GPUI window backend. Requires Ubuntu 24.04 or a compatible newer glibc and the corresponding Wayland/XCB, xkbcommon, fontconfig, FreeType and ALSA runtime libraries.
-
-          The experimental, unsigned Windows x86-64 ZIP is built natively with MSVC and includes the desktop interface. Extract the complete archive and run eidoryn.exe from its directory. Windows desktop gameplay, input and audio have not been manually validated; the automated Windows check runs the original headless demo. JIT is available only in the Linux builds.
-
-          All three variants must pass tests, the release build and the original headless demo smoke test before publishing. SHA-256 sidecars accompany all archives. Vulkan rendering requires a supported physical GPU and driver; software rendering remains the default. No BIOS, games, saves or gameplay test artifacts are distributed.
-
-          macOS and standalone CLI packages are not published by this workflow. Automated headless checks do not verify desktop gameplay or full game compatibility.
-          NOTES
-          printf '\nSource, licenses and third-party notices: https://github.com/%s/tree/%s\n' "$GH_REPO" "$RELEASE_TAG" >> "$RUNNER_TEMP/release-notes.md"
-          gh release create "$RELEASE_TAG" "${files[@]}" --verify-tag --target "$RELEASE_COMMIT" --title "Eidoryn $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --prerelease --latest=false
+          release_flags=()
+          if [[ "${RELEASE_TAG%%+*}" == *-* ]]; then
+            release_flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" "${files[@]}" --verify-tag \
+            --title "Eidoryn $RELEASE_TAG" --notes-from-tag "${release_flags[@]}"
