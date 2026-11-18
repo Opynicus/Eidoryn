@@ -10,23 +10,26 @@ use crate::{
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 
+mod state;
+pub(crate) use state::CdromV1;
+
 pub const COMMAND_CLOCKS: u32 = 2000;
 pub const SECTOR_CLOCKS: u32 = CPU_CLOCK_HZ / 75;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Clone)]
 struct Command {
     opcode: u8,
     parameters: SmallVec<[u8; 16]>,
     clocks: u32,
 }
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Clone)]
 struct Response {
     interrupt: u8,
     // Current completions use at most eight bytes; longer responses can still spill to the heap.
     bytes: SmallVec<[u8; 8]>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[derive(Clone, Default)]
 #[allow(clippy::struct_excessive_bools)] // Independent drive/status bits, not exclusive states.
 pub struct CdRom {
     disc: Option<DiscImage>,
@@ -68,6 +71,8 @@ pub struct CdRom {
     pub last_error: Option<String>,
 }
 
+crate::state::v1::impl_serde_v1!(CdRom, CdromV1);
+
 impl CdRom {
     pub(crate) fn heap_bytes(&self) -> usize {
         self.disc.as_ref().map_or(0, DiscImage::heap_bytes)
@@ -99,14 +104,25 @@ impl CdRom {
         self.disc.as_ref().map(|disc| disc.identity().to_owned())
     }
 
-    pub(crate) fn validate_state(&self) -> Result<(), String> {
+    fn validate_state(&self) -> Result<(), String> {
         if ((self.reading || self.playing) && self.disc.is_none())
+            || (self.reading && self.playing)
             || self.index > 3
+            || self.irq_enable > 0x1f
+            || self.irq_flags > 5
+            || self.read_clocks > SECTOR_CLOCKS
+            || self.trace.as_ref().is_some_and(|trace| trace.len() > 256)
             || self.parameters.len() > 16
+            || self.command.as_ref().is_some_and(|command| {
+                command.parameters.len() > 16 || command.clocks > COMMAND_CLOCKS
+            })
+            || self.completion.as_ref().is_some_and(|(clocks, response)| {
+                *clocks > COMMAND_CLOCKS * 2 || !(1..=5).contains(&response.interrupt)
+            })
             || self
-                .command
+                .play_completion
                 .as_ref()
-                .is_some_and(|command| command.parameters.len() > 16)
+                .is_some_and(|response| !(1..=5).contains(&response.interrupt))
             || (!matches!(self.sector.len(), 0 | 2048 | 2340))
             || self.data.len() > 2352
         {

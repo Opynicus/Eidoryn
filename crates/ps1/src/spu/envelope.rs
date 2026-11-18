@@ -1,11 +1,40 @@
 //! Per-sample envelope counters shared by ADSR and stereo volume sweeps.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct Envelope {
     pub level: i32,
     counter: u32,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "Envelope")]
+pub(super) struct EnvelopeV1 {
+    level: i32,
+    counter: u32,
+}
+
+impl From<&Envelope> for EnvelopeV1 {
+    fn from(state: &Envelope) -> Self {
+        Self {
+            level: state.level,
+            counter: state.counter,
+        }
+    }
+}
+
+impl From<EnvelopeV1> for Envelope {
+    fn from(state: EnvelopeV1) -> Self {
+        Self {
+            level: state.level,
+            counter: state.counter,
+        }
+    }
+}
+
 impl Envelope {
+    pub(super) fn valid_state(self) -> bool {
+        i16::try_from(self.level).is_ok() && self.counter < 0x8000
+    }
+
     pub fn reset_counter(&mut self) {
         self.counter = 0;
     }
@@ -65,7 +94,7 @@ impl Envelope {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Phase {
     #[default]
     Off,
@@ -73,6 +102,40 @@ pub(super) enum Phase {
     Decay,
     Sustain,
     Release,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "Phase")]
+pub(super) enum PhaseV1 {
+    Off,
+    Attack,
+    Decay,
+    Sustain,
+    Release,
+}
+
+impl From<&Phase> for PhaseV1 {
+    fn from(value: &Phase) -> Self {
+        match value {
+            Phase::Off => Self::Off,
+            Phase::Attack => Self::Attack,
+            Phase::Decay => Self::Decay,
+            Phase::Sustain => Self::Sustain,
+            Phase::Release => Self::Release,
+        }
+    }
+}
+
+impl From<PhaseV1> for Phase {
+    fn from(value: PhaseV1) -> Self {
+        match value {
+            PhaseV1::Off => Self::Off,
+            PhaseV1::Attack => Self::Attack,
+            PhaseV1::Decay => Self::Decay,
+            PhaseV1::Sustain => Self::Sustain,
+            PhaseV1::Release => Self::Release,
+        }
+    }
 }
 
 pub(super) fn adsr(envelope: &mut Envelope, phase: &mut Phase, low: u16, high: u16) {

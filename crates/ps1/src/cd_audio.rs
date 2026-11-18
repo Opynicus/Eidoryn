@@ -2,7 +2,7 @@
 use crate::{spu::StereoFrame, xa::XaDecoder};
 use std::collections::VecDeque;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Clone)]
 pub(crate) struct CdAudio {
     decoder: XaDecoder,
     samples: VecDeque<StereoFrame>,
@@ -10,6 +10,43 @@ pub(crate) struct CdAudio {
     volume: [u8; 4],
     xa_mute: bool,
     is_xa: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "CdAudio")]
+pub(crate) struct CdAudioV1 {
+    decoder: crate::xa::XaDecoderV1,
+    samples: VecDeque<[i16; 2]>,
+    pending: [u8; 4],
+    volume: [u8; 4],
+    xa_mute: bool,
+    is_xa: bool,
+}
+
+impl From<&CdAudio> for CdAudioV1 {
+    fn from(state: &CdAudio) -> Self {
+        Self {
+            decoder: (&state.decoder).into(),
+            samples: state.samples.clone(),
+            pending: state.pending,
+            volume: state.volume,
+            xa_mute: state.xa_mute,
+            is_xa: state.is_xa,
+        }
+    }
+}
+
+impl From<CdAudioV1> for CdAudio {
+    fn from(state: CdAudioV1) -> Self {
+        Self {
+            decoder: state.decoder.into(),
+            samples: state.samples,
+            pending: state.pending,
+            volume: state.volume,
+            xa_mute: state.xa_mute,
+            is_xa: state.is_xa,
+        }
+    }
 }
 
 impl Default for CdAudio {
@@ -31,6 +68,9 @@ impl CdAudio {
     }
 
     pub(crate) fn validate_state(&self) -> Result<(), String> {
+        if self.samples.len() > 16_384 {
+            return Err("Invalid saved CD audio queue length".into());
+        }
         self.decoder.validate_state()
     }
     pub fn xa_active(&self) -> bool {

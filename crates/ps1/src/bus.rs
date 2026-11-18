@@ -1,25 +1,27 @@
 use crate::{EmuError, cdrom::CdRom, gpu::Gpu, mdec::Mdec, sio::Sio, spu::Spu, timers::Timers};
 use std::{collections::HashSet, sync::Arc};
 mod dma;
+mod state;
+pub(crate) use state::BusV1;
 
 pub const RAM_SIZE: usize = 2 * 1024 * 1024;
 pub const BIOS_SIZE: usize = 512 * 1024;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 struct DmaChannel {
     base: u32,
     block: u32,
     control: u32,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct MdecTransfer {
     address: u32,
     remaining: u32,
     block_size: u32,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Clone)]
 pub struct Bus {
     pub ram: Vec<u8>,
     /// Guest-read-only ROM, shared by checkpoints; host edits use `Arc::make_mut`.
@@ -33,7 +35,6 @@ pub struct Bus {
     pub mdec: Mdec,
     mdec_dma: [Option<MdecTransfer>; 2],
     cdrom_dma_resume: Option<u64>,
-    #[serde(with = "crate::state::array")]
     scratchpad: [u8; 1024],
     memory_control: [u32; 9],
     ram_size: u32,
@@ -47,7 +48,6 @@ pub struct Bus {
     elapsed_cycles: u64,
     // Scratch storage only: cleared before each list, bounded by the number of
     // aligned RAM addresses. Retain capacity across frames instead of reallocating.
-    #[serde(skip)]
     dma_visited: HashSet<u32>,
 }
 
@@ -116,24 +116,6 @@ impl Bus {
         }
     }
 
-    pub(crate) fn validate_state(&self) -> Result<(), String> {
-        if self.ram.len() != RAM_SIZE || self.bios.len() != BIOS_SIZE {
-            return Err("Invalid saved RAM or BIOS size".into());
-        }
-        if self
-            .mdec_dma
-            .iter()
-            .flatten()
-            .any(|transfer| transfer.block_size == 0 || transfer.remaining > RAM_SIZE as u32 / 4)
-        {
-            return Err("Invalid saved DMA transfer".into());
-        }
-        self.gpu.validate_state()?;
-        self.cdrom.validate_state()?;
-        self.spu.validate_state()?;
-        self.sio.validate_state()?;
-        self.mdec.validate_state()
-    }
     /// CPU-clock cycles started on this bus, wrapping after `u64::MAX`.
     /// Cloning a bus preserves the timeline. A failed device tick still consumes
     /// the cycle in which the error occurred; subsequent cycles are not run.

@@ -9,7 +9,10 @@ pub const ACK_DELAY: u32 = 300;
 // the host can acknowledge the previous interrupt once this pulse has ended.
 pub const ACK_PULSE: u32 = 68;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
+mod state;
+pub(crate) use state::SioV1;
+
+#[derive(Clone, Copy, Default)]
 enum PadPhase {
     #[default]
     Address,
@@ -21,7 +24,7 @@ enum PadPhase {
     Finished,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Sio {
     mode: u16,
     control: u16,
@@ -53,9 +56,20 @@ impl Sio {
                 .sum::<usize>()
     }
 
-    pub(crate) fn validate_state(&self) -> Result<(), String> {
-        for card in self.cards.iter().flatten() {
-            card.validate_state()?;
+    fn validate_state(&self) -> Result<(), String> {
+        // Mode and baud can change while a byte is in flight. The saved
+        // countdown belongs to the settings at the start of that transfer.
+        let longest_transfer = u32::from(u16::MAX) * 64 * 8;
+        if self.mode & !0x13f != 0
+            || self.control & !0x3f07 != 0
+            || self.received.len() > 8
+            || self.ack_delay > crate::memory_card::READ_ACK_DELAY
+            || self.ack_pulse > ACK_PULSE
+            || self
+                .transmitting
+                .is_some_and(|(_, clocks)| !(1..=longest_transfer).contains(&clocks))
+        {
+            return Err("Invalid saved SIO state".into());
         }
         Ok(())
     }

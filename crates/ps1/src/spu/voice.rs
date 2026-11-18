@@ -4,7 +4,7 @@ use super::{
 };
 use crate::adpcm::Predictor;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+#[derive(Clone, Default)]
 pub(super) struct Voice {
     pub envelope: Envelope,
     pub phase: Phase,
@@ -19,10 +19,72 @@ pub(super) struct Voice {
     loaded: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "Voice")]
+pub(super) struct VoiceV1 {
+    envelope: super::envelope::EnvelopeV1,
+    phase: super::envelope::PhaseV1,
+    volumes: [super::envelope::EnvelopeV1; 2],
+    predictor: crate::adpcm::PredictorV1,
+    decoded: [i16; 28],
+    history: [i32; 4],
+    position: usize,
+    address: usize,
+    fraction: u32,
+    flags: u8,
+    loaded: bool,
+}
+
+impl From<&Voice> for VoiceV1 {
+    fn from(state: &Voice) -> Self {
+        Self {
+            envelope: (&state.envelope).into(),
+            phase: (&state.phase).into(),
+            volumes: state.volumes.each_ref().map(Into::into),
+            predictor: (&state.predictor).into(),
+            decoded: state.decoded,
+            history: state.history,
+            position: state.position,
+            address: state.address,
+            fraction: state.fraction,
+            flags: state.flags,
+            loaded: state.loaded,
+        }
+    }
+}
+
+impl From<VoiceV1> for Voice {
+    fn from(state: VoiceV1) -> Self {
+        Self {
+            envelope: state.envelope.into(),
+            phase: state.phase.into(),
+            volumes: state.volumes.map(Into::into),
+            predictor: state.predictor.into(),
+            decoded: state.decoded,
+            history: state.history,
+            position: state.position,
+            address: state.address,
+            fraction: state.fraction,
+            flags: state.flags,
+            loaded: state.loaded,
+        }
+    }
+}
+
 impl Voice {
     pub(super) fn validate_state(&self) -> Result<(), String> {
         if self.position >= 28 || self.address >= 512 * 1024 || self.fraction >= 4096 {
             return Err("Invalid saved SPU voice position".into());
+        }
+        if !self.predictor.valid_history()
+            || !self.envelope.valid_state()
+            || !self.volumes.into_iter().all(Envelope::valid_state)
+            || self
+                .history
+                .iter()
+                .any(|&sample| i16::try_from(sample).is_err())
+        {
+            return Err("Invalid saved SPU voice sample history or envelope".into());
         }
         Ok(())
     }

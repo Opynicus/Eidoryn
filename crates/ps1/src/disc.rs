@@ -19,12 +19,42 @@ pub enum TrackKind {
     Audio,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiscRegion {
     America,
     Europe,
     Japan,
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename = "DiscRegion")]
+pub(crate) enum DiscRegionV1 {
+    America,
+    Europe,
+    Japan,
+}
+
+impl From<&DiscRegion> for DiscRegionV1 {
+    fn from(value: &DiscRegion) -> Self {
+        match value {
+            DiscRegion::America => Self::America,
+            DiscRegion::Europe => Self::Europe,
+            DiscRegion::Japan => Self::Japan,
+        }
+    }
+}
+
+impl From<DiscRegionV1> for DiscRegion {
+    fn from(value: DiscRegionV1) -> Self {
+        match value {
+            DiscRegionV1::America => Self::America,
+            DiscRegionV1::Europe => Self::Europe,
+            DiscRegionV1::Japan => Self::Japan,
+        }
+    }
+}
+
+crate::state::v1::impl_serde_v1!(DiscRegion, DiscRegionV1);
 
 impl DiscRegion {
     pub fn sce_letter(self) -> u8 {
@@ -63,33 +93,34 @@ pub struct DiscImage {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct DiscReference {
+#[serde(rename = "DiscReference")]
+pub(crate) struct DiscReferenceV1 {
     source: PathBuf,
     identity: String,
 }
 
-impl serde::Serialize for DiscImage {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        DiscReference {
-            source: self.source.clone(),
-            identity: self.identity.clone(),
+impl From<&DiscImage> for DiscReferenceV1 {
+    fn from(disc: &DiscImage) -> Self {
+        Self {
+            source: disc.source.clone(),
+            identity: disc.identity.clone(),
         }
-        .serialize(serializer)
     }
 }
 
-impl<'de> serde::Deserialize<'de> for DiscImage {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let reference = DiscReference::deserialize(deserializer)?;
-        let disc = Self::open(&reference.source).map_err(serde::de::Error::custom)?;
+impl TryFrom<DiscReferenceV1> for DiscImage {
+    type Error = String;
+
+    fn try_from(reference: DiscReferenceV1) -> Result<Self, Self::Error> {
+        let disc = Self::open(&reference.source).map_err(|error| error.to_string())?;
         if disc.identity != reference.identity {
-            return Err(serde::de::Error::custom(
-                "Disc image has changed since the save state was created",
-            ));
+            return Err("Disc image has changed since the save state was created".into());
         }
         Ok(disc)
     }
 }
+
+crate::state::v1::impl_serde_v1!(DiscImage, DiscReferenceV1);
 
 pub(crate) fn invalid(message: impl Into<String>) -> EmuError {
     EmuError::InvalidImage(message.into())

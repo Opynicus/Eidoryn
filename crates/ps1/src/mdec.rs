@@ -5,7 +5,10 @@
 use crate::EmuError;
 use std::collections::VecDeque;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+mod state;
+pub(crate) use state::MdecV1;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Operation {
     Idle,
     Quant,
@@ -13,7 +16,7 @@ enum Operation {
     Decode,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Clone)]
 pub struct Mdec {
     operation: Operation,
     command: u32,
@@ -21,17 +24,13 @@ pub struct Mdec {
     status_count: u16,
     table_index: usize,
     dma_control: u32,
-    #[serde(with = "crate::state::matrix")]
     quant: [[u8; 64]; 2],
-    #[serde(with = "crate::state::array")]
     scale: [i16; 64],
     input: VecDeque<u16>,
     output: VecDeque<u32>,
-    #[serde(with = "crate::state::array")]
     coefficients: [i32; 64],
     coefficient_index: Option<usize>,
     quant_scale: i32,
-    #[serde(with = "crate::state::matrix")]
     chroma: [[i32; 64]; 2],
     block: usize,
     output_block: usize,
@@ -73,18 +72,34 @@ impl Mdec {
         self.input.capacity() * size_of::<u16>() + self.output.capacity() * size_of::<u32>()
     }
 
-    pub(crate) fn validate_state(&self) -> Result<(), String> {
-        let table_limit = match self.operation {
-            Operation::Quant => 128,
-            Operation::Scale => 64,
-            _ => usize::MAX,
+    fn validate_state(&self) -> Result<(), String> {
+        let transfer = match self.operation {
+            Operation::Quant => Some((if self.command & 1 == 0 { 64 } else { 128 }, 4)),
+            Operation::Scale => Some((64, 2)),
+            _ => None,
         };
-        if (self.remaining != 0 && self.table_index >= table_limit)
-            || self.block > 5
+        if let Some((limit, stride)) = transfer
+            && (self.table_index > limit
+                || !self.table_index.is_multiple_of(stride)
+                || self.remaining as usize > (limit - self.table_index) / stride)
+        {
+            return Err("Invalid saved MDEC table transfer".into());
+        }
+        // A finished command can still have unread output. Its depth and
+        // cursor belong to the producing block, independent of the new command.
+        let Some(&output_words) = [8, 16, 48, 32].get(self.output_depth as usize) else {
+            return Err("Invalid saved MDEC output depth".into());
+        };
+        if self.block > 5
             || self.output_block > 5
             || self.coefficient_index.is_some_and(|index| index >= 64)
             || self.input.len() > 64
-            || self.output.len() > 48
+            || (!self.output.is_empty()
+                && self.output_position.checked_add(self.output.len()) != Some(output_words))
+            || self.remaining > u32::from(u16::MAX)
+            || self.coefficients.iter().any(|sample| !(-1024..=1023).contains(sample))
+            // The two fixed-point IDCT passes amplify by at most four each.
+            || self.chroma.iter().flatten().any(|sample| !(-16384..=16384).contains(sample))
             || !(0..=63).contains(&self.quant_scale)
         {
             return Err("Invalid saved MDEC state".into());
