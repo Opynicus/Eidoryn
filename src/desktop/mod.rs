@@ -269,6 +269,7 @@ struct Desktop {
     notice: Option<String>,
     audio: AudioControls,
     bios: Option<std::path::PathBuf>,
+    // The windowed player returns to the workspace page it was opened from.
     game_view: bool,
     page: WorkspacePage,
     pressed_buttons: u16,
@@ -300,6 +301,7 @@ enum SettingsTab {
 enum WorkspacePage {
     #[default]
     Console,
+    Game,
     SaveStates,
     Debug,
 }

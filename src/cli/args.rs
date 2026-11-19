@@ -373,7 +373,7 @@ pub(super) fn print_help() {
                {BINARY_NAME} --disc GAME.iso [--bios BIOS | --fast-boot]\n\n\
         --headless          Run without a GPUI window\n\
         --fullscreen        Open the native window in fullscreen\n\
-        --game-view         Enlarge the display by hiding inspectors\n\
+        --game-view         Start with the game enlarged inside the window\n\
         --debugger          Enable and open the optional debugger\n\
         --mute / --unmute   Override saved audio mute state\n\
         --volume N          Output volume: 0..100\n\
@@ -401,8 +401,8 @@ pub(super) fn print_help() {
         --disc PATH         CUE/BIN, ISO or CHD; requires --bios or --fast-boot\n\
         --fast-boot         Load EXE from disc; skips BIOS, homebrew only\n\n\
         Keys: F5 = run/pause; F9 = slice; F10 = instruction; Ctrl+R = reset.\n\
-        F6 = game/inspector view; F7 = cycle CRT; F8 = graphics settings.\n\
-        F11 = fullscreen; Esc = leave fullscreen.\n\
+        F6 = toggle in-window enlargement, F7 = cycle CRT, F8 = graphics settings.\n\
+        F11 = toggle fullscreen, F12 = toggle fullscreen controls, Esc = return to previous view.\n\
         Pad: arrows; X/Z/S/D = cross/square/triangle/circle; Enter = start.\n\
         No games or proprietary BIOS files are bundled."
     );

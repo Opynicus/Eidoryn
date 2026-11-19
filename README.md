@@ -96,7 +96,9 @@ Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are 
 
 1. Select **Choose BIOS** and load your own 512 KiB BIOS file.
 2. Select **Open disc image** and load an ISO, CUE, or CHD file. For a multi-track BIN image, select the `.cue` that references all tracks.
-3. Select **Run**. Use the fullscreen button on the console preview or game page, or press **F11**. The game fits the display at 4:3 at every internal resolution. **F12** toggles the overlay controls and **Esc** returns to the previous view.
+3. Select **Run** to start the game.
+
+On the console preview or game page, choose **Enlarge in window** (**F6**) to use the current window for gameplay. Choose **Fullscreen** (**F11**) to use the entire screen, either directly or from the enlarged view. In both views, the picture fits at 4:3 at every internal resolution. **F12** toggles fullscreen controls. If you enter fullscreen from the enlarged view, **Esc** returns there. Press **Esc** again to return to the workspace.
 
 CHD support covers standalone, single-session CD-ROM images. Images requiring a parent CHD and GD-ROM images are not supported.
 
@@ -163,8 +165,9 @@ Open **Settings (F8) → Controller** to enable turbo for individual action or s
 | Shortcut | Action |
 | --- | --- |
 | `F5` | Run / pause |
-| `F6` / `F7` / `F8` | Toggle game view / CRT filter / graphics settings |
-| `F11` / `Esc` | Toggle fullscreen / exit fullscreen |
+| `F6` | Enlarge the game in the current window or return to the workspace |
+| `F7` / `F8` | Cycle CRT filter / open graphics settings |
+| `F11` / `Esc` | Toggle fullscreen / return to the previous view |
 | `F12` | Show or hide fullscreen controls |
 | `F9` / `F10` | Run one slice / step one instruction |
 | `Ctrl+R` | Reset the current session |

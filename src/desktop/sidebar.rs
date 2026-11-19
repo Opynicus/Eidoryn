@@ -15,7 +15,6 @@ struct Key {
     palette: Palette,
     language: Language,
     page: WorkspacePage,
-    game_view: bool,
 }
 
 impl Key {
@@ -24,7 +23,6 @@ impl Key {
             palette: desktop.themes.active().palette,
             language: desktop.language,
             page: desktop.page,
-            game_view: desktop.game_view,
         }
     }
 }
@@ -33,7 +31,6 @@ pub(super) struct Sidebar {
     desktop: WeakEntity<Desktop>,
     key: Key,
     compact: bool,
-    game: bool,
     _subscription: Subscription,
     #[cfg(all(test, feature = "ui-tests"))]
     pub(super) renders: usize,
@@ -49,9 +46,7 @@ impl Render for Sidebar {
         // the existing navigation callbacks and font cache owned by Desktop;
         // the weak handle avoids a parent/child reference cycle.
         self.desktop
-            .update(cx, |desktop, cx| {
-                desktop.sidebar_content(self.compact, self.game, cx)
-            })
+            .update(cx, |desktop, cx| desktop.sidebar_content(self.compact, cx))
             .unwrap_or_else(|_| div())
     }
 }
@@ -60,17 +55,15 @@ impl Desktop {
     pub(super) fn cached_sidebar(
         &mut self,
         width: gpui::Pixels,
-        game: bool,
         cx: &mut Context<Self>,
     ) -> ViewElement<AnyView> {
         let compact = width < SNAP_WIDTH;
         let sidebar = if let Some(sidebar) = &self.sidebar {
-            if sidebar.read(cx).compact != compact || sidebar.read(cx).game != game {
+            if sidebar.read(cx).compact != compact {
                 // The cached wrapper changes width in this draw, which already
                 // invalidates GPUI's bounds key. Its content must use the same mode.
                 sidebar.update(cx, |sidebar, cx| {
                     sidebar.compact = compact;
-                    sidebar.game = game;
                     cx.notify();
                 });
             }
@@ -82,7 +75,6 @@ impl Desktop {
                 desktop: desktop.downgrade(),
                 key,
                 compact,
-                game,
                 // Observe before the next draw; notifying during render would
                 // leave the cached navigation stale for one frame.
                 _subscription: cx.observe(&desktop, |sidebar: &mut Sidebar, desktop, cx| {
@@ -210,30 +202,20 @@ impl Desktop {
     }
 }
 
-const DESTINATIONS: [(&str, &str, Text, Option<WorkspacePage>); 4] = [
-    (
-        "nav-console",
-        "grid",
-        Text::Console,
-        Some(WorkspacePage::Console),
-    ),
-    ("nav-game", "screen", Text::GameView, None),
+const DESTINATIONS: [(&str, &str, Text, WorkspacePage); 4] = [
+    ("nav-console", "grid", Text::Console, WorkspacePage::Console),
+    ("nav-game", "screen", Text::GameView, WorkspacePage::Game),
     (
         "nav-save-states",
         "disc",
         Text::SaveStates,
-        Some(WorkspacePage::SaveStates),
+        WorkspacePage::SaveStates,
     ),
-    (
-        "nav-debug",
-        "code",
-        Text::Debugger,
-        Some(WorkspacePage::Debug),
-    ),
+    ("nav-debug", "code", Text::Debugger, WorkspacePage::Debug),
 ];
 
 impl Desktop {
-    fn sidebar_content(&self, compact: bool, game: bool, cx: &mut Context<Self>) -> gpui::Div {
+    fn sidebar_content(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
             .size_full()
@@ -296,20 +278,10 @@ impl Desktop {
                 )
             })
             .children(DESTINATIONS.into_iter().map(|(id, symbol, title, page)| {
-                let selected = if game {
-                    page.is_none()
-                } else {
-                    page == Some(self.page)
-                };
-                nav_item(p, id, symbol, self.tr(title), compact, selected).on_click(cx.listener(
-                    move |view, _, window, cx| {
-                        if let Some(page) = page {
-                            view.show_page(page, window, cx);
-                        } else if !game {
-                            view.toggle_view(window, cx);
-                        }
-                    },
-                ))
+                let selected = page == self.page;
+                nav_item(p, id, symbol, self.tr(title), compact, selected).on_click(
+                    cx.listener(move |view, _, window, cx| view.show_page(page, window, cx)),
+                )
             }))
             .child(div().flex_1())
             .when(!compact, |rail| {

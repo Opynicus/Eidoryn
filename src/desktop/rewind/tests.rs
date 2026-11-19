@@ -1,5 +1,5 @@
 use crate::desktop::{
-    Desktop, SettingsTab,
+    Desktop, SettingsTab, WorkspacePage,
     tests::{desktop, press_keys},
 };
 use eidoryn_psx::{
@@ -128,7 +128,7 @@ fn run_control_finishes_rewind_without_toggling_prior_execution(cx: &mut TestApp
 fn mouse_release_and_disabling_rewind_end_playback(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut view = desktop(window, cx);
-        view.game_view = true;
+        view.page = WorkspacePage::Game;
         view
     });
     let path = view.read_with(cx, |view, _| view.preferences_path.clone().unwrap());
@@ -210,7 +210,7 @@ fn rewind_shortcut_is_blocked_by_settings_and_rename(cx: &mut TestAppContext) {
 fn recording_is_opt_in_and_settings_persist_duration_and_enabled_state(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut view = desktop(window, cx);
-        view.game_view = true;
+        view.page = WorkspacePage::Game;
         view
     });
     let path = view.read_with(cx, |view, _| view.preferences_path.clone().unwrap());

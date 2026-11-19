@@ -251,6 +251,10 @@ impl Desktop {
             self.toggle_fullscreen(window, cx);
             return;
         }
+        if key == "escape" && self.game_view {
+            self.toggle_view(window, cx);
+            return;
+        }
         if !self.focus.is_focused(window) {
             match key {
                 "escape" => {
@@ -291,10 +295,6 @@ impl Desktop {
             "f8" => {
                 self.open_settings(cx);
             }
-            "escape" if self.game_view => {
-                self.game_view = false;
-                cx.notify();
-            }
             "r" if event.keystroke.modifiers.control => self.command(Command::Reset, cx),
             "s" if modifiers.control && modifiers.shift => self.command(Command::QuickSave, cx),
             "s" if modifiers.control => self.command(Command::SaveState, cx),
@@ -309,14 +309,13 @@ impl Desktop {
     }
 
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_fullscreen() {
+            self.toggle_fullscreen(window, cx);
+            return;
+        }
         self.snapshot_confirmation = None;
         self.stop_rewind(cx);
-        if window.is_fullscreen() {
-            window.toggle_fullscreen();
-            self.game_view = false;
-        } else {
-            self.game_view = !self.game_view;
-        }
+        self.game_view = !self.game_view;
         window.focus(&self.focus, cx);
         cx.notify();
     }

@@ -74,7 +74,7 @@ fn video_updates_reuse_sidebar_but_ui_changes_invalidate_it(cx: &mut TestAppCont
                 0 => view.language = Language::En,
                 1 => view.themes.select("ocean").unwrap(),
                 2 => view.page = WorkspacePage::Debug,
-                _ => view.game_view = true,
+                _ => view.page = WorkspacePage::Game,
             }
             cx.notify();
         });
@@ -124,9 +124,7 @@ fn fullscreen_controls_return_to_the_previous_workspace(cx: &mut TestAppContext)
     cx.run_until_parked();
 
     // Enter from the console, then move keyboard focus off the root and into the overlay.
-    let enter = cx.debug_bounds("enter-fullscreen").unwrap();
-    cx.simulate_click(enter.center(), gpui::Modifiers::none());
-    cx.run_until_parked();
+    click_control(cx, "enter-fullscreen");
     assert!(cx.update(|window, _| window.is_fullscreen()));
     assert!(cx.debug_bounds("fullscreen-controls").is_some());
     assert!(cx.debug_bounds("nav-console").is_none());
@@ -136,19 +134,10 @@ fn fullscreen_controls_return_to_the_previous_workspace(cx: &mut TestAppContext)
     assert!(!cx.update(|window, _| window.is_fullscreen()));
     assert!(cx.debug_bounds("launch-card").is_some());
 
-    press_keys(cx, "f6");
-    assert!(cx.debug_bounds("game-controls").is_some());
-    let enter = cx.debug_bounds("enter-fullscreen").unwrap();
-    cx.simulate_click(enter.center(), gpui::Modifiers::none());
-    cx.run_until_parked();
-    assert!(
-        cx.update(|window, _| window.is_fullscreen()),
-        "game fullscreen control at {enter:?} in {:?}",
-        cx.update(|window, _| window.viewport_size())
-    );
-    let exit = cx.debug_bounds("exit-fullscreen").unwrap();
-    cx.simulate_click(exit.center(), gpui::Modifiers::none());
-    cx.run_until_parked();
+    click_control(cx, "nav-game");
+    click_control(cx, "enter-fullscreen");
+    assert!(cx.update(|window, _| window.is_fullscreen()));
+    click_control(cx, "exit-fullscreen");
     assert!(!cx.update(|window, _| window.is_fullscreen()));
     assert!(cx.debug_bounds("game-controls").is_some());
     press_keys(cx, "f11");
@@ -159,36 +148,104 @@ fn fullscreen_controls_return_to_the_previous_workspace(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn fullscreen_fits_the_window_at_every_internal_resolution(cx: &mut TestAppContext) {
+fn windowed_enlargement_and_fullscreen_restore_each_view_in_order(cx: &mut TestAppContext) {
+    let (_view, cx) = cx.add_window_view(desktop);
+    let viewport = size(px(1280.), px(900.));
+    cx.simulate_resize(viewport);
+    cx.run_until_parked();
+
+    for (navigation, page) in [
+        ("nav-console", "launch-card"),
+        ("nav-game", "game-controls"),
+    ] {
+        click_control(cx, navigation);
+        let original = cx.debug_bounds("display-stage").unwrap();
+        let small_picture = super::video::video_bounds(original);
+        click_control(cx, "enlarge-game");
+        assert!(!cx.update(|window, _| window.is_fullscreen()));
+        assert_eq!(cx.update(|window, _| window.viewport_size()), viewport);
+        assert!(cx.debug_bounds("windowed-player").is_some());
+        assert!(cx.debug_bounds("nav-console").is_none());
+        let enlarged = cx.debug_bounds("windowed-display").unwrap();
+        let large_picture = super::video::video_bounds(enlarged);
+        assert!(large_picture.size.width > small_picture.size.width);
+        assert!(large_picture.size.height > small_picture.size.height);
+
+        click_control(cx, "enter-fullscreen");
+        assert!(cx.update(|window, _| window.is_fullscreen()));
+        assert!(cx.debug_bounds("fullscreen-display").is_some());
+        press_keys(cx, "escape");
+        assert!(!cx.update(|window, _| window.is_fullscreen()));
+        assert_eq!(cx.debug_bounds("windowed-display"), Some(enlarged));
+        click_control(cx, "restore-game");
+        assert!(cx.debug_bounds(page).is_some());
+        assert_eq!(cx.debug_bounds("display-stage"), Some(original));
+    }
+
+    press_keys(cx, "f6 f11");
+    assert!(cx.update(|window, _| window.is_fullscreen()));
+    press_keys(cx, "f6");
+    assert!(!cx.update(|window, _| window.is_fullscreen()));
+    assert!(cx.debug_bounds("windowed-display").is_some());
+    press_keys(cx, "f6");
+    assert!(cx.debug_bounds("game-controls").is_some());
+    press_keys(cx, "f6 tab escape");
+    assert!(cx.debug_bounds("game-controls").is_some());
+}
+
+#[gpui::test]
+fn windowed_and_fullscreen_players_share_the_frame_at_every_internal_resolution(
+    cx: &mut TestAppContext,
+) {
     use eidoryn_psx::gpu::RenderScale;
     use gpui::point;
 
     let (view, cx) = cx.add_window_view(desktop);
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
-    press_keys(cx, "f11");
-    for scale in [RenderScale::Native, RenderScale::X2, RenderScale::X4] {
-        let factor = scale.factor();
-        let dimensions = (256 * factor, 240 * factor);
-        view.update(cx, |view, cx| {
-            // Simulate the runner publishing a 256-wide PS1 field with enhanced edge samples.
-            let mut rgb = vec![0; dimensions.0 * dimensions.1 * 3];
-            rgb[..3].copy_from_slice(&[255, 0, 0]);
-            rgb[3..6].copy_from_slice(&[0, 0, 255]);
-            view.snapshot.native_dimensions = (256, 240);
-            view.snapshot.dimensions = dimensions;
-            view.snapshot.rgb = rgb.into();
-            view.snapshot.render_scale = scale;
-            if let Some(image) = &mut view.image {
-                image.dirty = true;
-            }
-            cx.notify();
-        });
-        for (width, height, x, y, video_width, video_height) in [
-            (960., 720., 0., 0., 960., 720.),
-            (1280., 720., 160., 0., 960., 720.),
-            (600., 900., 0., 225., 600., 450.),
-        ] {
-            cx.simulate_resize(size(px(width), px(height)));
+    press_keys(cx, "f6");
+    for (width, height, x, y, video_width, video_height) in [
+        (960., 720., 0., 0., 960., 720.),
+        (1280., 720., 160., 0., 960., 720.),
+        (600., 900., 0., 225., 600., 450.),
+    ] {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
+        let windowed = cx.debug_bounds("windowed-display").unwrap();
+        assert_eq!(windowed.size.width, px(width));
+        assert!(windowed.size.height > px(0.));
+        for scale in [RenderScale::Native, RenderScale::X2, RenderScale::X4] {
+            let factor = scale.factor();
+            let dimensions = (256 * factor, 240 * factor);
+            view.update(cx, |view, cx| {
+                // Adjacent samples within one guest pixel may differ at 2× and 4×.
+                let mut rgb = vec![0; dimensions.0 * dimensions.1 * 3];
+                rgb[..3].copy_from_slice(&[255, 0, 0]);
+                rgb[3..6].copy_from_slice(&[0, 0, 255]);
+                view.snapshot.native_dimensions = (256, 240);
+                view.snapshot.dimensions = dimensions;
+                view.snapshot.rgb = rgb.into();
+                view.snapshot.render_scale = scale;
+                if let Some(image) = &mut view.image {
+                    image.dirty = true;
+                }
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("windowed-display"), Some(windowed));
+            let image = view.update_in(cx, |view, window, _| {
+                let image = &view.image.as_ref().unwrap().image;
+                assert!(window.has_image_atlas_entry(image));
+                assert_eq!(
+                    image.size(0),
+                    size(dimensions.0.into(), dimensions.1.into())
+                );
+                assert_eq!(
+                    &image.as_bytes(0).unwrap()[..8],
+                    &[0, 0, 255, 255, 255, 0, 0, 255]
+                );
+                Arc::clone(image)
+            });
+            press_keys(cx, "f11");
             for controls_visible in [true, false] {
                 cx.run_until_parked();
                 let stage = cx.debug_bounds("fullscreen-display").unwrap();
@@ -206,19 +263,13 @@ fn fullscreen_fits_the_window_at_every_internal_resolution(cx: &mut TestAppConte
                     controls_visible
                 );
                 view.update_in(cx, |view, window, _| {
-                    let image = &view.image.as_ref().unwrap().image;
-                    assert!(window.has_image_atlas_entry(image));
-                    assert_eq!(
-                        image.size(0),
-                        size(dimensions.0.into(), dimensions.1.into())
-                    );
-                    assert_eq!(
-                        &image.as_bytes(0).unwrap()[..8],
-                        &[0, 0, 255, 255, 255, 0, 0, 255]
-                    );
+                    assert!(Arc::ptr_eq(&image, &view.image.as_ref().unwrap().image));
+                    assert!(window.has_image_atlas_entry(&image));
                 });
                 press_keys(cx, "f12");
             }
+            press_keys(cx, "escape");
+            assert_eq!(cx.debug_bounds("windowed-display"), Some(windowed));
         }
     }
 }
@@ -267,7 +318,7 @@ fn sidebar_drag_and_toggle_preserve_game_context(cx: &mut TestAppContext) {
         cx.simulate_click(toggle.center(), modifiers);
         cx.run_until_parked();
         assert_eq!(cx.debug_bounds("nav-game").is_some(), visible);
-        assert!(view.read_with(cx, |v, _| v.game_view));
+        assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Game);
     }
     assert_eq!(cx.debug_bounds("nav-game").unwrap().size.width, width);
 }
@@ -802,6 +853,7 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
             for &language in Language::ALL {
                 for (page, game, settings, tab) in [
                     (WorkspacePage::Console, false, false, SettingsTab::Graphics),
+                    (WorkspacePage::Game, false, false, SettingsTab::Graphics),
                     (WorkspacePage::Debug, false, false, SettingsTab::Graphics),
                     (
                         WorkspacePage::SaveStates,
@@ -951,10 +1003,11 @@ fn standby_marks_only_the_unstarted_builtin_demo(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn game_view_keeps_playback_and_quick_actions_below_the_frame(cx: &mut TestAppContext) {
+fn game_workspace_keeps_playback_and_quick_actions_below_the_frame(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(desktop);
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
-    press_keys(cx, "f6");
+    cx.run_until_parked();
+    click_control(cx, "nav-game");
     for (width, height) in [(980., 680.), (1440., 1000.)] {
         cx.simulate_resize(size(px(width), px(height)));
         for &language in Language::ALL {
@@ -1426,6 +1479,14 @@ impl Drop for TestConfig {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
+}
+
+fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
 }
 
 pub(super) fn press_keys(cx: &mut VisualTestContext, keys: &str) {

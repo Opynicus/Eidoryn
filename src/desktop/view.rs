@@ -22,9 +22,14 @@ impl Render for Desktop {
         let fullscreen = window.is_fullscreen();
         let game = self.game_view || fullscreen;
         self.sync_snapshot_mode(!game && self.page == WorkspacePage::Debug);
-        self.sync_video(game || self.page == WorkspacePage::Console, window);
+        self.sync_video(
+            game || matches!(self.page, WorkspacePage::Console | WorkspacePage::Game),
+            window,
+        );
         let body = if fullscreen {
             self.fullscreen_video(window, cx)
+        } else if self.game_view {
+            self.windowed_player(window, cx)
         } else {
             self.workspace(window, cx)
         };
@@ -106,6 +111,48 @@ impl Render for Desktop {
 }
 
 impl Desktop {
+    fn windowed_player(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        div()
+            .debug_selector(|| "windowed-player".into())
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(p.video_background))
+            .children(self.workspace_notice())
+            .child(
+                div()
+                    .debug_selector(|| "windowed-display".into())
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.video()),
+            )
+            .child(self.player_controls(window, cx).flex_shrink_0())
+    }
+
+    fn player_controls(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_2()
+            .bg(rgb(p.surface))
+            .when(!window.is_fullscreen(), |bar| {
+                bar.child(self.enlargement_button(cx))
+            })
+            .child(self.play_button(cx))
+            .child(self.quick_state_controls(cx))
+            .child(self.audio_controls(cx))
+            .child(
+                ghost_icon_button(p, "player-settings", "settings", self.tr(Text::Settings))
+                    .on_click(cx.listener(|view, _, _, cx| view.open_settings(cx))),
+            )
+            .child(self.fullscreen_button(window, cx))
+    }
+
     fn fullscreen_video(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
@@ -124,29 +171,9 @@ impl Desktop {
                         .flex()
                         .justify_center()
                         .child(
-                            div()
+                            self.player_controls(window, cx)
                                 .debug_selector(|| "fullscreen-controls".into())
-                                .flex()
-                                .flex_wrap()
-                                .items_center()
-                                .justify_center()
-                                .gap_2()
-                                .p_2()
-                                .rounded_lg()
-                                .bg(rgb(p.surface))
-                                .child(self.play_button(cx))
-                                .child(self.quick_state_controls(cx))
-                                .child(self.audio_controls(cx))
-                                .child(
-                                    ghost_icon_button(
-                                        p,
-                                        "fullscreen-settings",
-                                        "settings",
-                                        self.tr(Text::Settings),
-                                    )
-                                    .on_click(cx.listener(|view, _, _, cx| view.open_settings(cx))),
-                                )
-                                .child(self.fullscreen_button(window, cx)),
+                                .rounded_lg(),
                         ),
                 )
             })
@@ -157,14 +184,11 @@ impl Desktop {
     }
 
     fn workspace_title(&self) -> &'static str {
-        self.tr(if self.game_view {
-            Text::GameView
-        } else {
-            match self.page {
-                WorkspacePage::Console => Text::Console,
-                WorkspacePage::SaveStates => Text::SaveStates,
-                WorkspacePage::Debug => Text::Debugger,
-            }
+        self.tr(match self.page {
+            WorkspacePage::Console => Text::Console,
+            WorkspacePage::Game => Text::GameView,
+            WorkspacePage::SaveStates => Text::SaveStates,
+            WorkspacePage::Debug => Text::Debugger,
         })
     }
 
@@ -197,14 +221,11 @@ impl Desktop {
 
     fn workspace(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = self.themes.active().palette;
-        let page = if self.game_view {
-            self.game_page(window, cx)
-        } else {
-            match self.page {
-                WorkspacePage::Console => self.console_page(window, cx),
-                WorkspacePage::SaveStates => self.save_states_page(window, cx),
-                WorkspacePage::Debug => self.debug_page(window, cx),
-            }
+        let page = match self.page {
+            WorkspacePage::Console => self.console_page(window, cx),
+            WorkspacePage::Game => self.game_page(window, cx),
+            WorkspacePage::SaveStates => self.save_states_page(window, cx),
+            WorkspacePage::Debug => self.debug_page(window, cx),
         };
         let width = self.navigation.width(window);
         div()
@@ -212,7 +233,7 @@ impl Desktop {
             .size_full()
             .flex()
             .when(!self.navigation.hidden, |row| {
-                row.child(self.cached_sidebar(width, self.game_view, cx))
+                row.child(self.cached_sidebar(width, cx))
             })
             .child(
                 div()
