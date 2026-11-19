@@ -96,7 +96,7 @@ Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are 
 
 1. Select **Choose BIOS** and load your own 512 KiB BIOS file.
 2. Select **Open disc image** and load an ISO, CUE, or CHD file. For a multi-track BIN image, select the `.cue` that references all tracks.
-3. Select **Run**. Press **F11** to enter or leave fullscreen.
+3. Select **Run**. Use the fullscreen button on the console preview or game page, or press **F11**. The game fits the display at 4:3 at every internal resolution. **F12** toggles the overlay controls and **Esc** returns to the previous view.
 
 CHD support covers standalone, single-session CD-ROM images. Images requiring a parent CHD and GD-ROM images are not supported.
 

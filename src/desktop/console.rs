@@ -34,7 +34,7 @@ impl Desktop {
                     .when(!stacked, gpui::Styled::items_start)
                     .child(self.launch_card(cx).flex_1().min_w_0())
                     .child(
-                        self.session_card(preview_height, cx)
+                        self.session_card(preview_height, window, cx)
                             .when(!stacked, |card| card.w(px(session_width)).flex_shrink_0()),
                     ),
             )
@@ -115,7 +115,7 @@ impl Desktop {
             .child(self.tr(text))
     }
 
-    fn session_card(&self, height: f32, cx: &mut Context<Self>) -> gpui::Div {
+    fn session_card(&self, height: f32, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         card(p)
             .debug_selector(|| "session-card".into())
@@ -154,11 +154,12 @@ impl Desktop {
                     )
                     .child(self.play_button(cx))
                     .child(
-                        icon_button(p, "transport-game", "expand", self.tr(Text::GameView))
+                        icon_button(p, "transport-game", "screen", self.tr(Text::GameView))
                             .on_click(
                                 cx.listener(|view, _, window, cx| view.toggle_view(window, cx)),
                             ),
-                    ),
+                    )
+                    .child(self.fullscreen_button(window, cx)),
             )
     }
 
@@ -211,7 +212,7 @@ impl Desktop {
             )
     }
 
-    fn play_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    pub(super) fn play_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let (text, symbol) = if self.snapshot.rewinding {
             (Text::EndRewind, "pause")
         } else if self.snapshot.running {
@@ -252,13 +253,23 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_4()
-            .child(page_heading(
-                &self.fonts,
-                p,
-                self.tr(Text::NowPlaying),
-                self.display_title().to_owned(),
-                self.playback_label(),
-            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        page_heading(
+                            &self.fonts,
+                            p,
+                            self.tr(Text::NowPlaying),
+                            self.display_title().to_owned(),
+                            self.playback_label(),
+                        )
+                        .flex_1(),
+                    )
+                    .child(self.fullscreen_button(window, cx)),
+            )
             .child(
                 div()
                     .flex()
@@ -342,22 +353,24 @@ impl Desktop {
                             ),
                     )
                     .child(self.crt_control(cx))
-                    .child(
-                        icon_button(
-                            p,
-                            "transport-fullscreen",
-                            "expand",
-                            self.tr(Text::Fullscreen),
-                        )
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            window.toggle_fullscreen();
-                            window.focus(&view.focus, cx);
-                            cx.notify();
-                        })),
-                    )
                     .child(div().flex_1())
                     .child(self.audio_controls(cx)),
             )
+    }
+
+    pub(super) fn fullscreen_button(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (id, icon, label) = if window.is_fullscreen() {
+            ("exit-fullscreen", "back", Text::ExitFullscreen)
+        } else {
+            ("enter-fullscreen", "expand", Text::Fullscreen)
+        };
+        icon_button(&self.themes.active().palette, id, icon, self.tr(label))
+            .debug_selector(move || id.into())
+            .on_click(cx.listener(|view, _, window, cx| view.toggle_fullscreen(window, cx)))
     }
 
     fn memory_card(&self, cx: &mut Context<Self>) -> gpui::Div {

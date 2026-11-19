@@ -247,6 +247,10 @@ impl Desktop {
             cx.stop_propagation();
             return;
         }
+        if key == "f11" || (key == "escape" && window.is_fullscreen()) {
+            self.toggle_fullscreen(window, cx);
+            return;
+        }
         if !self.focus.is_focused(window) {
             match key {
                 "escape" => {
@@ -262,7 +266,7 @@ impl Desktop {
                     self.move_focus(false, window, cx);
                     return;
                 }
-                "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" => {}
+                "f5" | "f6" | "f7" | "f8" | "f9" | "f10" => {}
                 "r" | "s" if event.keystroke.modifiers.control => {}
                 "l" if event.keystroke.modifiers.control && event.keystroke.modifiers.shift => {}
                 _ => return, // Enter/Space activate the focused control on key-up.
@@ -287,11 +291,6 @@ impl Desktop {
             "f8" => {
                 self.open_settings(cx);
             }
-            "f11" | "escape" if key == "f11" || window.is_fullscreen() => {
-                window.toggle_fullscreen();
-                window.focus(&self.focus, cx);
-                cx.notify();
-            }
             "escape" if self.game_view => {
                 self.game_view = false;
                 cx.notify();
@@ -303,6 +302,12 @@ impl Desktop {
             _ => {}
         }
     }
+    pub(super) fn toggle_fullscreen(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.toggle_fullscreen();
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.snapshot_confirmation = None;
         self.stop_rewind(cx);
