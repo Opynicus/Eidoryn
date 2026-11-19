@@ -1,4 +1,19 @@
 //! Explicit shared bindings keep raster, feedback and scanout pipelines compatible.
+pub(super) fn encode_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::ComputePipeline,
+    bindings: &wgpu::BindGroup,
+    groups: [u32; 2],
+) {
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("PS1 compute pass"),
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bindings, &[]);
+    pass.dispatch_workgroups(groups[0], groups[1], 1);
+}
+
 pub(super) struct Pipelines {
     pub bindings: wgpu::BindGroup,
     pub raster: wgpu::ComputePipeline,

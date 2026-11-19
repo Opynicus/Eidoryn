@@ -2,11 +2,13 @@
 //! Tile command lists preserve draw order at each pixel. Cross-pixel reads
 //! require a batch barrier; feedback uses an ordered compute invocation.
 mod commands;
+mod fxaa;
 mod pipelines;
 #[cfg(test)]
 mod tests;
 use super::{
-    ColorDepth, DisplaySettings, DisplaySource, RenderScale, RendererMode, VRAM_HEIGHT, VRAM_WIDTH,
+    AntiAliasing, ColorDepth, DisplaySettings, DisplaySource, RenderScale, RendererMode,
+    VRAM_HEIGHT, VRAM_WIDTH,
     rasterizer::{RasterCommand, Rasterizer},
     renderer_engine::{ErrorLatch, select_candidates},
 };
@@ -86,6 +88,7 @@ pub(super) struct ComputeRenderer {
     buffers: [wgpu::Buffer; 6],
     staging: wgpu::Buffer,
     pipelines: pipelines::Pipelines,
+    fxaa: fxaa::Fxaa,
     scale: RenderScale,
     depth: ColorDepth,
     error: Arc<OnceLock<String>>,
@@ -101,6 +104,8 @@ pub(super) struct ComputeRenderer {
     scratch_reads: Vec<usize>,
     read_cache: Option<Vec<u16>>,
     submissions: usize,
+    #[cfg(test)]
+    readbacks: Vec<u64>,
 }
 
 impl ComputeRenderer {
@@ -244,6 +249,7 @@ impl ComputeRenderer {
             buffers,
             staging,
             pipelines,
+            fxaa: fxaa::Fxaa::Cold,
             scale,
             depth,
             error,
@@ -259,6 +265,8 @@ impl ComputeRenderer {
             scratch_reads: Vec::new(),
             read_cache: None,
             submissions: 0,
+            #[cfg(test)]
+            readbacks: Vec::new(),
         })
     }
 
@@ -446,15 +454,7 @@ impl ComputeRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("PS1 batch"),
             });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("PS1 batch"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.pipelines.bindings, &[]);
-            pass.dispatch_workgroups(groups[0], groups[1], 1);
-        }
+        pipelines::encode_pass(&mut encoder, pipeline, &self.pipelines.bindings, groups);
         self.queue.submit([encoder.finish()]);
     }
 
@@ -491,18 +491,14 @@ impl ComputeRenderer {
 
     fn readback<T>(
         &mut self,
-        buffer: usize,
+        encoder: wgpu::CommandEncoder,
         bytes: u64,
         convert: impl FnOnce(&[u8]) -> T,
     ) -> Result<T, String> {
         self.check()?;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("PS1 readback"),
-            });
-        encoder.copy_buffer_to_buffer(&self.buffers[buffer], 0, &self.staging, 0, bytes);
         self.queue.submit([encoder.finish()]);
+        #[cfg(test)]
+        self.readbacks.push(bytes);
         let (send, receive) = mpsc::sync_channel(1);
         self.staging
             .slice(..bytes)
@@ -540,7 +536,13 @@ impl ComputeRenderer {
     fn cache_vram(&mut self) -> Result<(), String> {
         self.flush()?;
         if self.read_cache.is_none() {
-            self.read_cache = Some(self.readback(0, VRAM_BYTES, |bytes| {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("PS1 VRAM readback"),
+                });
+            encoder.copy_buffer_to_buffer(&self.buffers[0], 0, &self.staging, 0, VRAM_BYTES);
+            self.read_cache = Some(self.readback(encoder, VRAM_BYTES, |bytes| {
                 bytes
                     .as_chunks::<4>()
                     .0
@@ -578,16 +580,40 @@ impl ComputeRenderer {
         ];
         self.queue
             .write_buffer(&self.buffers[5], 0, bytemuck::cast_slice(&params));
-        self.dispatch(
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("PS1 scanout and readback"),
+            });
+        let size = [width as u32, height as u32];
+        pipelines::encode_pass(
+            &mut encoder,
             &self.pipelines.scanout,
-            [width.div_ceil(8) as u32, height.div_ceil(8) as u32],
+            &self.pipelines.bindings,
+            size.map(|n| n.div_ceil(8)),
         );
-        self.readback(4, (width * height * 4) as u64, |bytes| {
+        let scanout = &self.buffers[4];
+        let output = if display.anti_aliasing == AntiAliasing::Fxaa
+            && display.source == DisplaySource::Presentation
+            && !display.rgb24
+        {
+            self.fxaa
+                .render(&self.device, &self.queue, &mut encoder, scanout, size)
+        } else {
+            scanout
+        };
+        let bytes = (width * height * 4) as u64;
+        encoder.copy_buffer_to_buffer(output, 0, &self.staging, 0, bytes);
+        self.readback(encoder, bytes, |bytes| {
             let mut rgb = Vec::with_capacity(width * height * 3);
             for pixel in bytes.as_chunks::<4>().0 {
                 rgb.extend_from_slice(&pixel[..3]);
             }
             rgb
         })
+    }
+
+    pub(super) fn take_presentation_warning(&mut self) -> Option<String> {
+        self.fxaa.take_warning()
     }
 }

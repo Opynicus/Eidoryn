@@ -51,6 +51,15 @@ pub enum ColorDepth {
     TrueColor,
 }
 
+/// Edge smoothing applied to hardware RGB15 presentation frames before host scaling and CRT.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AntiAliasing {
+    #[default]
+    Off,
+    Fxaa,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DisplaySource {
     Native,
@@ -60,6 +69,7 @@ enum DisplaySource {
 #[derive(Clone, Copy)]
 struct DisplaySettings {
     source: DisplaySource,
+    anti_aliasing: AntiAliasing,
     dimensions: (usize, usize),
     start: (usize, usize),
     disabled: bool,
@@ -515,6 +525,7 @@ impl Gpu {
     fn display_settings(&self, source: DisplaySource) -> DisplaySettings {
         DisplaySettings {
             source,
+            anti_aliasing: self.anti_aliasing(),
             dimensions: self.dimensions(),
             start: self.display_start,
             disabled: self.display_disabled,
@@ -554,6 +565,30 @@ impl Gpu {
     /// Effective presentation color depth. Both software renderers use native color.
     pub fn color_depth(&self) -> ColorDepth {
         self.renderer.color_depth()
+    }
+
+    /// Effective hardware anti-aliasing mode. Software scanout always uses the original pixels.
+    pub fn anti_aliasing(&self) -> AntiAliasing {
+        if self.renderer_mode().is_hardware() {
+            self.preferred_anti_aliasing()
+        } else {
+            AntiAliasing::Off
+        }
+    }
+
+    /// Hardware anti-aliasing preference retained while a software renderer is active.
+    pub fn preferred_anti_aliasing(&self) -> AntiAliasing {
+        self.renderer.preferred_anti_aliasing
+    }
+
+    /// Select the filter for subsequent presentation requests. Already latched fields keep their pixels.
+    pub fn set_anti_aliasing(&mut self, mode: AntiAliasing) {
+        self.renderer.preferred_anti_aliasing = mode;
+    }
+
+    /// Take a recoverable presentation warning without waiting for the render worker.
+    pub fn take_presentation_warning(&self) -> Option<String> {
+        self.renderer.take_presentation_warning()
     }
 
     /// Switch renderer and internal resolution, preserving the guest VRAM contents.

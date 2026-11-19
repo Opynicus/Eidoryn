@@ -256,7 +256,10 @@ impl Engine {
 
     pub(super) fn display(&mut self, display: DisplaySettings) -> Result<Vec<u8>, String> {
         match self {
-            Self::Software(raster) => Ok(raster.display_rgb(display)),
+            Self::Software(raster) => {
+                debug_assert_eq!(display.anti_aliasing, super::AntiAliasing::Off);
+                Ok(raster.display_rgb(display))
+            }
             #[cfg(any(
                 feature = "dx12",
                 feature = "vulkan",
@@ -264,6 +267,19 @@ impl Engine {
                 feature = "metal"
             ))]
             Self::Hardware(gpu) => gpu.display(display),
+        }
+    }
+
+    pub(super) fn take_presentation_warning(&mut self) -> Option<String> {
+        match self {
+            Self::Software(_) => None,
+            #[cfg(any(
+                feature = "dx12",
+                feature = "vulkan",
+                feature = "opengl",
+                feature = "metal"
+            ))]
+            Self::Hardware(gpu) => gpu.take_presentation_warning(),
         }
     }
 
