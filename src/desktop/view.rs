@@ -106,11 +106,19 @@ impl Render for Desktop {
 impl Desktop {
     fn sync_presentation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let fullscreen = window.is_fullscreen();
+        let fullscreen_changed = fullscreen != self.presentation.native_fullscreen;
         if let Some(page) = self.presentation.window_changed(fullscreen) {
             self.page = page;
             cx.notify();
         }
         let video_only = self.presentation.shows_video();
+        if fullscreen_changed
+            || video_only
+            || self.page != WorkspacePage::Game
+            || self.graphics.open
+        {
+            self.snapshot_menu = None;
+        }
         self.sync_snapshot_mode(!video_only && self.page == WorkspacePage::Debug);
         self.sync_video(
             video_only || matches!(self.page, WorkspacePage::Console | WorkspacePage::Game),

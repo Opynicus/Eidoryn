@@ -1,3 +1,6 @@
+mod menu;
+pub(super) use menu::SnapshotMenu;
+
 use super::{
     Desktop,
     components::{button, card, ghost_button, label, page_heading},
@@ -227,13 +230,7 @@ impl Desktop {
                 )
                 .debug_selector(move || format!("load-snapshot-{index}"))
                 .on_click(cx.listener(move |view, _, _, cx| {
-                    view.selected_save_state = Some(loaded.clone());
-                    view.command(
-                        Command::LoadState {
-                            path: loaded.clone(),
-                        },
-                        cx,
-                    );
+                    view.load_history_snapshot(loaded.clone(), cx);
                 })),
             )
             .child(
@@ -300,6 +297,11 @@ impl Desktop {
                 ))
             })
             .child(label(p, self.tr(Text::QuickStateHint)))
+    }
+
+    fn load_history_snapshot(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.selected_save_state = Some(path.clone());
+        self.command(Command::LoadState { path }, cx);
     }
 
     pub(super) fn sync_save_state_selection(&mut self) {

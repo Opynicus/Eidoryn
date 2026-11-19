@@ -200,6 +200,7 @@ fn enlarge_opens_the_fullscreen_game_workspace_and_restores_the_source_page(
 
     press_keys(cx, "f6");
     click_control(cx, "manage-states");
+    click_control(cx, "manage-all-snapshots");
     assert!(cx.debug_bounds("save-states-page").is_some());
     click_control(cx, "nav-debug");
     click_control(cx, "debug-back");
@@ -904,6 +905,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
         closed_settings_groups: std::collections::HashSet::new(),
         pressed_buttons: 0,
         selected_save_state: None,
+        snapshot_menu: None,
         snapshot_confirmation: None,
         renaming_state: None,
         rewind_sources: 0,
@@ -1587,7 +1589,7 @@ impl Drop for TestConfig {
     }
 }
 
-fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
+pub(super) fn click_control(cx: &mut VisualTestContext, selector: &'static str) {
     let bounds = cx
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing {selector}"));

@@ -209,12 +209,13 @@ impl Desktop {
         }
         let key = event.keystroke.key.as_str();
         if self.renaming_state.is_some() {
-            self.rename_key(event, window, cx);
-            return;
+            return self.rename_key(event, window, cx);
         }
         if self.snapshot_confirmation.is_some() {
-            self.snapshot_confirmation_key(key, window, cx);
-            return;
+            return self.snapshot_confirmation_key(key, window, cx);
+        }
+        if self.snapshot_menu.is_some() {
+            return self.snapshot_menu_key(event, window, cx);
         }
         if key == "tab" {
             self.release_buttons(cx);
