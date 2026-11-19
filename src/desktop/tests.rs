@@ -548,9 +548,7 @@ fn missing_default_bios_is_removed_before_a_disc_is_loaded(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn recent_games_clicks_record_only_successful_loads_and_move_them_to_front(
-    cx: &mut TestAppContext,
-) {
+fn recent_games_open_the_game_workspace_and_only_reorder_after_success(cx: &mut TestAppContext) {
     use eidoryn_psx::preferences::Preferences;
     let bios = TestConfig(test_config_path().with_extension("bios"));
     std::fs::write(&bios.0, vec![0; 512 * 1024]).unwrap();
@@ -568,15 +566,22 @@ fn recent_games_clicks_record_only_successful_loads_and_move_them_to_front(
         view.bios = Some(bios.0.clone());
         view.save_preferences();
     });
+    cx.run_until_parked();
+    let open_in_picker = |disc: &TestConfig, cx: &mut VisualTestContext| {
+        click_control(cx, "open-disc");
+        cx.simulate_path_prompt_response(|_| Some(vec![disc.0.clone()]));
+        cx.run_until_parked();
+    };
     for (index, disc) in discs.iter().enumerate() {
         let before = Preferences::load(&config.0).unwrap().recent_discs;
-        view.update(cx, |view, cx| {
-            view.load_selected_disc(disc.0.clone(), false, cx);
-        });
+        open_in_picker(disc, cx);
         assert_eq!(Preferences::load(&config.0).unwrap().recent_discs, before);
         wait_for_snapshot(&view, cx, |snapshot| {
             snapshot.media_revision == index as u64 + 1
         });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("windowed-player").is_some());
+        press_keys(cx, "f6");
         let saved = Preferences::load(&config.0).unwrap();
         assert_eq!(saved.recent_discs.len(), index + 1);
         assert_eq!(
@@ -586,12 +591,12 @@ fn recent_games_clicks_record_only_successful_loads_and_move_them_to_front(
         assert!(!saved.recent_discs[0].fast_boot);
     }
     for (selector, revision) in [("recent-game-1", 3), ("recent-game-0", 4)] {
-        assert!(view.read_with(cx, |view, _| view.game_view));
-        press_keys(cx, "f6");
-        cx.run_until_parked();
-        let recent = cx.debug_bounds(selector).unwrap();
-        cx.simulate_click(recent.center(), gpui::Modifiers::none());
+        click_control(cx, selector);
         wait_for_snapshot(&view, cx, |snapshot| snapshot.media_revision == revision);
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Game);
+        assert!(cx.debug_bounds("game-controls").is_some());
+        assert!(!cx.update(|window, _| window.is_fullscreen()));
         let saved = Preferences::load(&config.0).unwrap();
         assert_eq!(saved.recent_discs.len(), 2);
         assert_eq!(
@@ -602,19 +607,24 @@ fn recent_games_clicks_record_only_successful_loads_and_move_them_to_front(
             saved.recent_discs[1].path,
             std::fs::canonicalize(&discs[1].0).unwrap()
         );
+        click_control(cx, "nav-console");
     }
-    press_keys(cx, "f6");
     let before = Preferences::load(&config.0).unwrap().recent_discs;
-    let invalid = TestConfig(test_config_path().with_extension("iso"));
-    std::fs::write(&invalid.0, b"invalid image").unwrap();
-    view.update(cx, |view, cx| {
-        view.load_selected_disc(invalid.0.clone(), false, cx);
-    });
+    std::fs::write(&discs[1].0, b"invalid image").unwrap();
+    click_control(cx, "recent-game-1");
     wait_for_snapshot(&view, cx, |snapshot| snapshot.message.is_some());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("launch-card").is_some());
     assert_eq!(view.read_with(cx, |v, _| v.snapshot.media_revision), 4);
-    assert!(!view.read_with(cx, |v, _| v.game_view));
     assert_eq!(Preferences::load(&config.0).unwrap().recent_discs, before);
     assert!(Preferences::load(&config.0).unwrap().bios_path.is_none());
+
+    // A picker retry of the same image uses the picker's navigation behavior.
+    std::fs::write(&discs[1].0, vec![0; 2048]).unwrap();
+    open_in_picker(&discs[1], cx);
+    wait_for_snapshot(&view, cx, |snapshot| snapshot.media_revision == 5);
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("windowed-player").is_some());
 }
 
 #[gpui::test]

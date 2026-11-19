@@ -67,6 +67,7 @@ impl Desktop {
                 | Command::Demo
                 | Command::Load { .. }
                 | Command::LoadDisc { .. }
+                | Command::ReopenDisc { .. }
                 | Command::RequestClose
         ) || matches!(command, Command::Toggle) && self.snapshot.running
         {
@@ -159,7 +160,7 @@ impl Desktop {
     }
 
     pub(super) fn open_disc(&mut self, fast_boot: bool, cx: &mut Context<Self>) {
-        if (!fast_boot || self.bios.is_some()) && !self.validate_current_bios(cx) {
+        if !self.validate_disc_bios(fast_boot, cx) {
             return;
         }
         let picker = cx.prompt_for_paths(PathPromptOptions {
