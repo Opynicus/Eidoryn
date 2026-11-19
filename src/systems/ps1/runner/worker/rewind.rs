@@ -221,6 +221,7 @@ impl Worker {
         };
         self.input = PadInput::load_state(&state.input).expect("trusted in-memory pad state");
         self.machine = state.state.into_machine();
+        self.unlatched_preview = None;
         self.store.invalidate();
         self.reset_pacing();
         true
@@ -249,7 +250,13 @@ impl Worker {
                     .map_err(|error| format!("Cannot resume renderer after rewind: {error}"))
             });
         match restore {
-            Ok(()) => self.running = active.resume,
+            Ok(()) => {
+                self.machine
+                    .bus
+                    .gpu
+                    .set_anti_aliasing(self.hardware_anti_aliasing);
+                self.running = active.resume;
+            }
             Err(error) => {
                 self.running = false;
                 self.message = Some(error);
@@ -271,7 +278,7 @@ mod tests {
     use super::*;
     use crate::systems::ps1::{
         card_file::CardStore,
-        gpu::RendererMode,
+        gpu::{AntiAliasing, RendererMode},
         machine::Machine,
         memory_card::MemoryCard,
         runner::{Command, Runner, Snapshot, SnapshotMode},
@@ -320,6 +327,19 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    #[test]
+    fn initial_paused_snapshot_is_reused_before_the_first_field() {
+        let runner = Runner::new(Machine::demo(), false).unwrap();
+        let initial = runner.take_snapshot().unwrap();
+        runner
+            .send(Command::SetAntiAliasing(AntiAliasing::Fxaa))
+            .unwrap();
+        let next = wait_for_snapshot(&runner, |snapshot| snapshot.renderer_revision == 1);
+        assert!(std::sync::Arc::ptr_eq(&initial.rgb, &next.rgb));
+        assert_eq!(initial.cpu.pc, next.cpu.pc);
+        assert_eq!(initial.video_frames, next.video_frames);
     }
 
     #[test]
@@ -454,6 +474,80 @@ mod tests {
         assert_eq!(history.states.len(), 1);
         assert!(history.pop_before(history_cycles + 4).is_none());
         assert_eq!(history.bytes, 0);
+    }
+
+    #[test]
+    #[cfg(feature = "vulkan")]
+    #[ignore = "requires a physical Vulkan GPU"]
+    fn fxaa_changes_only_future_fields_and_restores_the_hardware_preference() {
+        use crate::systems::ps1::gpu::VRAM_WIDTH;
+
+        let mut machine = Machine::demo();
+        let gpu = &mut machine.bus.gpu;
+        gpu.gp1(0x0300_0000).unwrap();
+        let vram = gpu.vram_mut();
+        for y in 0..48 {
+            let x = 8 + y / 3;
+            let start = y * VRAM_WIDTH + x;
+            vram[start..start + 12].fill(0x7fff);
+        }
+        gpu.set_renderer(RendererMode::Vulkan).unwrap();
+        let mut worker = Worker::new(
+            machine,
+            false,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        let root = temporary("fxaa");
+        worker.states = StateStore::new(&root, &worker.machine);
+        let output = super::super::SharedSnapshot::default();
+        let capture = |worker: &mut Worker| {
+            assert!(worker.publish(&output, false));
+            output.lock().unwrap().take().unwrap()
+        };
+        let original = capture(&mut worker);
+        assert!(worker.machine.bus.gpu.completed_frame().is_none());
+        let guest = worker.machine.save_state().unwrap();
+        let cycles = worker.machine.elapsed_cycles();
+        worker.apply(Command::SetAntiAliasing(AntiAliasing::Fxaa));
+        let paused = capture(&mut worker);
+        assert_eq!(worker.machine.elapsed_cycles(), cycles);
+        assert_eq!(paused.anti_aliasing, AntiAliasing::Fxaa);
+        assert_eq!(paused.video_frames, original.video_frames);
+        assert!(std::sync::Arc::ptr_eq(&paused.rgb, &original.rgb));
+        assert!(worker.machine.save_state().unwrap() == guest);
+        worker.apply(Command::Step);
+        let filtered = capture(&mut worker);
+        assert!(!filtered.has_same_frame(&original));
+        assert_eq!(filtered.dimensions, original.dimensions);
+        worker.apply(Command::QuickSave);
+        worker.apply(Command::SetAntiAliasing(AntiAliasing::Off));
+        assert!(capture(&mut worker).has_same_frame(&filtered));
+        worker.apply(Command::Step);
+        assert!(capture(&mut worker).has_same_frame(&original));
+        worker.apply(Command::SetAntiAliasing(AntiAliasing::Fxaa));
+        worker.apply(Command::QuickLoad);
+        assert!(worker.message.is_none(), "{:?}", worker.message);
+        assert!(capture(&mut worker).has_same_frame(&filtered));
+        assert_eq!(worker.machine.bus.gpu.anti_aliasing(), AntiAliasing::Fxaa);
+
+        worker.apply(Command::SetRewindEnabled(true));
+        worker.machine.bus.tick(SAVE_CYCLES as u32).unwrap();
+        worker.capture_rewind();
+        worker.apply(Command::SetRewinding(true));
+        assert!(worker.rewind.active.is_some());
+        assert!(capture(&mut worker).has_same_frame(&filtered));
+        worker.apply(Command::SetRewinding(false));
+        assert!(capture(&mut worker).has_same_frame(&filtered));
+        assert_eq!(worker.machine.bus.gpu.anti_aliasing(), AntiAliasing::Fxaa);
+        worker.apply(Command::SetRenderer(RendererMode::Threaded));
+        assert_eq!(worker.machine.bus.gpu.anti_aliasing(), AntiAliasing::Off);
+        worker.apply(Command::SetRenderer(RendererMode::Vulkan));
+        assert_eq!(worker.machine.bus.gpu.anti_aliasing(), AntiAliasing::Fxaa);
+        worker.apply(Command::Reset);
+        assert_eq!(worker.machine.bus.gpu.anti_aliasing(), AntiAliasing::Fxaa);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

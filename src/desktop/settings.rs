@@ -97,6 +97,7 @@ fn load_at(
             "Cannot restore preferred renderer: {error}. Using serial software rendering."
         ));
     }
+    machine.bus.gpu.set_anti_aliasing(preferences.anti_aliasing);
     Ok(Startup {
         bios,
         language: options.language.unwrap_or_else(|| preferences.language()),
@@ -148,7 +149,7 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eidoryn_psx::systems::ps1::gpu::{ColorDepth, RenderScale};
+    use eidoryn_psx::systems::ps1::gpu::{AntiAliasing, ColorDepth, RenderScale};
 
     #[test]
     fn saved_bios_is_selected_and_missing_defaults_are_removed_on_restart() {
@@ -279,6 +280,7 @@ mod tests {
             renderer: "threaded".into(),
             render_scale: RenderScale::X2,
             color_depth: ColorDepth::TrueColor,
+            anti_aliasing: AntiAliasing::Fxaa,
             clean_fullscreen: true,
             ..Preferences::default()
         };
@@ -296,6 +298,11 @@ mod tests {
         assert_eq!(startup.preferences.keybindings, saved.keybindings);
         assert_eq!(machine.bus.gpu.renderer_mode(), RendererMode::Threaded);
         assert_eq!(machine.bus.gpu.color_depth(), ColorDepth::Native);
+        assert_eq!(machine.bus.gpu.anti_aliasing(), AntiAliasing::Off);
+        assert_eq!(
+            machine.bus.gpu.preferred_anti_aliasing(),
+            AntiAliasing::Fxaa
+        );
         assert_eq!(startup.preferences.color_depth, ColorDepth::TrueColor);
         let options = Options {
             theme: Some("forest".into()),

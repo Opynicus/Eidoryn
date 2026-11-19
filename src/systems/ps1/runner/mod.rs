@@ -52,6 +52,8 @@ pub enum Command {
         scale: super::gpu::RenderScale,
         color_depth: super::gpu::ColorDepth,
     },
+    /// Select the hardware filter for subsequently produced presentation frames.
+    SetAntiAliasing(super::gpu::AntiAliasing),
     SetCpuMode(crate::systems::ps1::cpu_engine::CpuMode),
     SetRewindEnabled(bool),
     SetRewindSeconds(u16),
@@ -139,7 +141,15 @@ impl Runner {
         mode: SnapshotMode,
     ) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::channel();
-        let mut snapshot = Snapshot::capture_with_mode(&machine, auto_run, None, 0.0, mode);
+        let mut unlatched_preview = None;
+        let mut snapshot = Snapshot::capture_with_preview(
+            &machine,
+            auto_run,
+            None,
+            0.0,
+            mode,
+            &mut unlatched_preview,
+        );
         snapshot.cards = store.status(&machine.bus.sio.cards);
         let states = StateStore::new(Path::new("saves"), &machine);
         snapshot.quick_slot = QuickSlot::inspect(&states, &mut snapshot.message);
@@ -154,7 +164,15 @@ impl Runner {
         let thread = thread::Builder::new()
             .name("eidoryn-emulation".into())
             .spawn(move || {
-                worker::run(machine, auto_run, &receiver, &output, store, audio, mode);
+                worker::run(
+                    machine,
+                    auto_run,
+                    &receiver,
+                    &output,
+                    store,
+                    audio,
+                    (mode, unlatched_preview),
+                );
             })?;
         Ok(Self {
             sender,

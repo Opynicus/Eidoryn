@@ -80,6 +80,8 @@ Under **Display options → Internal resolution**, select 1×, 2×, or 4× with 
 
 Under **Display options → Rendering color depth**, choose **True color (RGB888)** for smoother shading and blending at any hardware resolution. **Native (RGB555)** is the default. Changes apply to subsequent drawing. The game still reads RGB555 from VRAM and uses it for texture feedback. Software rendering uses native color and keeps your hardware preference for the next switch.
 
+Under **Display options → Anti-aliasing**, choose **FXAA** to smooth edges at the selected hardware resolution. It defaults to **Off**. In-game text and thin lines may look softer. Changes appear on the next frame, including after a debugger step. PS1 RGB24 movies keep their original scanout.
+
 Use `./target/release/eidoryn.exe --list-renderers | Out-Host` in PowerShell to list detected backends and any unavailability reasons.
 
 The `hardware` build feature includes all four wgpu backends; individual `dx12`, `vulkan`, `opengl`, and `metal` features remain available. Backends also require platform and driver support. All share the integer compute rasterizer: drawing, texture lookup, blending and display conversion run on the GPU, then frames are read back for the desktop UI. Performance depends on the game and driver. wgpu 30 has no native DirectX 11 backend; older Windows GPUs can use OpenGL if compute support is available, or software rendering. True color has been tested on Linux with Vulkan and OpenGL. [Pixel tests and frame timings](tests/true-color-validation.md)
