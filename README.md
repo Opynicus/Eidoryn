@@ -80,7 +80,7 @@ Under **Display options → Internal resolution**, select 1×, 2×, or 4× with 
 
 Under **Display options → Rendering color depth**, choose **True color (RGB888)** for smoother shading and blending at any hardware resolution. **Native (RGB555)** is the default. Changes apply to subsequent drawing. The game still reads RGB555 from VRAM and uses it for texture feedback. Software rendering uses native color and keeps your hardware preference for the next switch.
 
-Under **Display options → Anti-aliasing**, choose **FXAA** to smooth edges at the selected hardware resolution. It defaults to **Off**. In-game text and thin lines may look softer. Changes appear on the next frame, including after a debugger step. PS1 RGB24 movies keep their original scanout.
+Under **Display options → Anti-aliasing**, choose **FXAA** to smooth edges at the selected hardware resolution. It defaults to **Off**. In-game text and thin lines may look softer. Changes appear on the next frame, including after a debugger step. PS1 RGB24 movies keep their original scanout. [FXAA validation and frame timings](tests/fxaa-validation.md)
 
 Use `./target/release/eidoryn.exe --list-renderers | Out-Host` in PowerShell to list detected backends and any unavailability reasons.
 
