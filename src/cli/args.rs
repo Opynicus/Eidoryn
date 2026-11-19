@@ -372,13 +372,13 @@ pub(super) fn print_help() {
         Usage: {BINARY_NAME} [--exe PATH | --bios PATH] [--headless]\n\
                {BINARY_NAME} --disc GAME.iso [--bios BIOS | --fast-boot]\n\n\
         --headless          Run without a GPUI window\n\
-        --fullscreen        Open the native window in fullscreen\n\
-        --game-view         Show just the game picture in the current window\n\
+        --fullscreen        Start with the game picture fullscreen (F11)\n\
+        --game-view         Open the Game view workspace fullscreen with its controls (F6)\n\
         --debugger          Enable and open the optional debugger\n\
         --mute / --unmute   Override saved audio mute state\n\
         --volume N          Output volume: 0..100\n\
-        --clean-fullscreen  Hide bars in fullscreen (F12 toggles)\n\
-        --fullscreen-controls Show bars in fullscreen\n\
+        --clean-fullscreen  Hide playback controls in fullscreen games (F12 toggles)\n\
+        --fullscreen-controls Show playback controls in fullscreen games\n\
         --crt MODE          CRT display: off, soft, classic (overrides saved choice)\n\
         --renderer MODE     GPU: serial, threaded, hardware, dx12, vulkan, opengl, metal\n\
         --list-renderers    Detect usable hardware backends and exit\n\
@@ -401,8 +401,8 @@ pub(super) fn print_help() {
         --disc PATH         CUE/BIN, ISO or CHD; requires --bios or --fast-boot\n\
         --fast-boot         Load EXE from disc; skips BIOS, homebrew only\n\n\
         Keys: F5 = run/pause; F9 = slice; F10 = instruction; Ctrl+R = reset.\n\
-        F6 = toggle in-window enlargement, F7 = cycle CRT, F8 = graphics settings.\n\
-        F11 = toggle fullscreen, F12 = toggle fullscreen controls, Esc = return to previous view.\n\
+        F6 = enlarge Game view or restore the window, F7 = cycle CRT, F8 = graphics settings.\n\
+        F11 = toggle game fullscreen, F12 = toggle fullscreen controls, Esc = return to previous view.\n\
         Pad: arrows; X/Z/S/D = cross/square/triangle/circle; Enter = start.\n\
         No games or proprietary BIOS files are bundled."
     );

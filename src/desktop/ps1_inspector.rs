@@ -1,5 +1,5 @@
 use super::{
-    Desktop,
+    Desktop, WorkspacePage,
     components::{action, button, card, heading, label, page_heading, pair},
 };
 use eidoryn_psx::i18n::Text;
@@ -120,7 +120,14 @@ impl Desktop {
                     Some("back"),
                     false,
                 )
-                .on_click(cx.listener(|view, _, window, cx| view.toggle_view(window, cx))),
+                .debug_selector(|| "debug-back".into())
+                .on_click(cx.listener(|view, _, window, cx| {
+                    if window.is_fullscreen() {
+                        view.show_page(WorkspacePage::Game, window, cx);
+                    } else {
+                        view.toggle_view(window, cx);
+                    }
+                })),
             )
     }
 

@@ -153,7 +153,9 @@ impl Desktop {
                             )),
                     )
                     .child(self.play_button(cx))
-                    .child(self.enlargement_button(cx))
+                    .when(!window.is_fullscreen(), |row| {
+                        row.child(self.enlargement_button(window, cx))
+                    })
                     .child(self.fullscreen_button(window, cx)),
             )
     }
@@ -248,7 +250,9 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_4()
-            .child(
+            .child(if window.is_fullscreen() {
+                label(p, self.playback_label())
+            } else {
                 div()
                     .flex()
                     .items_center()
@@ -263,9 +267,8 @@ impl Desktop {
                         )
                         .flex_1(),
                     )
-                    .child(self.enlargement_button(cx))
-                    .child(self.fullscreen_button(window, cx)),
-            )
+                    .child(self.enlargement_button(window, cx))
+            })
             .child(
                 div()
                     .flex()
@@ -279,7 +282,7 @@ impl Desktop {
                             .min_w_0()
                             .flex_1()
                             .child(self.display_stage(height))
-                            .child(self.game_toolbar(cx)),
+                            .child(self.game_toolbar(window, cx)),
                     )
                     .child(
                         div()
@@ -307,7 +310,7 @@ impl Desktop {
             )
     }
 
-    fn game_toolbar(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn game_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
             .debug_selector(|| "transport".into())
@@ -349,20 +352,30 @@ impl Desktop {
                             ),
                     )
                     .child(self.crt_control(cx))
+                    .child(self.fullscreen_button(window, cx))
                     .child(div().flex_1())
                     .child(self.audio_controls(cx)),
             )
     }
 
-    fn enlargement_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    pub(super) fn enlargement_button(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (id, icon, label) = if window.is_fullscreen() {
+            ("restore-game", "back", Text::RestoreGame)
+        } else {
+            ("enlarge-game", "screen", Text::EnlargeGame)
+        };
         ghost_button(
             &self.fonts,
             &self.themes.active().palette,
-            "enlarge-game",
-            self.tr(Text::EnlargeGame),
-            Some("screen"),
+            id,
+            self.tr(label),
+            Some(icon),
         )
-        .debug_selector(|| "enlarge-game".into())
+        .debug_selector(move || id.into())
         .on_click(cx.listener(|view, _, window, cx| view.toggle_view(window, cx)))
     }
 
@@ -371,7 +384,7 @@ impl Desktop {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (id, icon, label) = if window.is_fullscreen() {
+        let (id, icon, label) = if window.is_fullscreen() && self.presentation.shows_video() {
             ("exit-fullscreen", "back", Text::ExitFullscreen)
         } else {
             ("enter-fullscreen", "expand", Text::Fullscreen)

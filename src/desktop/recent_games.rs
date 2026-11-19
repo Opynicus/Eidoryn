@@ -352,11 +352,18 @@ impl Desktop {
         if snapshot.media_revision == self.snapshot.media_revision {
             return;
         }
-        if self.page == WorkspacePage::Console && !self.graphics.open && !self.game_view {
+        if self.page == WorkspacePage::Console
+            && !self.graphics.open
+            && !self.presentation.shows_video()
+        {
             match snapshot.media_selection {
                 Some(SelectedMedia::ReopenedDisc) => self.page = WorkspacePage::Game,
                 Some(SelectedMedia::Demo | SelectedMedia::Disc | SelectedMedia::Exe) => {
-                    self.game_view = true;
+                    if self.presentation.native_fullscreen {
+                        self.page = WorkspacePage::Game;
+                    } else {
+                        self.presentation.windowed_video = true;
+                    }
                 }
                 Some(SelectedMedia::Bios) | None => {}
             }
