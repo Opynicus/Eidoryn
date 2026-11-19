@@ -6,7 +6,9 @@ struct Primitive { w: array<u32, 32> }
 @group(0) @binding(2) var<storage, read> tiles: array<u32>;
 @group(0) @binding(3) var<storage, read> uploads: array<u32>;
 @group(0) @binding(4) var<storage, read_write> output: array<u32>;
-@group(0) @binding(5) var<uniform> params: array<vec4<u32>, 2>;
+// (width, height, start x/y), (disabled, RGB24, raster scale, scanout scale),
+// (RGB888 samples, presentation request, reserved, reserved).
+@group(0) @binding(5) var<uniform> params: array<vec4<u32>, 3>;
 
 const DITHER = array<i32, 16>(-4, 0, -3, 1, 2, -2, 3, -1, -3, 1, -4, 0, 3, -1, 2, -2);
 
@@ -34,43 +36,65 @@ fn sample_texture(uv: vec2<i32>, mode: u32, window: u32, clut: u32) -> u32 {
     if depth == 1u { index = (packed >> ((xy.x & 1u) * 8u)) & 255u; }
     return vram[((clut >> 6u) & 511u) * 1024u + (((clut & 63u) * 16u + index) & 1023u)];
 }
-fn masked_destination(flags: u32, old: u32) -> bool {
-    return (flags & 2u) != 0u && (old & 32768u) != 0u;
+fn channels555(word: u32) -> vec3<u32> {
+    return vec3<u32>(word, word >> 5u, word >> 10u) & vec3<u32>(31u);
 }
-
-fn write_mask(value: u32, old: u32, flags: u32) -> u32 {
-    if masked_destination(flags, old) { return old; }
-    return value | ((flags & 1u) << 15u);
+fn expand555(rgb: vec3<u32>) -> vec3<u32> {
+    return (rgb << vec3<u32>(3u)) | (rgb >> vec3<u32>(2u));
 }
-fn shade(p: Primitive, xy: vec2<u32>, old: u32, input_color: vec3<i32>, uv: vec2<i32>) -> u32 {
+fn pack888(rgb: vec3<u32>) -> u32 {
+    return rgb.x | (rgb.y << 8u) | (rgb.z << 16u);
+}
+fn mask_bit(true_color: bool) -> u32 {
+    return select(0x8000u, 0x80000000u, true_color);
+}
+fn masked_destination(flags: u32, old: u32, true_color: bool) -> bool {
+    return (flags & 2u) != 0u && (old & mask_bit(true_color)) != 0u;
+}
+fn presentation_sample(word: u32, true_color: bool) -> u32 {
+    if !true_color { return word; }
+    return pack888(expand555(channels555(word))) | ((word & 0x8000u) << 16u);
+}
+fn shade(p: Primitive, xy: vec2<u32>, old: u32, input_color: vec3<i32>, uv: vec2<i32>, true_color: bool) -> u32 {
     let flags = p.w[7];
+    if masked_destination(flags, old, true_color) { return old; }
     var rgb = input_color;
-    var mask = 0u;
+    var masked = (flags & 1u) != 0u;
     var transparent = (flags & 16u) != 0u;
     let raw = (flags & 12u) == 12u;
     if (flags & 4u) != 0u {
         let texel = sample_texture(uv, p.w[5], p.w[6], p.w[8]);
         if texel == 0u { return old; }
-        mask = texel & 32768u;
-        transparent = transparent && mask != 0u;
-        let t = vec3<i32>(i32(texel & 31u), i32((texel >> 5u) & 31u), i32((texel >> 10u) & 31u));
-        if raw { rgb = t * 8; } else { rgb = t * rgb / 16; }
-    }
-    if (flags & 32u) != 0u && !raw { rgb += vec3<i32>(DITHER[(xy.y & 3u) * 4u + (xy.x & 3u)]); }
-    var foreground = vec3<u32>(clamp(rgb, vec3<i32>(0), vec3<i32>(255))) >> vec3<u32>(3u);
-    if transparent {
-        let background = vec3<u32>(old & 31u, (old >> 5u) & 31u, (old >> 10u) & 31u);
-        switch (p.w[5] >> 5u) & 3u {
-            case 0u: { foreground = background / 2u + foreground / 2u; }
-            case 1u: { foreground = min(background + foreground, vec3<u32>(31u)); }
-            case 2u: { foreground = background - min(background, foreground); }
-            default: { foreground = min(background + foreground / 4u, vec3<u32>(31u)); }
+        let texel_masked = (texel & 0x8000u) != 0u;
+        transparent = transparent && texel_masked;
+        masked = masked || texel_masked;
+        let tex5 = channels555(texel);
+        if true_color {
+            let tex8 = vec3<i32>(expand555(tex5));
+            rgb = select(tex8 * rgb / 128, tex8, raw);
+        } else {
+            let tex = vec3<i32>(tex5);
+            rgb = select(tex * rgb / 16, tex * 8, raw);
         }
     }
-    return write_mask(mask | foreground.x | (foreground.y << 5u) | (foreground.z << 10u), old, flags);
+    if !true_color && (flags & 32u) != 0u && !raw { rgb += vec3<i32>(DITHER[(xy.y & 3u) * 4u + (xy.x & 3u)]); }
+    var foreground = vec3<u32>(clamp(rgb, vec3<i32>(0), vec3<i32>(255)));
+    if !true_color { foreground >>= vec3<u32>(3u); }
+    if transparent {
+        let background = select(channels555(old), vec3<u32>(color(old)), true_color);
+        let maximum = vec3<u32>(select(31u, 255u, true_color));
+        switch (p.w[5] >> 5u) & 3u {
+            case 0u: { foreground = select(background / 2u + foreground / 2u, (background + foreground) / 2u, true_color); }
+            case 1u: { foreground = min(background + foreground, maximum); }
+            case 2u: { foreground = background - min(background, foreground); }
+            default: { foreground = min(background + foreground / 4u, maximum); }
+        }
+    }
+    let native = foreground.x | (foreground.y << 5u) | (foreground.z << 10u);
+    return select(native, pack888(foreground), true_color) | select(0u, mask_bit(true_color), masked);
 }
 
-fn draw(p: Primitive, xy: vec2<u32>, sub: vec2<u32>, scale: u32, old: u32) -> u32 {
+fn draw(p: Primitive, xy: vec2<u32>, sub: vec2<u32>, scale: u32, old: u32, true_color: bool) -> u32 {
     let kind = p.w[0];
     let point = vec2<i32>(xy);
     let a = vec2<i32>(i32(p.w[12]), i32(p.w[13]));
@@ -112,7 +136,7 @@ fn draw(p: Primitive, xy: vec2<u32>, sub: vec2<u32>, scale: u32, old: u32) -> u3
             rgb = (rgb * (extent - step) + color(p.w[10]) * step) / extent;
         }
     }
-    return shade(p, xy, old, rgb, uv);
+    return shade(p, xy, old, rgb, uv, true_color);
 }
 
 const NATIVE_WORDS = 1024u * 512u;
@@ -125,24 +149,27 @@ fn sample_base(index: u32, scale: u32) -> u32 { return NATIVE_WORDS + index * sc
 // The native mask gates the whole transfer. A copied sample retains its source
 // mask and detail even when the native source word has a different color/mask.
 fn copy_word(p: Primitive, delta: vec2<u32>, index: u32, old: u32) -> u32 {
-    if masked_destination(p.w[7], old) { return old; }
+    if masked_destination(p.w[7], old, false) { return old; }
     let source = (vec2<u32>(p.w[26], p.w[27]) + delta) & vec2<u32>(1023u, 511u);
     let source_index = native_index(source);
     let scale = params[1].z;
-    let mask = (p.w[7] & 1u) << 15u;
-    if scale > 1u {
+    let true_color = params[2].x != 0u;
+    let force_mask = (p.w[7] & 1u) != 0u;
+    if scale > 1u || true_color {
+        let mask = select(0u, mask_bit(true_color), force_mask);
         let source_base = sample_base(source_index, scale);
         let destination_base = sample_base(index, scale);
         for (var i = 0u; i < scale * scale; i++) {
             vram[destination_base + i] = vram[source_base + i] | mask;
         }
     }
-    return vram[source_index] | mask;
+    return vram[source_index] | select(0u, mask_bit(false), force_mask);
 }
 
 fn apply(p: Primitive, xy: vec2<u32>, old: u32) -> u32 {
     if xy.x < p.w[1] || xy.y < p.w[2] || xy.x > p.w[3] || xy.y > p.w[4] { return old; }
     let scale = params[1].z;
+    let true_color = params[2].x != 0u;
     let base = sample_base(native_index(xy), scale);
     let kind = p.w[0];
     if kind == 5u {
@@ -152,27 +179,29 @@ fn apply(p: Primitive, xy: vec2<u32>, old: u32) -> u32 {
     }
     if kind == 0u || kind == 4u {
         var value = p.w[9]; // Fills ignore mask settings.
+        var sample = select(value, p.w[10], true_color);
         if kind == 4u {
-            if masked_destination(p.w[7], old) { return old; }
-            value = uploads[p.w[25] + xy.x - p.w[1]] | ((p.w[7] & 1u) << 15u);
+            if masked_destination(p.w[7], old, false) { return old; }
+            value = uploads[p.w[25] + xy.x - p.w[1]] | select(0u, mask_bit(false), (p.w[7] & 1u) != 0u);
+            sample = presentation_sample(value, true_color);
         }
-        if scale > 1u {
-            for (var i = 0u; i < scale * scale; i++) { vram[base + i] = value; }
+        if scale > 1u || true_color {
+            for (var i = 0u; i < scale * scale; i++) { vram[base + i] = sample; }
         }
         return value;
     }
 
-    if scale > 1u {
+    if scale > 1u || true_color {
         // In an ordered self-textured draw every subsample sees the native
         // destination as it was immediately before this pixel was drawn.
         for (var y = 0u; y < scale; y++) {
             for (var x = 0u; x < scale; x++) {
                 let index = base + y * scale + x;
-                vram[index] = draw(p, xy, vec2<u32>(x, y), scale, vram[index]);
+                vram[index] = draw(p, xy, vec2<u32>(x, y), scale, vram[index], true_color);
             }
         }
     }
-    return draw(p, xy, vec2<u32>(0u), 1u, old);
+    return draw(p, xy, vec2<u32>(0u), 1u, old, false);
 }
 
 @compute @workgroup_size(8, 8)
@@ -236,7 +265,8 @@ fn seed_enhanced(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = native_index(id.xy);
     let scale = params[1].z;
     let base = sample_base(index, scale);
-    for (var i = 0u; i < scale * scale; i++) { vram[base + i] = vram[index]; }
+    let sample = presentation_sample(vram[index], params[2].x != 0u);
+    for (var i = 0u; i < scale * scale; i++) { vram[base + i] = sample; }
 }
 
 @compute @workgroup_size(8, 8)
@@ -257,13 +287,14 @@ fn scanout(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     } else {
         var index = row + ((params[0].z + xy.x) & 1023u);
-        if scale > 1u {
+        let true_color = params[2].x != 0u;
+        let present = params[2].y != 0u;
+        if present && (scale > 1u || true_color) {
             let sub = id.xy % scale;
             index = sample_base(index, scale) + sub.y * scale + sub.x;
         }
         let pixel = vram[index];
-        rgb = vec3<u32>(pixel & 31u, (pixel >> 5u) & 31u, (pixel >> 10u) & 31u);
-        rgb = (rgb << vec3<u32>(3u)) | (rgb >> vec3<u32>(2u));
+        rgb = select(expand555(channels555(pixel)), vec3<u32>(color(pixel)), present && true_color);
     }
-    output[out_index] = rgb.x | (rgb.y << 8u) | (rgb.z << 16u);
+    output[out_index] = pack888(rgb);
 }

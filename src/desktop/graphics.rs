@@ -6,7 +6,7 @@ use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
     systems::ps1::{
         cpu_engine::CpuMode,
-        gpu::{RenderScale, RendererAvailability, RendererMode, hardware_backends},
+        gpu::{ColorDepth, RenderScale, RendererAvailability, RendererMode, hardware_backends},
         runner::{Command, Snapshot},
     },
     theme::Palette,
@@ -20,7 +20,7 @@ pub(super) struct GraphicsControls {
     hardware: RendererMode,
     backends: Option<Vec<RendererAvailability>>,
     detecting: bool,
-    pending: Option<RendererMode>,
+    pending: Option<(RendererMode, RenderScale, ColorDepth)>,
     pending_revision: u64,
     pending_cpu: Option<CpuMode>,
 }
@@ -63,9 +63,14 @@ impl GraphicsControls {
 
     pub(super) fn receive(&mut self, snapshot: &Snapshot) -> Option<RendererMode> {
         let completed = snapshot.renderer_revision != self.pending_revision;
-        let confirmed = self
-            .pending
-            .filter(|mode| completed && *mode == snapshot.renderer && snapshot.message.is_none());
+        let confirmed = completed
+            && snapshot.message.is_none()
+            && self.pending
+                == Some((
+                    snapshot.renderer,
+                    snapshot.render_scale,
+                    snapshot.color_depth,
+                ));
         if self.pending_cpu == Some(snapshot.cpu_mode) || snapshot.message.is_some() {
             self.pending_cpu = None;
         }
@@ -80,7 +85,7 @@ impl GraphicsControls {
         } else if snapshot.message.is_none() {
             self.hardware = snapshot.renderer;
         }
-        confirmed
+        confirmed.then_some(snapshot.renderer)
     }
 }
 
@@ -200,26 +205,28 @@ impl Desktop {
     }
 
     fn select_renderer(&mut self, mode: RendererMode, cx: &mut Context<Self>) {
-        let scale = if mode.is_hardware() {
-            self.preferences.render_scale
+        let (scale, color_depth) = if mode.is_hardware() {
+            (self.preferences.render_scale, self.preferences.color_depth)
         } else {
-            RenderScale::Native
+            (RenderScale::Native, ColorDepth::Native)
         };
-        self.select_renderer_with_scale(mode, scale, cx);
+        self.select_renderer_config(mode, scale, color_depth, cx);
     }
 
-    fn select_renderer_with_scale(
+    fn select_renderer_config(
         &mut self,
         mode: RendererMode,
         scale: RenderScale,
+        color_depth: ColorDepth,
         cx: &mut Context<Self>,
     ) {
-        match self
-            .runner
-            .send(Command::SetRendererWithScale { mode, scale })
-        {
+        match self.runner.send(Command::SetRendererConfig {
+            mode,
+            scale,
+            color_depth,
+        }) {
             Ok(()) => {
-                self.graphics.pending = Some(mode);
+                self.graphics.pending = Some((mode, scale, color_depth));
                 self.graphics.pending_revision = self.snapshot.renderer_revision;
                 self.notice = None;
             }
@@ -296,11 +303,45 @@ impl Desktop {
                         enabled && self.snapshot.render_scale != scale,
                         |button| {
                             button.on_click(cx.listener(move |view, _, _, cx| {
-                                view.select_renderer_with_scale(mode, scale, cx);
+                                view.select_renderer_config(
+                                    mode,
+                                    scale,
+                                    view.snapshot.color_depth,
+                                    cx,
+                                );
                             }))
                         },
                     )
                 }),
+        )
+    }
+
+    fn color_depth_choices(&self, ready: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let mode = self.snapshot.renderer;
+        let enabled = mode.is_hardware() && ready;
+        div().flex().gap_2().flex_wrap().children(
+            [
+                (ColorDepth::Native, Text::NativeColor, "color-depth-native"),
+                (ColorDepth::TrueColor, Text::TrueColor, "color-depth-true"),
+            ]
+            .into_iter()
+            .map(|(depth, title, id)| {
+                let selected = self.snapshot.color_depth == depth;
+                button(&self.fonts, p, id, self.tr(title), selected)
+                    .debug_selector(move || id.into())
+                    .when(!enabled, |button| button.opacity(0.45).tab_index(-1))
+                    .when(enabled && !selected, |button| {
+                        button.on_click(cx.listener(move |view, _, _, cx| {
+                            view.select_renderer_config(
+                                mode,
+                                view.snapshot.render_scale,
+                                depth,
+                                cx,
+                            );
+                        }))
+                    })
+            }),
         )
     }
 
@@ -343,6 +384,8 @@ impl Desktop {
                     .gap_2()
                     .child(label(p, self.tr(Text::InternalResolution)))
                     .child(self.render_scale_choices(ready, cx))
+                    .child(label(p, self.tr(Text::RenderColorDepth)))
+                    .child(self.color_depth_choices(ready, cx))
                     .child(label(p, self.tr(Text::Crt)))
                     .child(self.crt_choices(cx))
                     .child(self.clean_fullscreen_control(cx))
@@ -473,24 +516,39 @@ mod tests {
     #[test]
     fn only_confirmed_renderer_changes_are_persisted() {
         let mut controls = GraphicsControls::new(RendererMode::Serial, false);
-        controls.pending = Some(RendererMode::Threaded);
+        let threaded = Some((
+            RendererMode::Threaded,
+            RenderScale::Native,
+            ColorDepth::Native,
+        ));
+        controls.pending = threaded;
         let mut snapshot = Snapshot::capture(&Machine::demo(), true, None, 0.0);
         assert_eq!(controls.receive(&snapshot), None);
-        assert_eq!(controls.pending, Some(RendererMode::Threaded));
+        assert_eq!(controls.pending, threaded);
         snapshot.message = Some("An older notification".into());
         assert_eq!(controls.receive(&snapshot), None);
-        assert_eq!(controls.pending, Some(RendererMode::Threaded));
+        assert_eq!(controls.pending, threaded);
         snapshot.message = None;
         snapshot.renderer = RendererMode::Threaded;
         snapshot.renderer_revision = 1;
         assert_eq!(controls.receive(&snapshot), Some(RendererMode::Threaded));
         assert_eq!(controls.receive(&snapshot), None);
-        controls.pending = Some(RendererMode::Vulkan);
+        controls.pending = Some((RendererMode::Vulkan, RenderScale::X2, ColorDepth::TrueColor));
         controls.pending_revision = snapshot.renderer_revision;
         snapshot.message = Some("Renderer unavailable".into());
         snapshot.renderer_revision = 2;
         assert_eq!(controls.receive(&snapshot), None);
         assert!(controls.pending.is_none());
+
+        // An intervening notification may have cleared the backend error before this snapshot.
+        // Matching the backend by itself cannot confirm a color-depth or scale change.
+        controls.pending = Some((RendererMode::Vulkan, RenderScale::X2, ColorDepth::TrueColor));
+        controls.pending_revision = snapshot.renderer_revision;
+        snapshot.renderer = RendererMode::Vulkan;
+        snapshot.render_scale = RenderScale::X2;
+        snapshot.message = None;
+        snapshot.renderer_revision += 1;
+        assert_eq!(controls.receive(&snapshot), None);
     }
 
     #[test]
@@ -504,15 +562,17 @@ mod tests {
             RendererMode::Vulkan,
             RendererMode::Metal,
         ] {
-            controls.pending = Some(mode);
+            controls.pending = Some((mode, RenderScale::X2, ColorDepth::TrueColor));
             controls.pending_revision = snapshot.renderer_revision;
             snapshot.renderer = mode;
+            snapshot.render_scale = RenderScale::X2;
+            snapshot.color_depth = ColorDepth::TrueColor;
             snapshot.renderer_revision += 1;
             assert_eq!(controls.receive(&snapshot), Some(mode));
             assert_eq!(controls.software, RendererMode::Threaded);
             assert_eq!(controls.hardware, mode);
         }
-        controls.pending = Some(RendererMode::OpenGl);
+        controls.pending = Some((RendererMode::OpenGl, RenderScale::X2, ColorDepth::TrueColor));
         controls.pending_revision = snapshot.renderer_revision;
         snapshot.renderer = RendererMode::Threaded;
         snapshot.message = Some("OpenGL unavailable".into());
@@ -548,6 +608,46 @@ mod tests {
         assert!(controls.available(RendererMode::Dx12));
         assert!(!controls.available(RendererMode::Vulkan));
         assert!(!controls.available(RendererMode::OpenGl));
+    }
+
+    #[cfg(feature = "ui-tests")]
+    #[gpui::test]
+    fn color_depth_choice_requires_hardware_and_keeps_internal_resolution(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = cx.add_window_view(super::super::tests::desktop);
+        cx.simulate_resize(gpui::size(px(1280.), px(1200.)));
+        view.update(cx, |view, cx| {
+            view.preferences_path = None;
+            view.graphics.open = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let click_depth = |cx: &mut gpui::VisualTestContext| {
+            let bounds = cx.debug_bounds("color-depth-true").unwrap();
+            cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+            cx.run_until_parked();
+        };
+        click_depth(cx);
+        assert!(view.read_with(cx, |view, _| view.graphics.pending.is_none()));
+        view.update(cx, |view, cx| {
+            view.snapshot.renderer = RendererMode::Hardware;
+            view.snapshot.render_scale = RenderScale::X4;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click_depth(cx);
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.graphics.pending,
+                Some((
+                    RendererMode::Hardware,
+                    RenderScale::X4,
+                    ColorDepth::TrueColor
+                ))
+            );
+            assert_eq!(view.preferences.color_depth, ColorDepth::Native);
+        });
     }
 
     #[cfg(feature = "ui-tests")]

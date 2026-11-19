@@ -7,7 +7,7 @@ use super::{
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
-    gpu::{RenderScale, RendererMode},
+    gpu::{ColorDepth, RenderScale, RendererMode},
     input::PadInput,
     machine::{INSTRUCTIONS_PER_SLICE, Machine},
     media::{load_disc, load_path},
@@ -115,7 +115,8 @@ struct Worker {
     input: PadInput,
     initial: Machine,
     renderer: RendererMode,
-    render_scale: RenderScale,
+    hardware_render_scale: RenderScale,
+    hardware_color_depth: ColorDepth,
     renderer_revision: u64,
     cpu_mode: CpuMode,
     running: bool,
@@ -163,7 +164,8 @@ impl Worker {
             snapshot_mode,
             initial: machine.clone(),
             renderer: machine.bus.gpu.renderer_mode(),
-            render_scale: machine.bus.gpu.render_scale(),
+            hardware_render_scale: machine.bus.gpu.render_scale(),
+            hardware_color_depth: machine.bus.gpu.color_depth(),
             renderer_revision: 0,
             cpu_mode: machine.cpu_mode(),
             states: StateStore::new(Path::new("saves"), &machine),
@@ -217,11 +219,11 @@ impl Worker {
             self.running = false;
             return false;
         }
-        if let Err(error) = machine
-            .bus
-            .gpu
-            .set_renderer_with_scale(self.renderer, self.render_scale)
-        {
+        if let Err(error) = machine.bus.gpu.set_renderer_config(
+            self.renderer,
+            self.hardware_render_scale,
+            self.hardware_color_depth,
+        ) {
             self.message = Some(format!("Cannot start GPU renderer: {error}"));
             self.running = false;
             return false;
@@ -255,11 +257,19 @@ impl Worker {
         self.reset_pacing();
     }
 
-    fn select_renderer(&mut self, mode: RendererMode, scale: RenderScale) {
-        match self.machine.bus.gpu.set_renderer_with_scale(mode, scale) {
+    fn select_renderer(&mut self, mode: RendererMode, scale: RenderScale, color_depth: ColorDepth) {
+        match self
+            .machine
+            .bus
+            .gpu
+            .set_renderer_config(mode, scale, color_depth)
+        {
             Ok(()) => {
                 self.renderer = mode;
-                self.render_scale = self.machine.bus.gpu.render_scale();
+                if mode.is_hardware() {
+                    self.hardware_render_scale = scale;
+                    self.hardware_color_depth = color_depth;
+                }
                 self.message = None;
             }
             Err(error) => {
@@ -373,7 +383,11 @@ impl Worker {
             machine
                 .bus
                 .gpu
-                .set_renderer_with_scale(self.renderer, self.render_scale)
+                .set_renderer_config(
+                    self.renderer,
+                    self.hardware_render_scale,
+                    self.hardware_color_depth,
+                )
                 .map_err(|e| format!("Cannot start GPU renderer: {e}"))?;
             Ok((machine, input))
         };
@@ -505,7 +519,9 @@ impl Worker {
         }
         if matches!(
             command,
-            Command::SetRenderer(_) | Command::SetRendererWithScale { .. }
+            Command::SetRenderer(_)
+                | Command::SetRendererWithScale { .. }
+                | Command::SetRendererConfig { .. }
         ) {
             // Also acknowledge a request rejected by the card-flush guard below.
             self.renderer_revision = self.renderer_revision.wrapping_add(1);
@@ -532,8 +548,17 @@ impl Worker {
                 self.update_input();
             }
             Command::SetCpuMode(mode) => self.select_cpu(mode),
-            Command::SetRenderer(mode) => self.select_renderer(mode, self.render_scale),
-            Command::SetRendererWithScale { mode, scale } => self.select_renderer(mode, scale),
+            Command::SetRenderer(mode) => {
+                self.select_renderer(mode, self.hardware_render_scale, self.hardware_color_depth);
+            }
+            Command::SetRendererWithScale { mode, scale } => {
+                self.select_renderer(mode, scale, self.hardware_color_depth);
+            }
+            Command::SetRendererConfig {
+                mode,
+                scale,
+                color_depth,
+            } => self.select_renderer(mode, scale, color_depth),
             Command::Toggle => {
                 self.message = None;
                 self.running = !self.running;
@@ -724,7 +749,10 @@ impl Worker {
             self.rewind.available(self.machine.elapsed_cycles());
         if snapshot.rewinding {
             snapshot.renderer = self.renderer;
-            snapshot.render_scale = self.render_scale;
+            if self.renderer.is_hardware() {
+                snapshot.render_scale = self.hardware_render_scale;
+                snapshot.color_depth = self.hardware_color_depth;
+            }
             snapshot.cpu_mode = self.cpu_mode;
         }
         if snapshot.message.is_none() {

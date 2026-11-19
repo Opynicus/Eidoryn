@@ -425,6 +425,7 @@ impl Desktop {
                 mode.id().clone_into(&mut self.preferences.renderer);
                 if mode.is_hardware() {
                     self.preferences.render_scale = snapshot.render_scale;
+                    self.preferences.color_depth = snapshot.color_depth;
                 }
                 self.save_preferences();
             }
@@ -441,6 +442,7 @@ impl Desktop {
                 image.dirty = true;
             }
             let redraw = frame_changed
+                || snapshot.renderer_revision != self.snapshot.renderer_revision
                 || snapshot.rewinding != self.snapshot.rewinding
                 || snapshot.rewind_states != self.snapshot.rewind_states
                 || snapshot.quick_slot != self.snapshot.quick_slot

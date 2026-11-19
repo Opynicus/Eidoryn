@@ -284,6 +284,7 @@ fn fill(p: &[u32; 12], output: &mut Vec<Primitive>) {
             }
             let mut prim = Primitive::new(FILL, DrawState::default(), PLAIN);
             prim.0[9] = u32::from(color15(p[0]));
+            prim.0[10] = p[0] & 0x00ff_ffff;
             prim.bounds(
                 [
                     left as i32,

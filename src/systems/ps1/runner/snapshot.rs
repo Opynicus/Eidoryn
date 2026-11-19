@@ -3,7 +3,7 @@ use crate::systems::ps1::{
     card_file::CardStatus,
     cpu::{Cpu, disassemble},
     cpu_engine::{CpuMode, CpuStats},
-    gpu::{RenderScale, RendererMode},
+    gpu::{ColorDepth, RenderScale, RendererMode},
     machine::Machine,
     state_file::SaveStateInfo,
 };
@@ -78,6 +78,7 @@ pub struct Snapshot {
     pub gpu_status: u32,
     pub renderer: RendererMode,
     pub render_scale: RenderScale,
+    pub color_depth: ColorDepth,
     /// Completed renderer-selection requests, including rejected requests.
     pub renderer_revision: u64,
     pub renderer_device: String,
@@ -183,6 +184,7 @@ impl Snapshot {
             gpu_status: machine.bus.gpu.status(),
             renderer: machine.bus.gpu.renderer_mode(),
             render_scale: gpu.render_scale(),
+            color_depth: gpu.color_depth(),
             renderer_revision: 0,
             renderer_device: machine.bus.gpu.renderer_device(),
             gpu_commands: machine.bus.gpu.commands,

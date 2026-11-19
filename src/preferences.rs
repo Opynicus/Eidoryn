@@ -4,7 +4,7 @@ use crate::{
     keybindings::KeyBindings,
     systems::ps1::{
         bus::BIOS_SIZE,
-        gpu::{RenderScale, RendererMode},
+        gpu::{ColorDepth, RenderScale, RendererMode},
         input::TurboConfig,
         runner::{DEFAULT_REWIND_SECONDS, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS},
     },
@@ -38,6 +38,8 @@ pub struct Preferences {
     pub renderer: String,
     /// Preferred hardware raster resolution, retained in software mode.
     pub render_scale: RenderScale,
+    /// Preferred hardware presentation color depth, retained in software mode.
+    pub color_depth: ColorDepth,
     pub clean_fullscreen: bool,
     pub turbo_buttons: u16,
     pub turbo_hz: u8,
@@ -59,6 +61,7 @@ impl Default for Preferences {
             muted: false,
             renderer: "serial".into(),
             render_scale: RenderScale::Native,
+            color_depth: ColorDepth::Native,
             clean_fullscreen: true,
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
@@ -334,26 +337,39 @@ mod tests {
     }
 
     #[test]
-    fn hardware_resolution_defaults_to_native_for_older_preferences() {
+    fn legacy_settings_default_to_native_color_and_preserve_resolution() {
         let legacy: Preferences = serde_json::from_str("{}").unwrap();
         assert_eq!(legacy.render_scale, RenderScale::Native);
+        assert_eq!(legacy.color_depth, ColorDepth::Native);
+        let legacy: Preferences = serde_json::from_str(r#"{"render_scale":"4x"}"#).unwrap();
+        assert_eq!(legacy.render_scale, RenderScale::X4);
+        assert_eq!(legacy.color_depth, ColorDepth::Native);
+    }
+
+    #[test]
+    fn hardware_resolution_and_color_depth_round_trip_independently() {
         for (scale, id) in [
             (RenderScale::Native, "1x"),
             (RenderScale::X2, "2x"),
             (RenderScale::X4, "4x"),
         ] {
-            let preferences = Preferences {
-                render_scale: scale,
-                ..Preferences::default()
-            };
-            let json = serde_json::to_value(preferences).unwrap();
-            assert_eq!(json["render_scale"], id);
-            assert_eq!(
-                serde_json::from_value::<Preferences>(json)
-                    .unwrap()
-                    .render_scale,
-                scale
-            );
+            for (depth, depth_id) in [
+                (ColorDepth::Native, "native"),
+                (ColorDepth::TrueColor, "true-color"),
+            ] {
+                let preferences = Preferences {
+                    render_scale: scale,
+                    color_depth: depth,
+                    ..Preferences::default()
+                };
+                let json = serde_json::to_value(&preferences).unwrap();
+                assert_eq!(json["render_scale"], id);
+                assert_eq!(json["color_depth"], depth_id);
+                assert_eq!(
+                    serde_json::from_value::<Preferences>(json).unwrap(),
+                    preferences
+                );
+            }
         }
     }
 

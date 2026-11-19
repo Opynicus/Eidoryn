@@ -471,6 +471,7 @@ impl Session {
                     .map_err(|e: std::num::ParseIntError| e.to_string())?,
                 mask(fields.next())?,
                 Path::new(fields.next().ok_or("Missing output prefix")?),
+                None,
             )?,
             Some("pace") => self.pace(
                 fields

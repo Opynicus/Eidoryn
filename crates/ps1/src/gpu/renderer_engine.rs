@@ -1,7 +1,7 @@
 //! Worker-owned rendering engines. Device failures are returned to the worker,
 //! which latches the error for the emulation loop and drains pending replies.
 use super::{
-    DisplaySettings, RenderScale, RendererMode,
+    ColorDepth, DisplaySettings, RenderScale, RendererMode,
     rasterizer::{RasterCommand, Rasterizer},
 };
 use std::{
@@ -31,18 +31,20 @@ pub fn hardware_backends() -> Vec<RendererAvailability> {
         RendererMode::Metal,
     ]
     .into_iter()
-    .map(|mode| match Engine::new(mode, RenderScale::Native) {
-        Ok((engine, _)) => RendererAvailability {
-            mode,
-            device: Some(engine.name()),
-            reason: None,
+    .map(
+        |mode| match Engine::new(mode, RenderScale::Native, ColorDepth::Native) {
+            Ok((engine, _)) => RendererAvailability {
+                mode,
+                device: Some(engine.name()),
+                reason: None,
+            },
+            Err(error) => RendererAvailability {
+                mode,
+                device: None,
+                reason: Some(error.to_string()),
+            },
         },
-        Err(error) => RendererAvailability {
-            mode,
-            device: None,
-            reason: Some(error.to_string()),
-        },
-    })
+    )
     .collect()
 }
 
@@ -137,7 +139,11 @@ pub(super) enum Engine {
     )
 )]
 impl Engine {
-    pub(super) fn new(mode: RendererMode, scale: RenderScale) -> io::Result<(Self, ErrorLatch)> {
+    pub(super) fn new(
+        mode: RendererMode,
+        scale: RenderScale,
+        color_depth: ColorDepth,
+    ) -> io::Result<(Self, ErrorLatch)> {
         if !mode.is_hardware() {
             return Ok((
                 Self::Software(Rasterizer::empty()),
@@ -149,12 +155,15 @@ impl Engine {
         } else {
             std::slice::from_ref(&mode)
         };
-        select_hardware(candidates, |mode, error| Self::hardware(mode, scale, error))
+        select_hardware(candidates, |mode, error| {
+            Self::hardware(mode, scale, color_depth, error)
+        })
     }
 
     fn hardware(
         mode: RendererMode,
         scale: RenderScale,
+        color_depth: ColorDepth,
         error: &mut ErrorLatch,
     ) -> io::Result<Self> {
         if let Some(reason) = unsupported_backend(mode) {
@@ -167,7 +176,8 @@ impl Engine {
             feature = "metal"
         ))]
         {
-            let (gpu, selected_error) = super::compute::ComputeRenderer::new(mode, scale)?;
+            let (gpu, selected_error) =
+                super::compute::ComputeRenderer::new(mode, scale, color_depth)?;
             *error = selected_error;
             Ok(Self::Hardware(Box::new(gpu)))
         }
@@ -178,7 +188,7 @@ impl Engine {
             feature = "metal"
         )))]
         {
-            let _ = (error, scale);
+            let _ = (error, scale, color_depth);
             unreachable!("All hardware modes were rejected as not compiled")
         }
     }

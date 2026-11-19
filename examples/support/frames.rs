@@ -18,6 +18,7 @@ pub(super) fn benchmark(
     frames: usize,
     buttons: u16,
     prefix: &Path,
+    final_image: Option<&Path>,
 ) -> Result<(), String> {
     if !(1..=1800).contains(&frames) {
         return Err("Use 1..1800 video frames".into());
@@ -32,7 +33,11 @@ pub(super) fn benchmark(
         sample
             .bus
             .gpu
-            .set_renderer(original.bus.gpu.renderer_mode())
+            .set_renderer_config(
+                original.bus.gpu.renderer_mode(),
+                original.bus.gpu.render_scale(),
+                original.bus.gpu.color_depth(),
+            )
             .map_err(|e| e.to_string())?;
         sample.bus.spu.drain_audio().for_each(drop);
         let mut times = Vec::with_capacity(frames);
@@ -77,6 +82,16 @@ pub(super) fn benchmark(
             }
             let ms = elapsed.as_secs_f64() * 1000.0;
             times.push(ms);
+            if round == 2
+                && frame + 1 == frames
+                && let Some(path) = final_image
+            {
+                let (w, h) = snapshot.dimensions;
+                let mut image = File::create_new(path).map_err(|e| e.to_string())?;
+                write!(image, "P6\n{w} {h}\n255\n")
+                    .and_then(|()| image.write_all(&snapshot.rgb))
+                    .map_err(|e| e.to_string())?;
+            }
             writeln!(log, "{round},{frame},{held:04x},{ms:.6},{:.6},{steps},{},{},{},{:08x},{:016x},{pcm_hash:016x}",
                 max_slice.as_secs_f64() * 1000.0,
                 sample.bus.gpu.commands - old_commands,
@@ -91,9 +106,9 @@ pub(super) fn benchmark(
         println!(
             "frame-bench round={round} buttons={buttons:04x} frames={frames} total_ms={total:.3} mean_ms={:.3} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} max_ms={:.3} over_budget={}",
             total / frames as f64,
-            times[frames / 2],
-            times[(frames - 1) * 95 / 100],
-            times[(frames - 1) * 99 / 100],
+            times[frames.div_ceil(2) - 1],
+            times[(frames * 95).div_ceil(100) - 1],
+            times[(frames * 99).div_ceil(100) - 1],
             times[frames - 1],
             times
                 .iter()

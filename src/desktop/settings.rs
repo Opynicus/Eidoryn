@@ -80,9 +80,10 @@ fn load_at(
     if let Some(id) = &options.theme {
         themes.select(id)?;
     }
-    if let Err(error) = machine.bus.gpu.set_renderer_with_scale(
+    if let Err(error) = machine.bus.gpu.set_renderer_config(
         options.renderer.unwrap_or_else(|| preferences.renderer()),
         preferences.render_scale,
+        preferences.color_depth,
     ) {
         if options.renderer.is_some() {
             return Err(format!("Cannot start GPU renderer: {error}"));
@@ -147,6 +148,7 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eidoryn_psx::systems::ps1::gpu::{ColorDepth, RenderScale};
 
     #[test]
     fn saved_bios_is_selected_and_missing_defaults_are_removed_on_restart() {
@@ -275,6 +277,8 @@ mod tests {
             volume: 42,
             muted: true,
             renderer: "threaded".into(),
+            render_scale: RenderScale::X2,
+            color_depth: ColorDepth::TrueColor,
             clean_fullscreen: true,
             ..Preferences::default()
         };
@@ -291,6 +295,8 @@ mod tests {
         assert!(startup.muted && startup.clean_fullscreen);
         assert_eq!(startup.preferences.keybindings, saved.keybindings);
         assert_eq!(machine.bus.gpu.renderer_mode(), RendererMode::Threaded);
+        assert_eq!(machine.bus.gpu.color_depth(), ColorDepth::Native);
+        assert_eq!(startup.preferences.color_depth, ColorDepth::TrueColor);
         let options = Options {
             theme: Some("forest".into()),
             language: Some(Language::En),
