@@ -1,5 +1,5 @@
 //! Independent streaming RLE / inverse-DCT video decoder.
-//! Hardware reference: https://psx-spx.consoledev.net/macroblockdecodermdec/
+//! Hardware reference: <https://psx-spx.consoledev.net/macroblockdecodermdec/>
 //! Integer rounding and decode latency are approximate. Input is bounded to 32 words,
 //! output to one 8x8 block; DMA pauses when either side cannot make progress.
 use crate::EmuError;

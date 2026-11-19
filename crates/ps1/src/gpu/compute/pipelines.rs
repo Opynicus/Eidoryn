@@ -1,13 +1,14 @@
 //! Explicit shared bindings keep raster, feedback and scanout pipelines compatible.
-pub(super) fn create(
-    device: &wgpu::Device,
-    buffers: &[wgpu::Buffer; 6],
-) -> (
-    wgpu::BindGroup,
-    wgpu::ComputePipeline,
-    wgpu::ComputePipeline,
-    wgpu::ComputePipeline,
-) {
+pub(super) struct Pipelines {
+    pub bindings: wgpu::BindGroup,
+    pub raster: wgpu::ComputePipeline,
+    pub ordered: wgpu::ComputePipeline,
+    pub ordered_copy: wgpu::ComputePipeline,
+    pub scanout: wgpu::ComputePipeline,
+    pub seed_enhanced: wgpu::ComputePipeline,
+}
+
+pub(super) fn create(device: &wgpu::Device, buffers: &[wgpu::Buffer; 6]) -> Pipelines {
     let entries: [_; 6] = std::array::from_fn(|i| wgpu::BindGroupLayoutEntry {
         binding: i as u32,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -56,6 +57,12 @@ pub(super) fn create(
             cache: None,
         })
     };
-    let (raster, ordered, scanout) = (pipeline("raster"), pipeline("ordered"), pipeline("scanout"));
-    (bindings, raster, ordered, scanout)
+    Pipelines {
+        bindings,
+        raster: pipeline("raster"),
+        ordered: pipeline("ordered"),
+        ordered_copy: pipeline("ordered_copy"),
+        scanout: pipeline("scanout"),
+        seed_enhanced: pipeline("seed_enhanced"),
+    }
 }

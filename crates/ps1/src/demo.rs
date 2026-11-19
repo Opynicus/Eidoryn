@@ -1,5 +1,5 @@
 //! Original BIOS-free MIPS program. Every visible pixel comes from guest GP0 writes.
-//! RAM[0x100] is a frame-completion counter used only by the demo's host pacing.
+//! `RAM[0x100]` is a frame-completion counter used only by the demo's host pacing.
 
 pub const ENTRY: u32 = 0x8001_0000;
 pub const FRAME_COUNTER: usize = 0x100;

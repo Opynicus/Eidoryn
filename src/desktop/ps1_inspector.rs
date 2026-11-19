@@ -403,7 +403,7 @@ impl Desktop {
                 self.tr(Text::Resolution),
                 format!(
                     "{} × {}",
-                    self.snapshot.dimensions.0, self.snapshot.dimensions.1
+                    self.snapshot.native_dimensions.0, self.snapshot.native_dimensions.1
                 ),
             ))
             .child(pair(

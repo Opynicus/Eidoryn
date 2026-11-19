@@ -101,7 +101,7 @@ impl Desktop {
         let image = self.image.as_ref().map(|cached| Arc::clone(&cached.image));
         let filter = self.crt.filter;
         let cache = Rc::clone(&self.crt.overlay);
-        let lines = self.snapshot.dimensions.1;
+        let lines = self.snapshot.native_dimensions.1;
         // PS1 modes have different pixel aspect ratios, but all target a 4:3 TV.
         // Stretching by the raw 256/320/512/640-wide framebuffer ratio distorts games.
         let aspect = 4.0 / 3.0;

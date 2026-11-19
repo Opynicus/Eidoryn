@@ -41,6 +41,11 @@ pub enum Command {
     SetButtons(u16),
     SetTurbo(super::input::TurboConfig),
     SetRenderer(crate::systems::ps1::gpu::RendererMode),
+    /// Change hardware backend and its internal raster resolution in one request.
+    SetRendererWithScale {
+        mode: crate::systems::ps1::gpu::RendererMode,
+        scale: crate::systems::ps1::gpu::RenderScale,
+    },
     SetCpuMode(crate::systems::ps1::cpu_engine::CpuMode),
     SetRewindEnabled(bool),
     SetRewindSeconds(u16),

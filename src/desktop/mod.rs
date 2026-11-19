@@ -351,6 +351,9 @@ impl Desktop {
             }
             if let Some(mode) = self.graphics.receive(&snapshot) {
                 mode.id().clone_into(&mut self.preferences.renderer);
+                if mode.is_hardware() {
+                    self.preferences.render_scale = snapshot.render_scale;
+                }
                 self.save_preferences();
             }
             self.receive_media_selection(&snapshot, cx);

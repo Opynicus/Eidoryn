@@ -1,5 +1,5 @@
 //! Original CD-ROM data and audio controller with approximate command latency.
-//! https://psx-spx.consoledev.net/cdromdrive/
+//! <https://psx-spx.consoledev.net/cdromdrive/>
 //! Command latency is approximate; sector cadence uses 33,868,800 / 75 or / 150 clocks.
 use crate::{
     cd_audio::CdAudio,
@@ -749,12 +749,12 @@ mod save_state_tests {
         let mut cdrom = CdRom::default();
         let empty = cdrom.heap_bytes();
         cdrom.sector.reserve(4096);
-        assert!(cdrom.sector.is_empty());
+        assert_eq!(cdrom.sector.len(), 0);
         let buffered = cdrom.heap_bytes();
         assert!(buffered >= empty + 4096);
         let mut response = Response {
             interrupt: 1,
-            bytes: Default::default(),
+            bytes: smallvec::SmallVec::new(),
         };
         response.bytes.reserve(64);
         cdrom.completion = Some((0, response));

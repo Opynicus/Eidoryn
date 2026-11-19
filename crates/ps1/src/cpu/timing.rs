@@ -1,6 +1,6 @@
 //! Instruction-level CPU timing approximations in the shared device-clock domain.
-//! Reference: https://psx-spx.consoledev.net/dev/ps1/cpu/cpuspecifications/#load-timing
-//! and https://psx-spx.consoledev.net/dev/ps1/cpu/cpuspecifications/#multiplydivide
+//! Reference: <https://psx-spx.consoledev.net/dev/ps1/cpu/cpuspecifications/#load-timing>
+//! and <https://psx-spx.consoledev.net/dev/ps1/cpu/cpuspecifications/#multiplydivide>
 use super::Cpu;
 use crate::bus::physical;
 

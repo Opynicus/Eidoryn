@@ -1,5 +1,5 @@
 //! Independently implemented 128 KiB PS1 card and byte-serial protocol.
-//! Register/protocol reference: https://psx-spx.consoledev.net/controllersandmemorycards/
+//! Register/protocol reference: <https://psx-spx.consoledev.net/controllersandmemorycards/>
 use std::sync::Arc;
 
 pub const CARD_SIZE: usize = 128 * 1024;

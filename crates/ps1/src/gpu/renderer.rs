@@ -1,7 +1,7 @@
 //! One ordered GPU worker overlaps software/hardware drawing with CPU interpretation.
 //! Bounded batches preserve texture feedback, blending and transfer ordering.
 use super::{
-    DisplayFrame, DisplaySettings,
+    DisplayFrame, DisplaySettings, RenderScale,
     rasterizer::{RasterCommand, Rasterizer},
     renderer_engine::Engine,
 };
@@ -19,6 +19,7 @@ const QUEUED_BATCHES: usize = 2;
 /// An ordered scanout command captures pixels before subsequent guest draws.
 /// CPU execution can continue; only a consumer of this field waits for pixels.
 pub(super) struct FrameReadback {
+    native_dimensions: (usize, usize),
     dimensions: (usize, usize),
     ready: OnceLock<DisplayFrame>,
     pending: RefCell<Option<mpsc::Receiver<Vec<u8>>>>,
@@ -27,6 +28,7 @@ pub(super) struct FrameReadback {
 impl FrameReadback {
     pub(super) fn get(&self) -> &DisplayFrame {
         self.ready.get_or_init(|| DisplayFrame {
+            native_dimensions: self.native_dimensions,
             dimensions: self.dimensions,
             rgb: self
                 .pending
@@ -42,17 +44,14 @@ impl FrameReadback {
 
 impl Clone for FrameReadback {
     fn clone(&self) -> Self {
-        Self {
-            dimensions: self.dimensions,
-            ready: OnceLock::from(self.get().clone()),
-            pending: RefCell::new(None),
-        }
+        self.get().clone().into()
     }
 }
 
 impl From<DisplayFrame> for FrameReadback {
     fn from(frame: DisplayFrame) -> Self {
         Self {
+            native_dimensions: frame.native_dimensions,
             dimensions: frame.dimensions,
             ready: OnceLock::from(frame),
             pending: RefCell::new(None),
@@ -192,11 +191,23 @@ impl Renderer {
         }
     }
 
-    pub(super) fn set_mode(&mut self, mode: RendererMode) -> io::Result<()> {
+    pub(super) fn scale(&self) -> RenderScale {
+        match &*self.backend.borrow() {
+            Backend::Serial(_) => RenderScale::Native,
+            Backend::Threaded(worker) => worker.scale,
+        }
+    }
+
+    pub(super) fn set_mode(&mut self, mode: RendererMode, scale: RenderScale) -> io::Result<()> {
+        let scale = if mode.is_hardware() {
+            scale
+        } else {
+            RenderScale::Native
+        };
         if let Some(error) = self.error() {
             return Err(io::Error::other(error));
         }
-        if self.mode() == mode {
+        if self.mode() == mode && self.scale() == scale {
             return Ok(());
         }
         // Initialize before touching the old session. A missing device, shader
@@ -204,7 +215,7 @@ impl Renderer {
         let worker = if mode == RendererMode::Serial {
             None
         } else {
-            Some(Worker::spawn(mode)?)
+            Some(Worker::spawn(mode, scale)?)
         };
         let raster = self.snapshot();
         if let Some(error) = self.error() {
@@ -249,16 +260,15 @@ impl Renderer {
 
     pub(super) fn capture(&self, display: DisplaySettings) -> FrameReadback {
         match &mut *self.backend.borrow_mut() {
-            Backend::Serial(raster) => FrameReadback {
+            Backend::Serial(raster) => DisplayFrame {
+                native_dimensions: display.dimensions,
                 dimensions: display.dimensions,
-                ready: OnceLock::from(DisplayFrame {
-                    dimensions: display.dimensions,
-                    rgb: raster.display_rgb(display).into(),
-                }),
-                pending: RefCell::new(None),
-            },
+                rgb: raster.display_rgb(display).into(),
+            }
+            .into(),
             Backend::Threaded(worker) => FrameReadback {
-                dimensions: display.dimensions,
+                native_dimensions: display.dimensions,
+                dimensions: display.output_dimensions(),
                 ready: OnceLock::new(),
                 pending: RefCell::new(Some(
                     worker.request_async(|reply| Message::Display(display, reply)),
@@ -287,7 +297,7 @@ impl Renderer {
     }
 
     pub(super) fn vram_mut(&mut self) -> &mut [u16] {
-        self.set_mode(RendererMode::Serial)
+        self.set_mode(RendererMode::Serial, RenderScale::Native)
             .expect("Cannot edit VRAM after a renderer failure");
         match self.backend.get_mut() {
             Backend::Serial(raster) => &mut raster.vram,
@@ -307,6 +317,7 @@ enum Message {
 }
 
 struct Worker {
+    scale: RenderScale,
     mode: RendererMode,
     device_name: String,
     error: Arc<OnceLock<String>>,
@@ -317,14 +328,14 @@ struct Worker {
 }
 
 impl Worker {
-    fn spawn(mode: RendererMode) -> io::Result<Self> {
+    fn spawn(mode: RendererMode, scale: RenderScale) -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(QUEUED_BATCHES);
         let (recycle, recycled) = mpsc::channel();
         let (ready, initialized) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("eidoryn-gpu".into())
             .spawn(move || {
-                let (mut engine, status) = match Engine::new(mode) {
+                let (mut engine, status) = match Engine::new(mode, scale) {
                     Ok(initialized) => initialized,
                     Err(error) => {
                         let _ = ready.send(Err(error.to_string()));
@@ -359,7 +370,8 @@ impl Worker {
                         }
                         Message::Display(display, reply) => {
                             let _ = reply.send(resolve(engine.display(display), &status, || {
-                                vec![0; display.dimensions.0 * display.dimensions.1 * 3]
+                                let (width, height) = display.output_dimensions();
+                                vec![0; width * height * 3]
                             }));
                         }
                         Message::Snapshot(reply) => {
@@ -391,6 +403,7 @@ impl Worker {
             }
         };
         Ok(Self {
+            scale,
             mode,
             device_name,
             error,

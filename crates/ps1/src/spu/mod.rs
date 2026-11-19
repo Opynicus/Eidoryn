@@ -1,5 +1,5 @@
 //! Original 24-voice SPU, 44.1 kHz mixer and sound-RAM transfer implementation.
-//! Register reference: https://psx-spx.consoledev.net/soundprocessingunitspu/
+//! Register reference: <https://psx-spx.consoledev.net/soundprocessingunitspu/>
 use crate::EmuError;
 use std::collections::VecDeque;
 mod envelope;

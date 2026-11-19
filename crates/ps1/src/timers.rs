@@ -1,6 +1,6 @@
 //! Original root counters with system/divided and externally supplied clocks.
 //! GPU scanout supplies horizontal/vertical blank and dot-clock inputs.
-//! https://psx-spx.consoledev.net/timers/
+//! <https://psx-spx.consoledev.net/timers/>
 mod state;
 pub(crate) use state::TimersV1;
 

@@ -51,11 +51,13 @@ fn vblank_latches_pixels_before_guest_clears_or_swaps_buffers() {
     let paused = Snapshot::capture(&machine, false, None, 0.0);
     assert!(paused.has_same_frame(&finished));
     assert_eq!(paused.dimensions, (256, 240));
+    assert_eq!(paused.native_dimensions, (256, 240));
     machine.bus.gpu.vram_mut().fill(31 << 5); // finished green drawing
     machine.bus.gpu.gp1(0x0300_0000).unwrap();
     next_field(&mut machine);
     let next = Snapshot::capture(&machine, true, None, 0.0);
     assert_eq!(next.dimensions, (320, 240));
+    assert_eq!(next.native_dimensions, (320, 240));
     assert_eq!(next.rgb.len(), 320 * 240 * 3);
     assert_eq!(&next.rgb[..3], &[0, 255, 0]);
     assert_eq!(&finished.rgb[..3], &[255, 0, 0]);

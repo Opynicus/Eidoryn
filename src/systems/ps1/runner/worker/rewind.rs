@@ -241,7 +241,7 @@ impl Worker {
                 self.machine
                     .bus
                     .gpu
-                    .set_renderer(self.renderer)
+                    .set_renderer_with_scale(self.renderer, self.render_scale)
                     .map_err(|error| format!("Cannot resume renderer after rewind: {error}"))
             });
         match restore {

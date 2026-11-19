@@ -3,12 +3,14 @@
 //! require a batch barrier; feedback uses an ordered compute invocation.
 mod commands;
 mod pipelines;
+#[cfg(all(test, feature = "vulkan"))]
+mod tests;
 use super::{
-    DisplaySettings, RendererMode, VRAM_HEIGHT, VRAM_WIDTH,
+    DisplaySettings, RenderScale, RendererMode, VRAM_HEIGHT, VRAM_WIDTH,
     rasterizer::{RasterCommand, Rasterizer},
     renderer_engine::{ErrorLatch, select_candidates},
 };
-use commands::{Primitive, TILE_COUNT, UPLOAD};
+use commands::{COPY, Primitive, TILE_COUNT, UPLOAD};
 use std::{
     io,
     sync::{Arc, OnceLock, mpsc},
@@ -21,12 +23,22 @@ const MAX_UPLOADS: usize = 65_536;
 const VRAM_BYTES: u64 = (VRAM_WIDTH * VRAM_HEIGHT * 4) as u64;
 const WAIT: Duration = Duration::from_secs(10);
 
-fn required_limits() -> wgpu::Limits {
+// The first plane is authoritative guest VRAM. Each word owns a contiguous
+// block of S*S presentation samples after the native plane at enhanced scales.
+// The native-only path allocates no presentation samples.
+fn raster_bytes(scale: RenderScale) -> u64 {
+    match scale {
+        RenderScale::Native => VRAM_BYTES,
+        _ => VRAM_BYTES * (1 + (scale.factor() as u64).pow(2)),
+    }
+}
+
+fn required_limits(scale: RenderScale) -> wgpu::Limits {
     // Request only the storage/compute resources used by the shared shaders.
     // WebGPU defaults demand eight storage buffers; this rasterizer needs five.
     wgpu::Limits {
         max_storage_buffers_per_shader_stage: 5,
-        max_storage_buffer_binding_size: VRAM_BYTES,
+        max_storage_buffer_binding_size: raster_bytes(scale),
         max_compute_invocations_per_workgroup: 64,
         max_compute_workgroup_size_x: 64,
         max_compute_workgroup_size_y: 8,
@@ -68,10 +80,8 @@ pub(super) struct ComputeRenderer {
     queue: wgpu::Queue,
     buffers: [wgpu::Buffer; 6],
     staging: wgpu::Buffer,
-    bindings: wgpu::BindGroup,
-    raster: wgpu::ComputePipeline,
-    ordered: wgpu::ComputePipeline,
-    scanout: wgpu::ComputePipeline,
+    pipelines: pipelines::Pipelines,
+    scale: RenderScale,
     error: Arc<OnceLock<String>>,
     decoded: Vec<Primitive>,
     commands: Vec<[u32; 32]>,
@@ -88,7 +98,7 @@ pub(super) struct ComputeRenderer {
 }
 
 impl ComputeRenderer {
-    pub(super) fn new(mode: RendererMode) -> io::Result<(Self, ErrorLatch)> {
+    pub(super) fn new(mode: RendererMode, scale: RenderScale) -> io::Result<(Self, ErrorLatch)> {
         let backends = match mode {
             RendererMode::Dx12 => wgpu::Backends::DX12,
             RendererMode::Vulkan => wgpu::Backends::VULKAN,
@@ -104,7 +114,7 @@ impl ComputeRenderer {
         let mut adapters = pollster::block_on(instance.enumerate_adapters(backends));
         adapters.retain(|a| physical_adapter(&a.get_info()));
         adapters.sort_by_key(|a| a.get_info().device_type != wgpu::DeviceType::DiscreteGpu);
-        let limits = required_limits();
+        let limits = required_limits(scale);
         let requirement = if mode == RendererMode::OpenGl {
             " (OpenGL 4.3+ on Windows)"
         } else {
@@ -119,7 +129,9 @@ impl ComputeRenderer {
         });
         if adapters.is_empty() {
             return Err(io::Error::other(format!(
-                "No physical {backend} GPU with compute shaders and five storage buffers is available{requirement}. CPU/software adapters are excluded; use --renderer serial"
+                "No physical {backend} GPU meets the {}x rasterizer requirements{requirement} (compute shaders, five storage buffers and a {} MiB storage binding)",
+                scale.factor(),
+                raster_bytes(scale) / (1024 * 1024)
             )));
         }
         select_candidates(
@@ -127,7 +139,7 @@ impl ComputeRenderer {
                 .into_iter()
                 .map(|adapter| (adapter.get_info().name, adapter)),
             |adapter, error| {
-                let mut gpu = Self::from_adapter(adapter, backend, Arc::clone(error))?;
+                let mut gpu = Self::from_adapter(&adapter, backend, Arc::clone(error), scale)?;
                 // Complete resource allocation before an API/device is selected.
                 // A failure here can still fall back to another physical adapter.
                 gpu.synchronize().map_err(io::Error::other)?;
@@ -137,16 +149,15 @@ impl ComputeRenderer {
     }
 
     fn from_adapter(
-        adapter: wgpu::Adapter,
+        adapter: &wgpu::Adapter,
         backend: &'static str,
         error: ErrorLatch,
+        scale: RenderScale,
     ) -> io::Result<Self> {
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Eidoryn PS1 rasterizer"),
-            required_limits: required_limits(),
-            // Our fixed buffers total less than 8 MiB. Large default allocation
-            // blocks waste device/unified memory; resources can still grow.
+            required_limits: required_limits(scale),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         }))
@@ -162,12 +173,15 @@ impl ComputeRenderer {
             }
         });
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        // The CRTC supports at most 640x480. Reuse the staging buffer for
+        // either a guest VRAM snapshot or a presented RGB scanout.
+        let scanout_bytes = 640 * 480 * 4 * (scale.factor() as u64).pow(2);
         let sizes = [
-            VRAM_BYTES,
+            raster_bytes(scale),
             (MAX_COMMANDS * 128) as u64,
             ((TILE_COUNT * 4 + MAX_REFERENCES) * 4) as u64,
             (MAX_UPLOADS * 4) as u64,
-            VRAM_BYTES,
+            scanout_bytes,
             32,
         ];
         let buffers = std::array::from_fn(|i| {
@@ -195,11 +209,16 @@ impl ComputeRenderer {
         });
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("VRAM/scanout readback"),
-            size: VRAM_BYTES,
+            size: VRAM_BYTES.max(scanout_bytes),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let (bindings, raster, ordered, scanout) = pipelines::create(&device, &buffers);
+        let pipelines = pipelines::create(&device, &buffers);
+        queue.write_buffer(
+            &buffers[5],
+            24,
+            bytemuck::bytes_of(&(scale.factor() as u32)),
+        );
         if let Some(failure) = pollster::block_on(validation.pop()) {
             return Err(io::Error::other(failure));
         }
@@ -217,10 +236,8 @@ impl ComputeRenderer {
             queue,
             buffers,
             staging,
-            bindings,
-            raster,
-            ordered,
-            scanout,
+            pipelines,
+            scale,
             error,
             decoded: Vec::with_capacity(4),
             commands: Vec::with_capacity(MAX_COMMANDS),
@@ -253,6 +270,9 @@ impl ComputeRenderer {
                 .slice(..)
                 .write_iter(raster.vram.iter().flat_map(|&v| u32::from(v).to_ne_bytes()));
         } // Schedule the upload before Engine::start synchronizes the queue.
+        if self.scale != RenderScale::Native {
+            self.dispatch(&self.pipelines.seed_enhanced, [128, 64]);
+        }
         self.read_cache = Some(raster.vram);
         self.check()
     }
@@ -290,11 +310,7 @@ impl ComputeRenderer {
         });
         if feedback {
             self.flush()?;
-            self.queue
-                .write_buffer(&self.buffers[1], 0, bytemuck::cast_slice(&p.0));
-            self.dispatch(&self.ordered, 1);
-            self.limit_submissions()?;
-            return self.check();
+            return self.dispatch_ordered(p);
         }
         if p.0[0] == UPLOAD {
             let offset = self.uploads.len() as u32;
@@ -330,6 +346,41 @@ impl ComputeRenderer {
         Ok(())
     }
 
+    fn dispatch_ordered(&mut self, mut p: Primitive) -> Result<(), String> {
+        // Word 25 selects the first row for copies or the first native pixel
+        // for draws. These chunk sizes match the ordered WGSL entry points.
+        const COPY_ROWS: usize = 32;
+        const DRAW_PIXELS: usize = 1024;
+        let copy = p.0[0] == COPY;
+        let (count, stride, groups) = if copy {
+            let rows = p.0[31];
+            if p.0[27] == p.0[29] {
+                // All rows are independent. Each lane handles one complete row.
+                (rows, rows as usize, rows.div_ceil(64))
+            } else {
+                // All columns in a row are independent. One group synchronizes
+                // between rows so a later source can see earlier writes.
+                (rows, COPY_ROWS, 1)
+            }
+        } else {
+            let pixels = (p.0[3] - p.0[1] + 1) * (p.0[4] - p.0[2] + 1);
+            (pixels, DRAW_PIXELS, 1)
+        };
+        for first in (0..count).step_by(stride) {
+            p.0[25] = first;
+            self.queue
+                .write_buffer(&self.buffers[1], 0, bytemuck::cast_slice(&p.0));
+            let pipeline = if copy {
+                &self.pipelines.ordered_copy
+            } else {
+                &self.pipelines.ordered
+            };
+            self.dispatch(pipeline, [groups, 1]);
+            self.limit_submissions()?;
+        }
+        self.check()
+    }
+
     fn flush(&mut self) -> Result<(), String> {
         if self.commands.is_empty() {
             return self.check();
@@ -362,7 +413,7 @@ impl ComputeRenderer {
             self.queue
                 .write_buffer(&self.buffers[3], 0, bytemuck::cast_slice(&self.uploads));
         }
-        self.dispatch(&self.raster, count as u32);
+        self.dispatch(&self.pipelines.raster, [count as u32, 1]);
         self.commands.clear();
         self.uploads.clear();
         self.reads.fill(false);
@@ -372,7 +423,7 @@ impl ComputeRenderer {
         self.check()
     }
 
-    fn dispatch(&self, pipeline: &wgpu::ComputePipeline, groups: u32) {
+    fn dispatch(&self, pipeline: &wgpu::ComputePipeline, groups: [u32; 2]) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -384,8 +435,8 @@ impl ComputeRenderer {
                 timestamp_writes: None,
             });
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.bindings, &[]);
-            pass.dispatch_workgroups(groups, 1, 1);
+            pass.set_bind_group(0, &self.pipelines.bindings, &[]);
+            pass.dispatch_workgroups(groups[0], groups[1], 1);
         }
         self.queue.submit([encoder.finish()]);
     }
@@ -492,23 +543,26 @@ impl ComputeRenderer {
 
     pub(super) fn display(&mut self, display: DisplaySettings) -> Result<Vec<u8>, String> {
         self.flush()?;
-        let (width, height) = display.dimensions;
+        let (width, height) = display.output_dimensions();
         if display.disabled {
             return Ok(vec![0; width * height * 3]);
         }
         let params = [
-            width as u32,
-            height as u32,
+            display.dimensions.0 as u32,
+            display.dimensions.1 as u32,
             display.start.0 as u32,
             display.start.1 as u32,
             u32::from(display.disabled),
             u32::from(display.rgb24),
-            0,
-            0,
+            self.scale.factor() as u32,
+            display.scale.factor() as u32,
         ];
         self.queue
             .write_buffer(&self.buffers[5], 0, bytemuck::cast_slice(&params));
-        self.dispatch(&self.scanout, (width * height).div_ceil(64) as u32);
+        self.dispatch(
+            &self.pipelines.scanout,
+            [width.div_ceil(8) as u32, height.div_ceil(8) as u32],
+        );
         self.readback(4, (width * height * 4) as u64, |bytes| {
             let mut rgb = Vec::with_capacity(width * height * 3);
             for pixel in bytes.as_chunks::<4>().0 {

@@ -1,7 +1,7 @@
 //! Worker-owned rendering engines. Device failures are returned to the worker,
 //! which latches the error for the emulation loop and drains pending replies.
 use super::{
-    DisplaySettings, RendererMode,
+    DisplaySettings, RenderScale, RendererMode,
     rasterizer::{RasterCommand, Rasterizer},
 };
 use std::{
@@ -31,7 +31,7 @@ pub fn hardware_backends() -> Vec<RendererAvailability> {
         RendererMode::Metal,
     ]
     .into_iter()
-    .map(|mode| match Engine::new(mode) {
+    .map(|mode| match Engine::new(mode, RenderScale::Native) {
         Ok((engine, _)) => RendererAvailability {
             mode,
             device: Some(engine.name()),
@@ -137,7 +137,7 @@ pub(super) enum Engine {
     )
 )]
 impl Engine {
-    pub(super) fn new(mode: RendererMode) -> io::Result<(Self, ErrorLatch)> {
+    pub(super) fn new(mode: RendererMode, scale: RenderScale) -> io::Result<(Self, ErrorLatch)> {
         if !mode.is_hardware() {
             return Ok((
                 Self::Software(Rasterizer::empty()),
@@ -149,10 +149,14 @@ impl Engine {
         } else {
             std::slice::from_ref(&mode)
         };
-        select_hardware(candidates, Self::hardware)
+        select_hardware(candidates, |mode, error| Self::hardware(mode, scale, error))
     }
 
-    fn hardware(mode: RendererMode, error: &mut ErrorLatch) -> io::Result<Self> {
+    fn hardware(
+        mode: RendererMode,
+        scale: RenderScale,
+        error: &mut ErrorLatch,
+    ) -> io::Result<Self> {
         if let Some(reason) = unsupported_backend(mode) {
             return Err(io::Error::other(reason));
         }
@@ -163,7 +167,7 @@ impl Engine {
             feature = "metal"
         ))]
         {
-            let (gpu, selected_error) = super::compute::ComputeRenderer::new(mode)?;
+            let (gpu, selected_error) = super::compute::ComputeRenderer::new(mode, scale)?;
             *error = selected_error;
             Ok(Self::Hardware(Box::new(gpu)))
         }
@@ -174,7 +178,7 @@ impl Engine {
             feature = "metal"
         )))]
         {
-            let _ = error;
+            let _ = (error, scale);
             unreachable!("All hardware modes were rejected as not compiled")
         }
     }

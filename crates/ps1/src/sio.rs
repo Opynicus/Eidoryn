@@ -1,6 +1,6 @@
 //! Original SIO0, port-1 digital pad and two optional memory-card slots.
-//! https://psx-spx.consoledev.net/serialinterfacessio/
-//! https://psx-spx.consoledev.net/controllersandmemorycards/
+//! <https://psx-spx.consoledev.net/serialinterfacessio/>
+//! <https://psx-spx.consoledev.net/controllersandmemorycards/>
 use crate::memory_card::Cards;
 use std::collections::VecDeque;
 

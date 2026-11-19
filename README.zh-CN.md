@@ -76,6 +76,8 @@ Windows 包不启用仅支持 Linux 的实验性 JIT。
 
 在 **设置 → 图形 / F8** 中启用 **硬件加速**，或通过 `--renderer hardware` 自动选择。设置页在后台检测设备并验证着色器初始化，不可用的后端会禁用并说明原因。`--renderer dx12`、`vulkan`、`opengl`、`metal` 可明确指定后端。Windows 优先 DirectX 12，Linux 优先 Vulkan，macOS 优先 Metal；自动模式依次尝试可用后端，明确指定时则报告失败并保留原会话，不静默切换图形接口。
 
+启用硬件加速后，可以在 **画面选项 → 内部渲染倍率** 中选择 1×、2× 或 4×。三个倍率均按窗口大小适配 4:3 画面。切换渲染器时，桌面会记住上次使用的硬件渲染倍率。
+
 在 PowerShell 中运行 `./target/release/eidoryn.exe --list-renderers | Out-Host` 可查看检测到的后端及不可用原因。
 
 `hardware` 构建特性包含四种 wgpu 后端，也可单独启用 `dx12`、`vulkan`、`opengl`、`metal`；运行时仍受平台和驱动能力限制。它们共用整数计算光栅器，绘图、纹理采样、混合及显示转换在 GPU 上执行，再读回画面供桌面显示。性能取决于游戏和驱动。wgpu 30 不提供原生 DirectX 11 后端；老旧 Windows 显卡可尝试支持计算着色器的 OpenGL，或使用软件绘图。Metal 及非 Windows 平台的运行行为仍需在对应设备上验证。
