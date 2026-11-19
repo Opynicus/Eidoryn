@@ -348,9 +348,9 @@ fn cancel_and_conflicting_names_preserve_files_and_game_input(cx: &mut TestAppCo
     view.read_with(cx, |view, _| {
         assert_eq!(view.pressed_buttons, 0);
         assert_eq!(view.page, WorkspacePage::SaveStates);
-        assert!(!view.game_view);
         assert!(!view.graphics.open);
     });
+    assert!(!cx.update(|window, _| window.is_fullscreen()));
     cx.simulate_keystrokes("escape");
     assert!(view.read_with(cx, |view, _| view.renaming_state.is_none()));
     assert!(files.original.is_file());

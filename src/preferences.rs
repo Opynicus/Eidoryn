@@ -59,7 +59,7 @@ impl Default for Preferences {
             muted: false,
             renderer: "serial".into(),
             render_scale: RenderScale::Native,
-            clean_fullscreen: false,
+            clean_fullscreen: true,
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
             keybindings: KeyBindings::default(),

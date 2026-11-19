@@ -173,19 +173,18 @@ fn rewind_shortcut_is_blocked_by_settings_and_rename(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut view = desktop(window, cx);
         view.preferences_path = None;
-        view.game_view = true;
         view
     });
     cx.simulate_resize(size(px(1280.), px(1000.)));
+    press_keys(cx, "f6");
     enable_recording(&view, cx);
     press_keys(cx, "f8");
     cx.simulate_keystrokes("ctrl-z");
     assert!(view.read_with(cx, |view, _| view.graphics.open));
     assert_eq!(view.read_with(cx, |view, _| view.rewind_sources), 0);
-    press_keys(cx, "ctrl-z escape");
+    press_keys(cx, "ctrl-z escape f6");
 
     view.update(cx, |view, cx| {
-        view.game_view = false;
         view.page = crate::desktop::WorkspacePage::SaveStates;
         let path = std::path::PathBuf::from("rename-test.ps1state");
         view.snapshot.save_states = vec![SaveStateInfo {

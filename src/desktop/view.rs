@@ -19,14 +19,9 @@ impl Render for Desktop {
             window.remove_window();
         }
         let p = self.themes.active().palette;
-        let fullscreen = window.is_fullscreen();
-        let game = self.game_view || fullscreen;
-        self.sync_snapshot_mode(!game && self.page == WorkspacePage::Debug);
-        self.sync_video(
-            game || matches!(self.page, WorkspacePage::Console | WorkspacePage::Game),
-            window,
-        );
-        let body = if game {
+        self.sync_presentation(window, cx);
+        let video_only = self.presentation.shows_video();
+        let body = if video_only {
             self.player(window, cx)
         } else {
             self.workspace(window, cx)
@@ -40,8 +35,8 @@ impl Render for Desktop {
             .text_color(rgb(p.text))
             .text_size(px(14.))
             .when(
-                !game
-                    || (fullscreen && !self.clean_fullscreen)
+                !video_only
+                    || (self.presentation.native_fullscreen && !self.clean_fullscreen)
                     || self.graphics.open
                     || self.renaming_state.is_some()
                     || self.notice.is_some()
@@ -109,6 +104,20 @@ impl Render for Desktop {
 }
 
 impl Desktop {
+    fn sync_presentation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let fullscreen = window.is_fullscreen();
+        if let Some(page) = self.presentation.window_changed(fullscreen) {
+            self.page = page;
+            cx.notify();
+        }
+        let video_only = self.presentation.shows_video();
+        self.sync_snapshot_mode(!video_only && self.page == WorkspacePage::Debug);
+        self.sync_video(
+            video_only || matches!(self.page, WorkspacePage::Console | WorkspacePage::Game),
+            window,
+        );
+    }
+
     fn fullscreen_controls(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
@@ -232,7 +241,13 @@ impl Desktop {
                             .min_h_0()
                             .overflow_y_scroll()
                             .px(Self::content_padding(window))
-                            .pt(px(22.))
+                            .pt(
+                                if window.is_fullscreen() && self.page == WorkspacePage::Game {
+                                    px(2.)
+                                } else {
+                                    px(22.)
+                                },
+                            )
                             .pb(px(32.))
                             .child(
                                 div()
@@ -313,6 +328,9 @@ impl Desktop {
                 .text_size(px(13.)),
             )
             .child(div().flex_1())
+            .when(window.is_fullscreen(), |bar| {
+                bar.child(self.enlargement_button(window, cx))
+            })
             .child(
                 div()
                     .flex()

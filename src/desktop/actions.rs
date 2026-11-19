@@ -1,4 +1,4 @@
-use super::{Desktop, SettingsTab, WorkspacePage};
+use super::{Desktop, FullscreenView, SettingsTab, WorkspacePage};
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::systems::ps1::runner::Command;
 use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
@@ -248,13 +248,13 @@ impl Desktop {
             cx.stop_propagation();
             return;
         }
-        if key == "f11" || (key == "escape" && window.is_fullscreen()) {
-            self.toggle_fullscreen(window, cx);
-            return;
-        }
-        if key == "escape" && self.game_view {
-            self.toggle_view(window, cx);
-            return;
+        match key {
+            "f11" => return self.toggle_fullscreen(window, cx),
+            "escape" if window.is_fullscreen() => return self.toggle_view(window, cx),
+            "escape" if self.presentation.windowed_video => {
+                return self.show_page(self.page, window, cx);
+            }
+            _ => {}
         }
         if !self.focus.is_focused(window) {
             match key {
@@ -303,20 +303,40 @@ impl Desktop {
             _ => {}
         }
     }
-    pub(super) fn toggle_fullscreen(&self, window: &mut Window, cx: &mut Context<Self>) {
-        window.toggle_fullscreen();
+    pub(super) fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_fullscreen() {
+            match self.presentation.fullscreen {
+                FullscreenView::Workspace { return_to } => {
+                    self.presentation.fullscreen = FullscreenView::VideoOverWorkspace { return_to };
+                }
+                FullscreenView::VideoOverWorkspace { return_to } => {
+                    self.presentation.fullscreen = FullscreenView::Workspace { return_to };
+                }
+                FullscreenView::Video => window.toggle_fullscreen(),
+            }
+        } else {
+            self.presentation.fullscreen = FullscreenView::Video;
+            window.toggle_fullscreen();
+        }
         window.focus(&self.focus, cx);
         cx.notify();
     }
 
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if window.is_fullscreen() {
+        self.snapshot_confirmation = None;
+        self.stop_rewind(cx);
+        if !window.is_fullscreen() {
+            self.presentation.fullscreen = FullscreenView::Workspace {
+                return_to: self.page,
+            };
+        } else if matches!(
+            self.presentation.fullscreen,
+            FullscreenView::VideoOverWorkspace { .. }
+        ) {
             self.toggle_fullscreen(window, cx);
             return;
         }
-        self.snapshot_confirmation = None;
-        self.stop_rewind(cx);
-        self.game_view = !self.game_view;
+        window.toggle_fullscreen();
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -329,10 +349,10 @@ impl Desktop {
     ) {
         self.snapshot_confirmation = None;
         self.stop_rewind(cx);
-        if window.is_fullscreen() {
+        if window.is_fullscreen() && self.presentation.shows_video() {
             window.toggle_fullscreen();
         }
-        self.game_view = false;
+        self.presentation.windowed_video = false;
         self.page = page;
         if page == WorkspacePage::SaveStates {
             self.release_buttons(cx);

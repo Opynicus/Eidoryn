@@ -90,7 +90,7 @@ Choose **Settings → Appearance → Language** to switch immediately and save y
 
 To add a language, create a file named for its language tag, such as `locales/fr.toml`. Set `name` to the native language name and add translations under `[messages]`. An optional top-level `aliases` list adds system locale matches. Rebuild to include the language in settings and the CLI. Omitted keys use English. The build rejects unknown keys and empty translations. See the [English catalog](locales/en.toml) for the full list of keys.
 
-Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are also saved. CLI options override saved preferences for the current session; for example, `--theme ocean --volume 60 --crt soft`. Enable **Settings → Graphics → Clean fullscreen** to hide controls while fullscreen, or use `--fullscreen --clean-fullscreen`.
+Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are also saved. CLI options such as `--theme ocean --volume 60 --crt soft` override saved preferences for the current session. **Settings → Graphics → Clean fullscreen** hides the playback controls when the game picture is fullscreen. The equivalent launch options are `--fullscreen --clean-fullscreen`.
 
 ### Load a game
 
@@ -98,7 +98,9 @@ Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are 
 2. Select **Open disc image** and load an ISO, CUE, or CHD file. For a multi-track BIN image, select the `.cue` that references all tracks.
 3. Select **Run** to start the game.
 
-Select **Game view** in the sidebar for the picture and playback controls. From the console preview or Game view, choose **Enlarge in window** or press **F6** to show just the picture, centered at 4:3 and sized to fit the current window. **F11** switches to system fullscreen, where **F12** shows or hides the controls. **Esc** returns to the previous view. If you entered fullscreen from the enlarged picture, press **Esc** twice to return to the workspace page you started from.
+Choose **Enlarge game view** (**F6**) to put the emulator window in fullscreen. The Game view workspace fills the screen, including the sidebar, playback controls, quick slot, rewind, and memory cards. Choose **Restore window** or press **Esc** to return to the page and window you started from.
+
+Choose **Fullscreen** (**F11**) to use the entire screen for the game picture, centered at 4:3. **F12** shows or hides playback controls over the picture. If you enter fullscreen from the enlarged Game view, **Esc** returns there first.
 
 CHD support covers standalone, single-session CD-ROM images. Images requiring a parent CHD and GD-ROM images are not supported.
 
@@ -165,9 +167,9 @@ Open **Settings (F8) → Controller** to enable turbo for individual action or s
 | Shortcut | Action |
 | --- | --- |
 | `F5` | Run / pause |
-| `F6` | Toggle the picture-only view in the current window |
+| `F6` | Enlarge the Game view workspace to fill the screen or restore the window |
 | `F7` / `F8` | Cycle CRT filter / open graphics settings |
-| `F11` / `Esc` | Toggle fullscreen / return to the previous view |
+| `F11` / `Esc` | Toggle fullscreen for the game picture / return to the previous view |
 | `F12` | Show or hide fullscreen controls |
 | `F9` / `F10` | Run one slice / step one instruction |
 | `Ctrl+R` | Reset the current session |

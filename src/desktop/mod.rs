@@ -139,7 +139,7 @@ fn open_window(
             let result = cx.open_window(
                 WindowOptions {
                     app_id: Some(app::APPLICATION_ID.into()),
-                    window_bounds: Some(if options.fullscreen {
+                    window_bounds: Some(if options.fullscreen || options.game_view {
                         WindowBounds::Fullscreen(bounds)
                     } else {
                         WindowBounds::Windowed(bounds)
@@ -205,7 +205,7 @@ fn open_window(
                             notice: startup.notice,
                             audio,
                             bios: startup.bios,
-                            game_view: options.game_view,
+                            presentation: Presentation::at_startup(&options),
                             page: if options.debugger {
                                 WorkspacePage::Debug
                             } else {
@@ -269,8 +269,7 @@ struct Desktop {
     notice: Option<String>,
     audio: AudioControls,
     bios: Option<std::path::PathBuf>,
-    // The windowed player returns to the workspace page it was opened from.
-    game_view: bool,
+    presentation: Presentation,
     page: WorkspacePage,
     pressed_buttons: u16,
     selected_save_state: Option<std::path::PathBuf>,
@@ -304,6 +303,72 @@ enum WorkspacePage {
     Game,
     SaveStates,
     Debug,
+}
+
+/// Both workspace and video can occupy the same native fullscreen window.
+#[derive(Clone, Copy, Default)]
+enum FullscreenView {
+    #[default]
+    Video,
+    Workspace {
+        return_to: WorkspacePage,
+    },
+    VideoOverWorkspace {
+        return_to: WorkspacePage,
+    },
+}
+
+#[derive(Default)]
+struct Presentation {
+    fullscreen: FullscreenView,
+    // Opening a disc through the picker can also show video in a normal window.
+    windowed_video: bool,
+    native_fullscreen: bool,
+}
+
+impl Presentation {
+    fn at_startup(options: &Options) -> Self {
+        let return_to = WorkspacePage::Console;
+        let fullscreen = match (options.game_view, options.fullscreen) {
+            (true, true) => FullscreenView::VideoOverWorkspace { return_to },
+            (true, false) => FullscreenView::Workspace { return_to },
+            (false, _) => FullscreenView::Video,
+        };
+        Self {
+            fullscreen,
+            ..Self::default()
+        }
+    }
+
+    fn shows_video(&self) -> bool {
+        if self.native_fullscreen {
+            !matches!(self.fullscreen, FullscreenView::Workspace { .. })
+        } else {
+            self.windowed_video
+        }
+    }
+
+    /// The compositor can confirm a request later or leave fullscreen on its own.
+    fn window_changed(&mut self, fullscreen: bool) -> Option<WorkspacePage> {
+        if self.native_fullscreen == fullscreen {
+            return None;
+        }
+        self.native_fullscreen = fullscreen;
+        let view = if fullscreen {
+            self.fullscreen
+        } else {
+            std::mem::take(&mut self.fullscreen)
+        };
+        match view {
+            FullscreenView::Video => None,
+            FullscreenView::Workspace { return_to }
+            | FullscreenView::VideoOverWorkspace { return_to } => Some(if fullscreen {
+                WorkspacePage::Game
+            } else {
+                return_to
+            }),
+        }
+    }
 }
 
 impl Desktop {
