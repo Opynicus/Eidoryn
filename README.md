@@ -98,7 +98,7 @@ Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are 
 2. Select **Open disc image** and load an ISO, CUE, or CHD file. For a multi-track BIN image, select the `.cue` that references all tracks.
 3. Select **Run** to start the game.
 
-On the console preview or game page, choose **Enlarge in window** (**F6**) to use the current window for gameplay. Choose **Fullscreen** (**F11**) to use the entire screen, either directly or from the enlarged view. In both views, the picture fits at 4:3 at every internal resolution. **F12** toggles fullscreen controls. If you enter fullscreen from the enlarged view, **Esc** returns there. Press **Esc** again to return to the workspace.
+Select **Game view** in the sidebar for the picture and playback controls. From the console preview or Game view, choose **Enlarge in window** or press **F6** to show just the picture, centered at 4:3 and sized to fit the current window. **F11** switches to system fullscreen, where **F12** shows or hides the controls. **Esc** returns to the previous view. If you entered fullscreen from the enlarged picture, press **Esc** twice to return to the workspace page you started from.
 
 CHD support covers standalone, single-session CD-ROM images. Images requiring a parent CHD and GD-ROM images are not supported.
 
@@ -165,7 +165,7 @@ Open **Settings (F8) → Controller** to enable turbo for individual action or s
 | Shortcut | Action |
 | --- | --- |
 | `F5` | Run / pause |
-| `F6` | Enlarge the game in the current window or return to the workspace |
+| `F6` | Toggle the picture-only view in the current window |
 | `F7` / `F8` | Cycle CRT filter / open graphics settings |
 | `F11` / `Esc` | Toggle fullscreen / return to the previous view |
 | `F12` | Show or hide fullscreen controls |

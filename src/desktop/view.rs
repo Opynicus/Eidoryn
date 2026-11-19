@@ -26,10 +26,8 @@ impl Render for Desktop {
             game || matches!(self.page, WorkspacePage::Console | WorkspacePage::Game),
             window,
         );
-        let body = if fullscreen {
-            self.fullscreen_video(window, cx)
-        } else if self.game_view {
-            self.windowed_player(window, cx)
+        let body = if game {
+            self.player(window, cx)
         } else {
             self.workspace(window, cx)
         };
@@ -42,8 +40,8 @@ impl Render for Desktop {
             .text_color(rgb(p.text))
             .text_size(px(14.))
             .when(
-                !fullscreen
-                    || !self.clean_fullscreen
+                !game
+                    || (fullscreen && !self.clean_fullscreen)
                     || self.graphics.open
                     || self.renaming_state.is_some()
                     || self.notice.is_some()
@@ -111,38 +109,18 @@ impl Render for Desktop {
 }
 
 impl Desktop {
-    fn windowed_player(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+    fn fullscreen_controls(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
-            .debug_selector(|| "windowed-player".into())
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(p.video_background))
-            .children(self.workspace_notice())
-            .child(
-                div()
-                    .debug_selector(|| "windowed-display".into())
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.video()),
-            )
-            .child(self.player_controls(window, cx).flex_shrink_0())
-    }
-
-    fn player_controls(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
-        div()
+            .debug_selector(|| "fullscreen-controls".into())
             .flex()
             .flex_wrap()
             .items_center()
             .justify_center()
             .gap_2()
             .p_2()
+            .rounded_lg()
             .bg(rgb(p.surface))
-            .when(!window.is_fullscreen(), |bar| {
-                bar.child(self.enlargement_button(cx))
-            })
             .child(self.play_button(cx))
             .child(self.quick_state_controls(cx))
             .child(self.audio_controls(cx))
@@ -153,15 +131,23 @@ impl Desktop {
             .child(self.fullscreen_button(window, cx))
     }
 
-    fn fullscreen_video(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+    fn player(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let fullscreen = window.is_fullscreen();
         div()
             .relative()
             .size_full()
-            .debug_selector(|| "fullscreen-display".into())
+            .debug_selector(move || {
+                if fullscreen {
+                    "fullscreen-display"
+                } else {
+                    "windowed-display"
+                }
+                .into()
+            })
             .bg(rgb(p.video_background))
             .child(self.video())
-            .when(!self.clean_fullscreen, |stage| {
+            .when(fullscreen && !self.clean_fullscreen, |stage| {
                 stage.child(
                     div()
                         .absolute()
@@ -170,11 +156,7 @@ impl Desktop {
                         .right_3()
                         .flex()
                         .justify_center()
-                        .child(
-                            self.player_controls(window, cx)
-                                .debug_selector(|| "fullscreen-controls".into())
-                                .rounded_lg(),
-                        ),
+                        .child(self.fullscreen_controls(window, cx)),
                 )
             })
             .children(

@@ -373,7 +373,7 @@ pub(super) fn print_help() {
                {BINARY_NAME} --disc GAME.iso [--bios BIOS | --fast-boot]\n\n\
         --headless          Run without a GPUI window\n\
         --fullscreen        Open the native window in fullscreen\n\
-        --game-view         Start with the game enlarged inside the window\n\
+        --game-view         Show just the game picture in the current window\n\
         --debugger          Enable and open the optional debugger\n\
         --mute / --unmute   Override saved audio mute state\n\
         --volume N          Output volume: 0..100\n\

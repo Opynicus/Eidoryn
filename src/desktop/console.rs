@@ -354,20 +354,15 @@ impl Desktop {
             )
     }
 
-    pub(super) fn enlargement_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let (id, icon, label) = if self.game_view {
-            ("restore-game", "back", Text::RestoreGame)
-        } else {
-            ("enlarge-game", "screen", Text::EnlargeGame)
-        };
+    fn enlargement_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         ghost_button(
             &self.fonts,
             &self.themes.active().palette,
-            id,
-            self.tr(label),
-            Some(icon),
+            "enlarge-game",
+            self.tr(Text::EnlargeGame),
+            Some("screen"),
         )
-        .debug_selector(move || id.into())
+        .debug_selector(|| "enlarge-game".into())
         .on_click(cx.listener(|view, _, window, cx| view.toggle_view(window, cx)))
     }
 

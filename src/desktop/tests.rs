@@ -164,20 +164,18 @@ fn windowed_enlargement_and_fullscreen_restore_each_view_in_order(cx: &mut TestA
         click_control(cx, "enlarge-game");
         assert!(!cx.update(|window, _| window.is_fullscreen()));
         assert_eq!(cx.update(|window, _| window.viewport_size()), viewport);
-        assert!(cx.debug_bounds("windowed-player").is_some());
-        assert!(cx.debug_bounds("nav-console").is_none());
         let enlarged = cx.debug_bounds("windowed-display").unwrap();
         let large_picture = super::video::video_bounds(enlarged);
         assert!(large_picture.size.width > small_picture.size.width);
         assert!(large_picture.size.height > small_picture.size.height);
 
-        click_control(cx, "enter-fullscreen");
+        press_keys(cx, "f11");
         assert!(cx.update(|window, _| window.is_fullscreen()));
         assert!(cx.debug_bounds("fullscreen-display").is_some());
         press_keys(cx, "escape");
         assert!(!cx.update(|window, _| window.is_fullscreen()));
         assert_eq!(cx.debug_bounds("windowed-display"), Some(enlarged));
-        click_control(cx, "restore-game");
+        press_keys(cx, "escape");
         assert!(cx.debug_bounds(page).is_some());
         assert_eq!(cx.debug_bounds("display-stage"), Some(original));
     }
@@ -191,6 +189,43 @@ fn windowed_enlargement_and_fullscreen_restore_each_view_in_order(cx: &mut TestA
     assert!(cx.debug_bounds("game-controls").is_some());
     press_keys(cx, "f6 tab escape");
     assert!(cx.debug_bounds("game-controls").is_some());
+}
+
+#[gpui::test]
+fn windowed_video_fills_the_client_even_when_a_notice_is_visible(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    let viewport = Bounds::new(gpui::point(px(0.), px(0.)), size(px(1280.), px(720.)));
+    cx.simulate_resize(viewport.size);
+    press_keys(cx, "f6");
+    for clean in [false, true] {
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| v.clean_fullscreen), clean);
+        assert_eq!(cx.debug_bounds("windowed-display"), Some(viewport));
+        for control in [
+            "nav-console",
+            "transport-run",
+            "restore-game",
+            "enter-fullscreen",
+            "fullscreen-controls",
+        ] {
+            assert!(
+                cx.debug_bounds(control).is_none(),
+                "{control} in windowed video"
+            );
+        }
+        press_keys(cx, "f12");
+    }
+    view.update(cx, |view, cx| {
+        view.notice = Some("Disc read error".into());
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let notice = cx.debug_bounds("error-notice").unwrap();
+    assert_eq!(notice.top(), viewport.top());
+    assert!(notice.size.height > px(0.));
+    assert_eq!(cx.debug_bounds("windowed-display"), Some(viewport));
+    assert!(!cx.update(|window, _| window.is_fullscreen()));
 }
 
 #[gpui::test]
@@ -210,9 +245,11 @@ fn windowed_and_fullscreen_players_share_the_frame_at_every_internal_resolution(
     ] {
         cx.simulate_resize(size(px(width), px(height)));
         cx.run_until_parked();
+        let viewport = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
+        let picture = Bounds::new(point(px(x), px(y)), size(px(video_width), px(video_height)));
         let windowed = cx.debug_bounds("windowed-display").unwrap();
-        assert_eq!(windowed.size.width, px(width));
-        assert!(windowed.size.height > px(0.));
+        assert_eq!(windowed, viewport);
+        assert_eq!(super::video::video_bounds(windowed), picture);
         for scale in [RenderScale::Native, RenderScale::X2, RenderScale::X4] {
             let factor = scale.factor();
             let dimensions = (256 * factor, 240 * factor);
@@ -249,13 +286,10 @@ fn windowed_and_fullscreen_players_share_the_frame_at_every_internal_resolution(
             for controls_visible in [true, false] {
                 cx.run_until_parked();
                 let stage = cx.debug_bounds("fullscreen-display").unwrap();
-                assert_eq!(
-                    stage,
-                    Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)))
-                );
+                assert_eq!(stage, viewport);
                 assert_eq!(
                     super::video::video_bounds(stage),
-                    Bounds::new(point(px(x), px(y)), size(px(video_width), px(video_height))),
+                    picture,
                     "{scale:?} in {width} × {height}"
                 );
                 assert_eq!(
@@ -580,7 +614,7 @@ fn recent_games_open_the_game_workspace_and_only_reorder_after_success(cx: &mut 
             snapshot.media_revision == index as u64 + 1
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("windowed-player").is_some());
+        assert!(cx.debug_bounds("windowed-display").is_some());
         press_keys(cx, "f6");
         let saved = Preferences::load(&config.0).unwrap();
         assert_eq!(saved.recent_discs.len(), index + 1);
@@ -624,7 +658,7 @@ fn recent_games_open_the_game_workspace_and_only_reorder_after_success(cx: &mut 
     open_in_picker(&discs[1], cx);
     wait_for_snapshot(&view, cx, |snapshot| snapshot.media_revision == 5);
     cx.run_until_parked();
-    assert!(cx.debug_bounds("windowed-player").is_some());
+    assert!(cx.debug_bounds("windowed-display").is_some());
 }
 
 #[gpui::test]
