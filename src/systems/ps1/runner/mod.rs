@@ -46,6 +46,12 @@ pub enum Command {
         mode: crate::systems::ps1::gpu::RendererMode,
         scale: crate::systems::ps1::gpu::RenderScale,
     },
+    /// Atomically change the backend, internal resolution and presentation color depth.
+    SetRendererConfig {
+        mode: super::gpu::RendererMode,
+        scale: super::gpu::RenderScale,
+        color_depth: super::gpu::ColorDepth,
+    },
     SetCpuMode(crate::systems::ps1::cpu_engine::CpuMode),
     SetRewindEnabled(bool),
     SetRewindSeconds(u16),

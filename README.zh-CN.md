@@ -78,9 +78,11 @@ Windows 包不启用仅支持 Linux 的实验性 JIT。
 
 启用硬件加速后，可以在 **画面选项 → 内部渲染倍率** 中选择 1×、2× 或 4×。三个倍率均按窗口大小适配 4:3 画面。切换渲染器时，桌面会记住上次使用的硬件渲染倍率。
 
+在 **画面选项 → 渲染色深** 中选择 **真彩色（RGB888）**，可在各档硬件渲染倍率下获得更平滑的着色与半透明混合。默认使用 **原色（RGB555）**，切换色深后从下一次绘制开始生效。游戏读回 VRAM 和采样画面反馈纹理时仍使用 RGB555。软件渲染使用原色，切回硬件时会恢复已保存的色深偏好。
+
 在 PowerShell 中运行 `./target/release/eidoryn.exe --list-renderers | Out-Host` 可查看检测到的后端及不可用原因。
 
-`hardware` 构建特性包含四种 wgpu 后端，也可单独启用 `dx12`、`vulkan`、`opengl`、`metal`；运行时仍受平台和驱动能力限制。它们共用整数计算光栅器，绘图、纹理采样、混合及显示转换在 GPU 上执行，再读回画面供桌面显示。性能取决于游戏和驱动。wgpu 30 不提供原生 DirectX 11 后端；老旧 Windows 显卡可尝试支持计算着色器的 OpenGL，或使用软件绘图。Metal 及非 Windows 平台的运行行为仍需在对应设备上验证。
+`hardware` 构建特性包含四种 wgpu 后端，也可单独启用 `dx12`、`vulkan`、`opengl`、`metal`；运行时仍受平台和驱动能力限制。它们共用整数计算光栅器，绘图、纹理采样、混合及显示转换在 GPU 上执行，再读回画面供桌面显示。性能取决于游戏和驱动。wgpu 30 不提供原生 DirectX 11 后端；老旧 Windows 显卡可尝试支持计算着色器的 OpenGL，或使用软件绘图。真彩色已在 Linux 的 Vulkan 和 OpenGL 后端完成实机验证。[像素验收与帧时间报告](tests/true-color-validation.md)
 
 Windows 桌面使用系统原生标题栏管理窗口。工作区顶栏显示当前页面、运行状态和设置入口。桌面 release 构建启动时不再弹出控制台；调试构建和未启用 `desktop` 的构建仍保留控制台。需要交互式命令行输出时，请使用无窗口构建（`--no-default-features`）。在 PowerShell 中读取桌面发行版的输出并等待其结束，可通过管道连接 `Out-Host`，例如 `./target/release/eidoryn.exe --help | Out-Host`。
 

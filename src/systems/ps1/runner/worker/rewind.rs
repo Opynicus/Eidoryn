@@ -241,7 +241,11 @@ impl Worker {
                 self.machine
                     .bus
                     .gpu
-                    .set_renderer_with_scale(self.renderer, self.render_scale)
+                    .set_renderer_config(
+                        self.renderer,
+                        self.hardware_render_scale,
+                        self.hardware_color_depth,
+                    )
                     .map_err(|error| format!("Cannot resume renderer after rewind: {error}"))
             });
         match restore {
@@ -450,6 +454,91 @@ mod tests {
         assert_eq!(history.states.len(), 1);
         assert!(history.pop_before(history_cycles + 4).is_none());
         assert_eq!(history.bytes, 0);
+    }
+
+    #[test]
+    #[cfg(feature = "vulkan")]
+    #[ignore = "requires a physical Vulkan GPU"]
+    fn true_color_switch_load_reset_and_rewind_rebuild_from_guest_vram() {
+        use crate::systems::ps1::gpu::{ColorDepth, Gpu, RenderScale};
+
+        fn draw_gray(gpu: &mut Gpu) {
+            for word in [0x0267_6767, 0, 0x0001_0010] {
+                gpu.gp0(word).unwrap();
+            }
+        }
+
+        fn assert_live_gray(worker: &Worker, gray: u8) {
+            assert!(worker.message.is_none(), "{:?}", worker.message);
+            let gpu = &worker.machine.bus.gpu;
+            assert_eq!(gpu.renderer_mode(), RendererMode::Vulkan);
+            assert_eq!(gpu.color_depth(), ColorDepth::TrueColor);
+            assert_eq!(gpu.render_scale(), RenderScale::X2);
+            assert_eq!(&gpu.live_frame().rgb[..3], &[gray; 3]);
+        }
+
+        let root = temporary("true-color");
+        let mut machine = Machine::demo();
+        machine.bus.gpu.gp1(0x0300_0000).unwrap();
+        draw_gray(&mut machine.bus.gpu);
+        let mut worker = Worker::new(
+            machine,
+            false,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        worker.states = StateStore::new(&root, &worker.machine);
+        worker.machine.cpu.registers[7] = 41;
+        worker.apply(Command::QuickSave);
+
+        worker.apply(Command::SetRendererConfig {
+            mode: RendererMode::Vulkan,
+            scale: RenderScale::X2,
+            color_depth: ColorDepth::TrueColor,
+        });
+        assert!(!worker.running);
+        assert_live_gray(&worker, 99);
+        draw_gray(&mut worker.machine.bus.gpu);
+        assert_live_gray(&worker, 103);
+
+        worker.machine.bus.gpu.latch_display();
+        worker.apply(Command::Toggle);
+        worker.apply(Command::SetRenderer(RendererMode::Threaded));
+        assert!(worker.running);
+        assert_eq!(worker.machine.bus.gpu.color_depth(), ColorDepth::Native);
+        worker.apply(Command::SetRenderer(RendererMode::Vulkan));
+        assert!(worker.running);
+        assert_live_gray(&worker, 99);
+        let latched = Snapshot::capture(&worker.machine, worker.running, None, 0.);
+        assert_eq!(&latched.rgb[..3], &[103; 3]);
+
+        worker.machine.cpu.registers[7] = 73;
+        worker.apply(Command::QuickLoad);
+        assert!(worker.running);
+        assert_eq!(worker.machine.cpu.registers[7], 41);
+        assert_live_gray(&worker, 99);
+        draw_gray(&mut worker.machine.bus.gpu);
+        assert_live_gray(&worker, 103);
+
+        worker.apply(Command::SetRewindEnabled(true));
+        worker.machine.cpu.registers[7] = 73;
+        worker.machine.bus.tick(SAVE_CYCLES as u32).unwrap();
+        worker.capture_rewind();
+        worker.apply(Command::SetRewinding(true));
+        assert!(worker.rewind.active.is_some());
+        assert_eq!(worker.machine.cpu.registers[7], 41);
+        worker.apply(Command::SetRewinding(false));
+        assert!(worker.running);
+        assert_live_gray(&worker, 99);
+        draw_gray(&mut worker.machine.bus.gpu);
+        assert_live_gray(&worker, 103);
+
+        worker.apply(Command::Reset);
+        assert!(!worker.running);
+        assert_eq!(worker.machine.cpu.registers[7], 0);
+        assert_live_gray(&worker, 99);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -42,8 +42,24 @@ impl RenderScale {
     }
 }
 
+/// Precision of hardware presentation samples. Guest VRAM always stores RGB555 and mask.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ColorDepth {
+    #[default]
+    Native,
+    TrueColor,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DisplaySource {
+    Native,
+    Presentation,
+}
+
 #[derive(Clone, Copy)]
 struct DisplaySettings {
+    source: DisplaySource,
     dimensions: (usize, usize),
     start: (usize, usize),
     disabled: bool,
@@ -52,8 +68,16 @@ struct DisplaySettings {
 }
 
 impl DisplaySettings {
+    fn output_scale(self) -> RenderScale {
+        if self.source == DisplaySource::Presentation && !self.rgb24 {
+            self.scale
+        } else {
+            RenderScale::Native
+        }
+    }
+
     fn output_dimensions(self) -> (usize, usize) {
-        let factor = self.scale.factor();
+        let factor = self.output_scale().factor();
         (self.dimensions.0 * factor, self.dimensions.1 * factor)
     }
 }
@@ -472,15 +496,15 @@ impl Gpu {
         (width, height)
     }
 
-    /// Read the current scanout at the native dimensions returned by `dimensions`.
+    /// Decode the current guest VRAM scanout at native resolution and color depth.
     pub fn display_rgb(&self) -> Vec<u8> {
         self.renderer
-            .display(self.display_settings(RenderScale::Native))
+            .display(self.display_settings(DisplaySource::Native))
     }
 
     /// Capture the current presentation image, including the hardware render scale.
     pub fn live_frame(&self) -> DisplayFrame {
-        let display = self.display_settings(self.render_scale());
+        let display = self.display_settings(DisplaySource::Presentation);
         DisplayFrame {
             native_dimensions: display.dimensions,
             dimensions: display.output_dimensions(),
@@ -488,14 +512,14 @@ impl Gpu {
         }
     }
 
-    fn display_settings(&self, scale: RenderScale) -> DisplaySettings {
-        let rgb24 = self.display_mode & 0x10 != 0;
+    fn display_settings(&self, source: DisplaySource) -> DisplaySettings {
         DisplaySettings {
+            source,
             dimensions: self.dimensions(),
             start: self.display_start,
             disabled: self.display_disabled,
-            rgb24,
-            scale: if rgb24 { RenderScale::Native } else { scale },
+            rgb24: self.display_mode & 0x10 != 0,
+            scale: self.render_scale(),
         }
     }
 
@@ -527,13 +551,29 @@ impl Gpu {
         self.renderer.scale()
     }
 
+    /// Effective presentation color depth. Both software renderers use native color.
+    pub fn color_depth(&self) -> ColorDepth {
+        self.renderer.color_depth()
+    }
+
     /// Switch renderer and internal resolution, preserving the guest VRAM contents.
     pub fn set_renderer_with_scale(
         &mut self,
         mode: RendererMode,
         scale: RenderScale,
     ) -> std::io::Result<()> {
-        self.renderer.set_mode(mode, scale)
+        self.set_renderer_config(mode, scale, self.color_depth())
+    }
+
+    /// Rebuild the renderer from guest VRAM when its backend or presentation format changes.
+    /// The current renderer remains active if the replacement cannot be initialized.
+    pub fn set_renderer_config(
+        &mut self,
+        mode: RendererMode,
+        scale: RenderScale,
+        color_depth: ColorDepth,
+    ) -> std::io::Result<()> {
+        self.renderer.set_mode(mode, scale, color_depth)
     }
     pub fn synchronize_renderer(&self) {
         self.renderer.synchronize();
@@ -556,7 +596,7 @@ impl Gpu {
     pub fn latch_display(&mut self) {
         self.completed_frame = Some(
             self.renderer
-                .capture(self.display_settings(self.render_scale())),
+                .capture(self.display_settings(DisplaySource::Presentation)),
         );
     }
 

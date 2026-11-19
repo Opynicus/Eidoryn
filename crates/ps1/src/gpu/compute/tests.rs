@@ -1,25 +1,41 @@
-//! Headless shader regressions, including Vulkan software implementations.
+//! Headless shader regressions. Set `WGPU_BACKEND` to select the compute API.
 //! Run with `cargo test -p eidoryn-ps1 --features vulkan gpu::compute::tests -- --ignored`.
+
+mod true_color;
 
 use super::ComputeRenderer;
 use crate::gpu::{
-    DisplaySettings, RenderScale, VRAM_WIDTH,
+    ColorDepth, DisplaySettings, DisplaySource, RenderScale, VRAM_WIDTH,
     rasterizer::{DrawState, RasterCommand, Rasterizer},
 };
 
 fn renderer(scale: RenderScale, initial: Rasterizer) -> ComputeRenderer {
-    let backends = wgpu::Backends::VULKAN;
+    color_renderer(scale, ColorDepth::Native, initial)
+}
+
+fn color_renderer(scale: RenderScale, depth: ColorDepth, initial: Rasterizer) -> ComputeRenderer {
+    let backends = wgpu::Instance::enabled_backend_features().with_env();
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = pollster::block_on(instance.enumerate_adapters(backends))
         .into_iter()
-        .next()
-        .expect("the shader test requires a Vulkan adapter");
-    let mut gpu =
-        ComputeRenderer::from_adapter(&adapter, "Vulkan", std::sync::Arc::default(), scale)
-            .expect("compile shaders and allocate scaled buffers");
+        .min_by_key(|adapter| !super::physical_adapter(&adapter.get_info()))
+        .expect("the shader test requires a matching graphics adapter");
+    let info = adapter.get_info();
+    eprintln!(
+        "Shader tests: {} ({}, {}, {})",
+        info.name, info.driver, info.driver_info, info.backend
+    );
+    let mut gpu = ComputeRenderer::from_adapter(
+        &adapter,
+        info.backend.to_str(),
+        std::sync::Arc::default(),
+        scale,
+        depth,
+    )
+    .expect("compile shaders and allocate scaled buffers");
     gpu.start(initial).expect("seed native and enhanced VRAM");
     gpu
 }
@@ -31,10 +47,14 @@ fn state() -> DrawState {
     }
 }
 
-fn draw(gpu: &mut ComputeRenderer, words: &[u32], state: DrawState) {
+fn packet(words: &[u32], state: DrawState) -> RasterCommand {
     let mut packet = [0; 12];
     packet[..words.len()].copy_from_slice(words);
-    gpu.execute(RasterCommand::Packet(packet, state)).unwrap();
+    RasterCommand::Packet(packet, state)
+}
+
+fn draw(gpu: &mut ComputeRenderer, words: &[u32], state: DrawState) {
+    gpu.execute(packet(words, state)).unwrap();
 }
 
 fn scanout(scale: RenderScale, dimensions: (usize, usize)) -> DisplaySettings {
@@ -44,6 +64,7 @@ fn scanout(scale: RenderScale, dimensions: (usize, usize)) -> DisplaySettings {
         disabled: false,
         rgb24: false,
         scale,
+        source: DisplaySource::Presentation,
     }
 }
 
@@ -53,12 +74,22 @@ fn pixel(rgb: &[u8], width: usize, x: usize, y: usize) -> &[u8] {
 }
 
 #[test]
-#[ignore = "requires a Vulkan adapter (software Vulkan is sufficient)"]
+#[ignore = "requires a compute adapter (software adapters are sufficient)"]
 fn transfers_and_feedback_keep_native_words_and_enhanced_coverage_in_sync() {
-    for (scale, factor) in [(RenderScale::X2, 2), (RenderScale::X4, 4)] {
+    for (scale, depth) in [
+        (RenderScale::X2, ColorDepth::Native),
+        (RenderScale::X2, ColorDepth::TrueColor),
+        (RenderScale::X4, ColorDepth::Native),
+        (RenderScale::X4, ColorDepth::TrueColor),
+    ] {
+        let factor = scale.factor();
+        let (red, blend) = match depth {
+            ColorDepth::Native => (255, 123),
+            ColorDepth::TrueColor => (254, 127),
+        };
         let mut initial = Rasterizer::default();
         initial.vram[3] = 0x03e0;
-        let mut gpu = renderer(scale, initial);
+        let mut gpu = color_renderer(scale, depth, initial);
         let display = scanout(scale, (12, 1));
         let width = 12 * factor;
         let check_mask = DrawState {
@@ -68,7 +99,7 @@ fn transfers_and_feedback_keep_native_words_and_enhanced_coverage_in_sync() {
         // The diagonal includes native center (3.5, 0.5), leaving some samples green.
         draw(
             &mut gpu,
-            &[0x2000_00ff, 4, 4 | (4 << 16), 4 << 16],
+            &[0x2000_00fe, 4, 4 | (4 << 16), 4 << 16],
             DrawState {
                 mask_set: true,
                 ..state()
@@ -95,7 +126,7 @@ fn transfers_and_feedback_keep_native_words_and_enhanced_coverage_in_sync() {
         for y in 0..factor {
             for x in 0..factor {
                 let expected = if x + y + 1 >= factor {
-                    [255, 0, 0]
+                    [red, 0, 0]
                 } else {
                     [0, 255, 0]
                 };
@@ -111,8 +142,8 @@ fn transfers_and_feedback_keep_native_words_and_enhanced_coverage_in_sync() {
         // A translucent blue draw blends with green only in the unprotected samples.
         draw(&mut gpu, &[0x6aff_0000, 3], check_mask);
         let rgb = gpu.display(display).unwrap();
-        assert_eq!(pixel(&rgb, width, 3 * factor, 0), [0, 123, 123]);
-        assert_eq!(pixel(&rgb, width, 4 * factor - 1, factor - 1), [255, 0, 0]);
+        assert_eq!(pixel(&rgb, width, 3 * factor, 0), [0, blend, blend]);
+        assert_eq!(pixel(&rgb, width, 4 * factor - 1, factor - 1), [red, 0, 0]);
         assert_eq!(gpu.read([Some(3), None]).unwrap(), [0x801f, 0]);
 
         // An accepted upload replaces all samples; RGB24 reads the native packed bytes.
@@ -141,7 +172,7 @@ fn transfers_and_feedback_keep_native_words_and_enhanced_coverage_in_sync() {
 }
 
 #[test]
-#[ignore = "requires a Vulkan adapter (software Vulkan is sufficient)"]
+#[ignore = "requires a compute adapter (software adapters are sufficient)"]
 fn four_times_interpolates_at_subpixel_centers_without_overflow() {
     let scale = RenderScale::X4;
     let mut initial = Rasterizer::default();
@@ -185,7 +216,7 @@ fn four_times_interpolates_at_subpixel_centers_without_overflow() {
 }
 
 #[test]
-#[ignore = "requires a Vulkan adapter (software Vulkan is sufficient)"]
+#[ignore = "requires a compute adapter (software adapters are sufficient)"]
 fn maximum_enhanced_scanout_wraps_and_matches_the_advertised_size() {
     let scale = RenderScale::X4;
     let mut initial = Rasterizer::default();
@@ -210,7 +241,7 @@ fn maximum_enhanced_scanout_wraps_and_matches_the_advertised_size() {
 }
 
 #[test]
-#[ignore = "requires a Vulkan adapter (software Vulkan is sufficient)"]
+#[ignore = "requires a compute adapter (software adapters are sufficient)"]
 fn wrapped_diagonal_copy_propagates_subpixels_across_dispatches() {
     let scale = RenderScale::X2;
     let mut gpu = renderer(scale, Rasterizer::default());

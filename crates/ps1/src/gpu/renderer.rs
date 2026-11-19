@@ -1,7 +1,7 @@
 //! One ordered GPU worker overlaps software/hardware drawing with CPU interpretation.
 //! Bounded batches preserve texture feedback, blending and transfer ordering.
 use super::{
-    DisplayFrame, DisplaySettings, RenderScale,
+    ColorDepth, DisplayFrame, DisplaySettings, RenderScale,
     rasterizer::{RasterCommand, Rasterizer},
     renderer_engine::Engine,
 };
@@ -198,16 +198,28 @@ impl Renderer {
         }
     }
 
-    pub(super) fn set_mode(&mut self, mode: RendererMode, scale: RenderScale) -> io::Result<()> {
-        let scale = if mode.is_hardware() {
-            scale
+    pub(super) fn color_depth(&self) -> ColorDepth {
+        match &*self.backend.borrow() {
+            Backend::Serial(_) => ColorDepth::Native,
+            Backend::Threaded(worker) => worker.color_depth,
+        }
+    }
+
+    pub(super) fn set_mode(
+        &mut self,
+        mode: RendererMode,
+        scale: RenderScale,
+        color_depth: ColorDepth,
+    ) -> io::Result<()> {
+        let (scale, color_depth) = if mode.is_hardware() {
+            (scale, color_depth)
         } else {
-            RenderScale::Native
+            (RenderScale::Native, ColorDepth::Native)
         };
         if let Some(error) = self.error() {
             return Err(io::Error::other(error));
         }
-        if self.mode() == mode && self.scale() == scale {
+        if self.mode() == mode && self.scale() == scale && self.color_depth() == color_depth {
             return Ok(());
         }
         // Initialize before touching the old session. A missing device, shader
@@ -215,7 +227,7 @@ impl Renderer {
         let worker = if mode == RendererMode::Serial {
             None
         } else {
-            Some(Worker::spawn(mode, scale)?)
+            Some(Worker::spawn(mode, scale, color_depth)?)
         };
         let raster = self.snapshot();
         if let Some(error) = self.error() {
@@ -297,8 +309,12 @@ impl Renderer {
     }
 
     pub(super) fn vram_mut(&mut self) -> &mut [u16] {
-        self.set_mode(RendererMode::Serial, RenderScale::Native)
-            .expect("Cannot edit VRAM after a renderer failure");
+        self.set_mode(
+            RendererMode::Serial,
+            RenderScale::Native,
+            ColorDepth::Native,
+        )
+        .expect("Cannot edit VRAM after a renderer failure");
         match self.backend.get_mut() {
             Backend::Serial(raster) => &mut raster.vram,
             Backend::Threaded(_) => unreachable!("renderer was stopped"),
@@ -318,6 +334,7 @@ enum Message {
 
 struct Worker {
     scale: RenderScale,
+    color_depth: ColorDepth,
     mode: RendererMode,
     device_name: String,
     error: Arc<OnceLock<String>>,
@@ -328,14 +345,14 @@ struct Worker {
 }
 
 impl Worker {
-    fn spawn(mode: RendererMode, scale: RenderScale) -> io::Result<Self> {
+    fn spawn(mode: RendererMode, scale: RenderScale, color_depth: ColorDepth) -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(QUEUED_BATCHES);
         let (recycle, recycled) = mpsc::channel();
         let (ready, initialized) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("eidoryn-gpu".into())
             .spawn(move || {
-                let (mut engine, status) = match Engine::new(mode, scale) {
+                let (mut engine, status) = match Engine::new(mode, scale, color_depth) {
                     Ok(initialized) => initialized,
                     Err(error) => {
                         let _ = ready.send(Err(error.to_string()));
@@ -404,6 +421,7 @@ impl Worker {
         };
         Ok(Self {
             scale,
+            color_depth,
             mode,
             device_name,
             error,

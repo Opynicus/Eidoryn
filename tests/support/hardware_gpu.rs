@@ -1,7 +1,8 @@
 //! Shared pixel-accurate hardware tests for all wgpu backends.
 use super::HARDWARE_MODE;
 use eidoryn_psx::{
-    gpu::{Gpu, RenderScale, RendererMode},
+    gpu::{ColorDepth, Gpu, RenderScale, RendererMode},
+    machine::Machine,
     timers::Timers,
 };
 
@@ -250,6 +251,98 @@ fn scale_switch_preserves_guest_vram_and_latched_field_dimensions() {
         assert_eq!(live.native_dimensions, live.dimensions);
         assert_eq!(&*live.rgb, hardware.display_rgb());
     }
+}
+
+#[test]
+#[ignore = "requires a physical GPU with the selected backend"]
+fn color_depth_changes_scanout_while_gpuread_matches_software_at_each_scale() {
+    let mut software = Gpu::default();
+    software.gp1(0x0300_0000).unwrap();
+    let draw = [0xe407_ffff, 0x6864_6464, xy(0, 0), 0x6867_6767, xy(1, 0)];
+    let read_pair = [0xc000_0000, xy(0, 0), xy(2, 1)];
+    send(&mut software, &draw);
+    send(&mut software, &read_pair);
+    let guest_pair = software.read();
+    assert_eq!(guest_pair, 0x318c_318c);
+    let mut gpu = Gpu::default();
+    gpu.gp1(0x0300_0000).unwrap();
+    for scale in [RenderScale::Native, RenderScale::X2, RenderScale::X4] {
+        for depth in [ColorDepth::Native, ColorDepth::TrueColor] {
+            gpu.set_renderer_config(HARDWARE_MODE, scale, depth)
+                .unwrap();
+            gpu.gp1(0x0800_0000).unwrap();
+            send(&mut gpu, &draw);
+            send(&mut gpu, &read_pair);
+            assert_eq!(gpu.read(), guest_pair);
+            assert_eq!(gpu.vram(), software.vram());
+            assert_eq!(gpu.display_rgb(), software.display_rgb());
+            let frame = gpu.live_frame();
+            let factor = scale.factor();
+            let (w, h) = software.dimensions();
+            assert_eq!(frame.dimensions, (w * factor, h * factor));
+            let grays = if depth == ColorDepth::TrueColor {
+                [100, 103]
+            } else {
+                [99, 99]
+            };
+            for (x, gray) in grays.into_iter().enumerate() {
+                let offset = 3 * x * factor;
+                assert_eq!(&frame.rgb[offset..offset + 3], &[gray; 3]);
+            }
+            gpu.gp1(0x0800_0010).unwrap();
+            let movie = gpu.live_frame();
+            assert_eq!(movie.dimensions, (w, h));
+            assert_eq!(&movie.rgb[..3], &[0x8c, 0x31, 0x8c]);
+            assert_eq!(&*movie.rgb, gpu.display_rgb());
+            assert_eq!(gpu.renderer_error(), None);
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a physical GPU with the selected backend"]
+fn true_color_v1_preview_survives_rebuild_and_failed_switch() {
+    let mut machine = Machine::demo();
+    let gpu = &mut machine.bus.gpu;
+    gpu.set_renderer_config(HARDWARE_MODE, RenderScale::X2, ColorDepth::TrueColor)
+        .unwrap();
+    gpu.gp1(0x0300_0000).unwrap();
+    gpu.gp1(0x0500_0000).unwrap();
+    let point = [0xe407_ffff, 0x6867_6767, xy(0, 0)];
+    send(gpu, &point);
+    let mut timers = Timers::default();
+    while gpu.tick(1000, &mut timers) & 1 == 0 {}
+    let unavailable = if cfg!(target_os = "macos") {
+        RendererMode::Dx12
+    } else {
+        RendererMode::Metal
+    };
+    assert!(
+        gpu.set_renderer_config(unavailable, RenderScale::X4, ColorDepth::Native)
+            .is_err()
+    );
+    assert_eq!(
+        (gpu.renderer_mode(), gpu.render_scale(), gpu.color_depth()),
+        (HARDWARE_MODE, RenderScale::X2, ColorDepth::TrueColor)
+    );
+    gpu.set_renderer_config(HARDWARE_MODE, RenderScale::X2, ColorDepth::TrueColor)
+        .unwrap();
+    assert_eq!(&gpu.live_frame().rgb[..3], &[103; 3]);
+    assert_eq!(&gpu.completed_frame().unwrap().rgb[..3], &[103; 3]);
+
+    let bytes = machine.save_state().unwrap();
+    let mut restored = Machine::load_state(&bytes).unwrap();
+    let gpu = &mut restored.bus.gpu;
+    let preview = gpu.completed_frame().unwrap();
+    assert_eq!(preview.dimensions, gpu.dimensions());
+    assert_eq!(&preview.rgb[..3], &[103; 3]);
+    gpu.set_renderer_config(HARDWARE_MODE, RenderScale::X4, ColorDepth::TrueColor)
+        .unwrap();
+    assert_eq!(gpu.vram()[0], 0x318c);
+    assert_eq!(&gpu.live_frame().rgb[..3], &[99; 3]);
+    send(gpu, &point);
+    assert_eq!(&gpu.live_frame().rgb[..3], &[103; 3]);
+    assert_eq!(gpu.renderer_error(), None);
 }
 
 #[test]

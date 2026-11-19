@@ -3,10 +3,10 @@
 //! require a batch barrier; feedback uses an ordered compute invocation.
 mod commands;
 mod pipelines;
-#[cfg(all(test, feature = "vulkan"))]
+#[cfg(test)]
 mod tests;
 use super::{
-    DisplaySettings, RenderScale, RendererMode, VRAM_HEIGHT, VRAM_WIDTH,
+    ColorDepth, DisplaySettings, DisplaySource, RenderScale, RendererMode, VRAM_HEIGHT, VRAM_WIDTH,
     rasterizer::{RasterCommand, Rasterizer},
     renderer_engine::{ErrorLatch, select_candidates},
 };
@@ -23,22 +23,27 @@ const MAX_UPLOADS: usize = 65_536;
 const VRAM_BYTES: u64 = (VRAM_WIDTH * VRAM_HEIGHT * 4) as u64;
 const WAIT: Duration = Duration::from_secs(10);
 
-// The first plane is authoritative guest VRAM. Each word owns a contiguous
-// block of S*S presentation samples after the native plane at enhanced scales.
-// The native-only path allocates no presentation samples.
-fn raster_bytes(scale: RenderScale) -> u64 {
-    match scale {
-        RenderScale::Native => VRAM_BYTES,
-        _ => VRAM_BYTES * (1 + (scale.factor() as u64).pow(2)),
-    }
+// Native words always occupy the first plane. When present, the second
+// plane stores a contiguous block of S*S encoded samples for each word.
+const fn has_samples(scale: RenderScale, depth: ColorDepth) -> bool {
+    !matches!((scale, depth), (RenderScale::Native, ColorDepth::Native))
 }
 
-fn required_limits(scale: RenderScale) -> wgpu::Limits {
+fn raster_bytes(scale: RenderScale, depth: ColorDepth) -> u64 {
+    let samples = if has_samples(scale, depth) {
+        (scale.factor() as u64).pow(2)
+    } else {
+        0
+    };
+    VRAM_BYTES * (1 + samples)
+}
+
+fn required_limits(scale: RenderScale, depth: ColorDepth) -> wgpu::Limits {
     // Request only the storage/compute resources used by the shared shaders.
     // WebGPU defaults demand eight storage buffers; this rasterizer needs five.
     wgpu::Limits {
         max_storage_buffers_per_shader_stage: 5,
-        max_storage_buffer_binding_size: raster_bytes(scale),
+        max_storage_buffer_binding_size: raster_bytes(scale, depth),
         max_compute_invocations_per_workgroup: 64,
         max_compute_workgroup_size_x: 64,
         max_compute_workgroup_size_y: 8,
@@ -82,6 +87,7 @@ pub(super) struct ComputeRenderer {
     staging: wgpu::Buffer,
     pipelines: pipelines::Pipelines,
     scale: RenderScale,
+    depth: ColorDepth,
     error: Arc<OnceLock<String>>,
     decoded: Vec<Primitive>,
     commands: Vec<[u32; 32]>,
@@ -98,7 +104,11 @@ pub(super) struct ComputeRenderer {
 }
 
 impl ComputeRenderer {
-    pub(super) fn new(mode: RendererMode, scale: RenderScale) -> io::Result<(Self, ErrorLatch)> {
+    pub(super) fn new(
+        mode: RendererMode,
+        scale: RenderScale,
+        depth: ColorDepth,
+    ) -> io::Result<(Self, ErrorLatch)> {
         let backends = match mode {
             RendererMode::Dx12 => wgpu::Backends::DX12,
             RendererMode::Vulkan => wgpu::Backends::VULKAN,
@@ -114,7 +124,7 @@ impl ComputeRenderer {
         let mut adapters = pollster::block_on(instance.enumerate_adapters(backends));
         adapters.retain(|a| physical_adapter(&a.get_info()));
         adapters.sort_by_key(|a| a.get_info().device_type != wgpu::DeviceType::DiscreteGpu);
-        let limits = required_limits(scale);
+        let limits = required_limits(scale, depth);
         let requirement = if mode == RendererMode::OpenGl {
             " (OpenGL 4.3+ on Windows)"
         } else {
@@ -131,7 +141,7 @@ impl ComputeRenderer {
             return Err(io::Error::other(format!(
                 "No physical {backend} GPU meets the {}x rasterizer requirements{requirement} (compute shaders, five storage buffers and a {} MiB storage binding)",
                 scale.factor(),
-                raster_bytes(scale) / (1024 * 1024)
+                raster_bytes(scale, depth) / (1024 * 1024)
             )));
         }
         select_candidates(
@@ -139,7 +149,8 @@ impl ComputeRenderer {
                 .into_iter()
                 .map(|adapter| (adapter.get_info().name, adapter)),
             |adapter, error| {
-                let mut gpu = Self::from_adapter(&adapter, backend, Arc::clone(error), scale)?;
+                let mut gpu =
+                    Self::from_adapter(&adapter, backend, Arc::clone(error), scale, depth)?;
                 // Complete resource allocation before an API/device is selected.
                 // A failure here can still fall back to another physical adapter.
                 gpu.synchronize().map_err(io::Error::other)?;
@@ -153,11 +164,12 @@ impl ComputeRenderer {
         backend: &'static str,
         error: ErrorLatch,
         scale: RenderScale,
+        depth: ColorDepth,
     ) -> io::Result<Self> {
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Eidoryn PS1 rasterizer"),
-            required_limits: required_limits(scale),
+            required_limits: required_limits(scale, depth),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         }))
@@ -177,12 +189,12 @@ impl ComputeRenderer {
         // either a guest VRAM snapshot or a presented RGB scanout.
         let scanout_bytes = 640 * 480 * 4 * (scale.factor() as u64).pow(2);
         let sizes = [
-            raster_bytes(scale),
+            raster_bytes(scale, depth),
             (MAX_COMMANDS * 128) as u64,
             ((TILE_COUNT * 4 + MAX_REFERENCES) * 4) as u64,
             (MAX_UPLOADS * 4) as u64,
             scanout_bytes,
-            32,
+            48,
         ];
         let buffers = std::array::from_fn(|i| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -214,11 +226,6 @@ impl ComputeRenderer {
             mapped_at_creation: false,
         });
         let pipelines = pipelines::create(&device, &buffers);
-        queue.write_buffer(
-            &buffers[5],
-            24,
-            bytemuck::bytes_of(&(scale.factor() as u32)),
-        );
         if let Some(failure) = pollster::block_on(validation.pop()) {
             return Err(io::Error::other(failure));
         }
@@ -238,6 +245,7 @@ impl ComputeRenderer {
             staging,
             pipelines,
             scale,
+            depth,
             error,
             decoded: Vec::with_capacity(4),
             commands: Vec::with_capacity(MAX_COMMANDS),
@@ -255,6 +263,15 @@ impl ComputeRenderer {
     }
 
     pub(super) fn start(&mut self, raster: Rasterizer) -> Result<(), String> {
+        self.queue.write_buffer(
+            &self.buffers[5],
+            24,
+            bytemuck::cast_slice(&[
+                self.scale.factor() as u32,
+                1,
+                u32::from(self.depth == ColorDepth::TrueColor),
+            ]),
+        );
         // Expand directly into staging memory: a temporary Vec<u32> would
         // duplicate this entire 2 MiB upload on every renderer switch.
         {
@@ -270,7 +287,7 @@ impl ComputeRenderer {
                 .slice(..)
                 .write_iter(raster.vram.iter().flat_map(|&v| u32::from(v).to_ne_bytes()));
         } // Schedule the upload before Engine::start synchronizes the queue.
-        if self.scale != RenderScale::Native {
+        if has_samples(self.scale, self.depth) {
             self.dispatch(&self.pipelines.seed_enhanced, [128, 64]);
         }
         self.read_cache = Some(raster.vram);
@@ -555,7 +572,9 @@ impl ComputeRenderer {
             u32::from(display.disabled),
             u32::from(display.rgb24),
             self.scale.factor() as u32,
-            display.scale.factor() as u32,
+            display.output_scale().factor() as u32,
+            u32::from(self.depth == ColorDepth::TrueColor),
+            u32::from(display.source == DisplaySource::Presentation),
         ];
         self.queue
             .write_buffer(&self.buffers[5], 0, bytemuck::cast_slice(&params));
