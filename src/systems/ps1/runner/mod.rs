@@ -85,6 +85,12 @@ pub enum Command {
         bios: Option<PathBuf>,
         fast_boot: bool,
     },
+    /// Reopen a history entry and identify it in the successful media receipt.
+    ReopenDisc {
+        path: PathBuf,
+        bios: Option<PathBuf>,
+        fast_boot: bool,
+    },
     RequestClose,
     Shutdown,
 }

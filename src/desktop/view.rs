@@ -19,14 +19,17 @@ impl Render for Desktop {
             window.remove_window();
         }
         let p = self.themes.active().palette;
-        let game = self.game_view || window.is_fullscreen();
+        let fullscreen = window.is_fullscreen();
+        let game = self.game_view || fullscreen;
         self.sync_snapshot_mode(!game && self.page == WorkspacePage::Debug);
-        self.sync_video(game || self.page == WorkspacePage::Console, window);
-        let pure_video = window.is_fullscreen() && self.clean_fullscreen;
-        let body = if pure_video {
-            self.fullscreen_video()
+        self.sync_video(
+            game || matches!(self.page, WorkspacePage::Console | WorkspacePage::Game),
+            window,
+        );
+        let body = if game {
+            self.player(window, cx)
         } else {
-            self.workspace(game, window, cx)
+            self.workspace(window, cx)
         };
         let mut root = div()
             .id("desktop-root")
@@ -37,7 +40,8 @@ impl Render for Desktop {
             .text_color(rgb(p.text))
             .text_size(px(14.))
             .when(
-                !pure_video
+                !game
+                    || (fullscreen && !self.clean_fullscreen)
                     || self.graphics.open
                     || self.renaming_state.is_some()
                     || self.notice.is_some()
@@ -105,29 +109,68 @@ impl Render for Desktop {
 }
 
 impl Desktop {
-    fn fullscreen_video(&self) -> gpui::Div {
+    fn fullscreen_controls(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        div()
+            .debug_selector(|| "fullscreen-controls".into())
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_2()
+            .rounded_lg()
+            .bg(rgb(p.surface))
+            .child(self.play_button(cx))
+            .child(self.quick_state_controls(cx))
+            .child(self.audio_controls(cx))
+            .child(
+                ghost_icon_button(p, "player-settings", "settings", self.tr(Text::Settings))
+                    .on_click(cx.listener(|view, _, _, cx| view.open_settings(cx))),
+            )
+            .child(self.fullscreen_button(window, cx))
+    }
+
+    fn player(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let fullscreen = window.is_fullscreen();
         div()
             .relative()
             .size_full()
-            .debug_selector(|| "pure-display".into())
+            .debug_selector(move || {
+                if fullscreen {
+                    "fullscreen-display"
+                } else {
+                    "windowed-display"
+                }
+                .into()
+            })
             .bg(rgb(p.video_background))
             .child(self.video())
+            .when(fullscreen && !self.clean_fullscreen, |stage| {
+                stage.child(
+                    div()
+                        .absolute()
+                        .bottom_3()
+                        .left_3()
+                        .right_3()
+                        .flex()
+                        .justify_center()
+                        .child(self.fullscreen_controls(window, cx)),
+                )
+            })
             .children(
                 self.workspace_notice()
                     .map(|banner| banner.absolute().top_0().left_0().right_0()),
             )
     }
 
-    pub(super) fn workspace_title(&self, window: &Window) -> &'static str {
-        self.tr(if self.game_view || window.is_fullscreen() {
-            Text::GameView
-        } else {
-            match self.page {
-                WorkspacePage::Console => Text::Console,
-                WorkspacePage::SaveStates => Text::SaveStates,
-                WorkspacePage::Debug => Text::Debugger,
-            }
+    fn workspace_title(&self) -> &'static str {
+        self.tr(match self.page {
+            WorkspacePage::Console => Text::Console,
+            WorkspacePage::Game => Text::GameView,
+            WorkspacePage::SaveStates => Text::SaveStates,
+            WorkspacePage::Debug => Text::Debugger,
         })
     }
 
@@ -158,16 +201,13 @@ impl Desktop {
             .min(px(1500.))
     }
 
-    fn workspace(&mut self, game: bool, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+    fn workspace(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = self.themes.active().palette;
-        let page = if game {
-            self.game_page(window, cx)
-        } else {
-            match self.page {
-                WorkspacePage::Console => self.console_page(window, cx),
-                WorkspacePage::SaveStates => self.save_states_page(window, cx),
-                WorkspacePage::Debug => self.debug_page(window, cx),
-            }
+        let page = match self.page {
+            WorkspacePage::Console => self.console_page(window, cx),
+            WorkspacePage::Game => self.game_page(window, cx),
+            WorkspacePage::SaveStates => self.save_states_page(window, cx),
+            WorkspacePage::Debug => self.debug_page(window, cx),
         };
         let width = self.navigation.width(window);
         div()
@@ -175,7 +215,7 @@ impl Desktop {
             .size_full()
             .flex()
             .when(!self.navigation.hidden, |row| {
-                row.child(self.cached_sidebar(width, game, cx))
+                row.child(self.cached_sidebar(width, cx))
             })
             .child(
                 div()
@@ -187,7 +227,7 @@ impl Desktop {
                     .child(self.topbar(window, cx))
                     .child(
                         div()
-                            .id(gpui::SharedString::from(self.workspace_title(window)))
+                            .id(gpui::SharedString::from(self.workspace_title()))
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
@@ -267,7 +307,7 @@ impl Desktop {
                     format!(
                         "{}  /  {}",
                         self.tr(Text::Workspace),
-                        self.workspace_title(window)
+                        self.workspace_title()
                     ),
                 )
                 .text_size(px(13.)),

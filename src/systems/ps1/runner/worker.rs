@@ -295,19 +295,25 @@ impl Worker {
         }
     }
 
-    fn load_disc(&mut self, path: &Path, bios: Option<PathBuf>, fast_boot: bool) {
+    fn load_disc(
+        &mut self,
+        path: PathBuf,
+        bios: Option<PathBuf>,
+        fast_boot: bool,
+        selection: SelectedMedia,
+    ) {
         self.running = false;
         self.release_input();
-        match load_disc(path, bios.as_deref(), fast_boot) {
+        match load_disc(&path, bios.as_deref(), fast_boot) {
             Ok(loaded) => {
                 if self.replace_machine(loaded) {
                     if bios.is_some() {
                         self.bios_path = bios;
                     }
                     self.running = fast_boot;
-                    self.disc_path = Some(path.to_path_buf());
+                    self.disc_path = Some(path);
                     self.disc_fast_boot = fast_boot;
-                    self.media_selection = Some(SelectedMedia::Disc);
+                    self.media_selection = Some(selection);
                     self.media_revision = self.media_revision.wrapping_add(1);
                 }
             }
@@ -585,7 +591,12 @@ impl Worker {
                 path,
                 bios,
                 fast_boot,
-            } => self.load_disc(&path, bios, fast_boot),
+            } => self.load_disc(path, bios, fast_boot, SelectedMedia::Disc),
+            Command::ReopenDisc {
+                path,
+                bios,
+                fast_boot,
+            } => self.load_disc(path, bios, fast_boot, SelectedMedia::ReopenedDisc),
             Command::RequestClose | Command::Shutdown => {
                 self.running = false;
                 self.release_input();

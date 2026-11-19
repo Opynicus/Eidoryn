@@ -67,6 +67,7 @@ impl Desktop {
                 | Command::Demo
                 | Command::Load { .. }
                 | Command::LoadDisc { .. }
+                | Command::ReopenDisc { .. }
                 | Command::RequestClose
         ) || matches!(command, Command::Toggle) && self.snapshot.running
         {
@@ -159,7 +160,7 @@ impl Desktop {
     }
 
     pub(super) fn open_disc(&mut self, fast_boot: bool, cx: &mut Context<Self>) {
-        if (!fast_boot || self.bios.is_some()) && !self.validate_current_bios(cx) {
+        if !self.validate_disc_bios(fast_boot, cx) {
             return;
         }
         let picker = cx.prompt_for_paths(PathPromptOptions {
@@ -247,6 +248,14 @@ impl Desktop {
             cx.stop_propagation();
             return;
         }
+        if key == "f11" || (key == "escape" && window.is_fullscreen()) {
+            self.toggle_fullscreen(window, cx);
+            return;
+        }
+        if key == "escape" && self.game_view {
+            self.toggle_view(window, cx);
+            return;
+        }
         if !self.focus.is_focused(window) {
             match key {
                 "escape" => {
@@ -262,7 +271,7 @@ impl Desktop {
                     self.move_focus(false, window, cx);
                     return;
                 }
-                "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" => {}
+                "f5" | "f6" | "f7" | "f8" | "f9" | "f10" => {}
                 "r" | "s" if event.keystroke.modifiers.control => {}
                 "l" if event.keystroke.modifiers.control && event.keystroke.modifiers.shift => {}
                 _ => return, // Enter/Space activate the focused control on key-up.
@@ -287,15 +296,6 @@ impl Desktop {
             "f8" => {
                 self.open_settings(cx);
             }
-            "f11" | "escape" if key == "f11" || window.is_fullscreen() => {
-                window.toggle_fullscreen();
-                window.focus(&self.focus, cx);
-                cx.notify();
-            }
-            "escape" if self.game_view => {
-                self.game_view = false;
-                cx.notify();
-            }
             "r" if event.keystroke.modifiers.control => self.command(Command::Reset, cx),
             "s" if modifiers.control && modifiers.shift => self.command(Command::QuickSave, cx),
             "s" if modifiers.control => self.command(Command::SaveState, cx),
@@ -303,15 +303,20 @@ impl Desktop {
             _ => {}
         }
     }
+    pub(super) fn toggle_fullscreen(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.toggle_fullscreen();
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_fullscreen() {
+            self.toggle_fullscreen(window, cx);
+            return;
+        }
         self.snapshot_confirmation = None;
         self.stop_rewind(cx);
-        if window.is_fullscreen() {
-            window.toggle_fullscreen();
-            self.game_view = false;
-        } else {
-            self.game_view = !self.game_view;
-        }
+        self.game_view = !self.game_view;
         window.focus(&self.focus, cx);
         cx.notify();
     }

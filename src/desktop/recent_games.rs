@@ -304,7 +304,16 @@ impl Desktop {
                 return;
             }
         }
-        self.load_selected_disc(path, fast_boot, cx);
+        if self.validate_disc_bios(fast_boot, cx) {
+            self.command(
+                Command::ReopenDisc {
+                    path,
+                    bios: self.bios.clone(),
+                    fast_boot,
+                },
+                cx,
+            );
+        }
     }
 
     fn remove_missing_recent(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
@@ -322,7 +331,7 @@ impl Desktop {
         fast_boot: bool,
         cx: &mut Context<Self>,
     ) {
-        if (!fast_boot || self.bios.is_some()) && !self.validate_current_bios(cx) {
+        if !self.validate_disc_bios(fast_boot, cx) {
             return;
         }
         self.command(
@@ -335,18 +344,22 @@ impl Desktop {
         );
     }
 
+    pub(super) fn validate_disc_bios(&mut self, fast_boot: bool, cx: &mut Context<Self>) -> bool {
+        (fast_boot && self.bios.is_none()) || self.validate_current_bios(cx)
+    }
+
     pub(super) fn receive_media_selection(&mut self, snapshot: &Snapshot, cx: &mut Context<Self>) {
         if snapshot.media_revision == self.snapshot.media_revision {
             return;
         }
-        if self.page == WorkspacePage::Console
-            && !self.graphics.open
-            && matches!(
-                snapshot.media_selection,
-                Some(SelectedMedia::Demo | SelectedMedia::Disc | SelectedMedia::Exe)
-            )
-        {
-            self.game_view = true;
+        if self.page == WorkspacePage::Console && !self.graphics.open && !self.game_view {
+            match snapshot.media_selection {
+                Some(SelectedMedia::ReopenedDisc) => self.page = WorkspacePage::Game,
+                Some(SelectedMedia::Demo | SelectedMedia::Disc | SelectedMedia::Exe) => {
+                    self.game_view = true;
+                }
+                Some(SelectedMedia::Bios) | None => {}
+            }
         }
         match snapshot.media_selection {
             Some(SelectedMedia::Bios) => {
@@ -359,7 +372,7 @@ impl Desktop {
                     }
                 }
             }
-            Some(SelectedMedia::Disc) => {
+            Some(SelectedMedia::Disc | SelectedMedia::ReopenedDisc) => {
                 if let Some(path) = &snapshot.disc_path {
                     match self
                         .preferences

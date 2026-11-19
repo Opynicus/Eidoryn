@@ -5,12 +5,13 @@ use eidoryn_psx::{
     video_filter::{CrtFilter, OverlayKey},
 };
 use gpui::{
-    Bounds, Context, Corners, IntoElement, RenderImage, Window, canvas, point, prelude::*, px, size,
+    Bounds, Context, Corners, IntoElement, Pixels, RenderImage, Window, canvas, point, prelude::*,
+    px, size,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 pub(super) struct VideoImage {
-    image: Arc<RenderImage>,
+    pub(super) image: Arc<RenderImage>,
     pub(super) dirty: bool,
 }
 
@@ -102,23 +103,14 @@ impl Desktop {
         let filter = self.crt.filter;
         let cache = Rc::clone(&self.crt.overlay);
         let lines = self.snapshot.native_dimensions.1;
-        // PS1 modes have different pixel aspect ratios, but all target a 4:3 TV.
-        // Stretching by the raw 256/320/512/640-wide framebuffer ratio distorts games.
-        let aspect = 4.0 / 3.0;
         canvas(
             |_, _, _| (),
             move |bounds, (), window, _| {
                 let Some(image) = image else {
                     return;
                 };
-                let width = bounds.size.width.min(bounds.size.height * aspect);
-                let height = width / aspect;
-                let origin = bounds.origin
-                    + point(
-                        (bounds.size.width - width) / 2.0,
-                        (bounds.size.height - height) / 2.0,
-                    );
-                let bounds = Bounds::new(origin, size(width, height));
+                let bounds = video_bounds(bounds);
+                let gpui::Size { width, height } = bounds.size;
                 let corners = Corners::all(if filter == CrtFilter::Off {
                     px(0.0)
                 } else {
@@ -165,6 +157,19 @@ impl Desktop {
         )
         .size_full()
     }
+}
+
+/// Fit the guest's 4:3 TV image into the available space in logical pixels.
+pub(super) fn video_bounds(viewport: Bounds<Pixels>) -> Bounds<Pixels> {
+    let aspect = 4.0 / 3.0;
+    let width = viewport.size.width.min(viewport.size.height * aspect);
+    let height = width / aspect;
+    let origin = viewport.origin
+        + point(
+            (viewport.size.width - width) / 2.0,
+            (viewport.size.height - height) / 2.0,
+        );
+    Bounds::new(origin, size(width, height))
 }
 
 pub(super) fn crt_label(language: eidoryn_psx::i18n::Language, filter: CrtFilter) -> &'static str {

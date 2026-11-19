@@ -35,6 +35,7 @@ pub enum SelectedMedia {
     Bios,
     Exe,
     Disc,
+    ReopenedDisc,
     Demo,
 }
 

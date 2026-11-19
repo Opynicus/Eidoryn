@@ -96,13 +96,15 @@ Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are 
 
 1. Select **Choose BIOS** and load your own 512 KiB BIOS file.
 2. Select **Open disc image** and load an ISO, CUE, or CHD file. For a multi-track BIN image, select the `.cue` that references all tracks.
-3. Select **Run**. Press **F11** to enter or leave fullscreen.
+3. Select **Run** to start the game.
+
+Select **Game view** in the sidebar for the picture and playback controls. From the console preview or Game view, choose **Enlarge in window** or press **F6** to show just the picture, centered at 4:3 and sized to fit the current window. **F11** switches to system fullscreen, where **F12** shows or hides the controls. **Esc** returns to the previous view. If you entered fullscreen from the enlarged picture, press **Esc** twice to return to the workspace page you started from.
 
 CHD support covers standalone, single-session CD-ROM images. Images requiring a parent CHD and GD-ROM images are not supported.
 
 Choosing a BIOS on the console sets the firmware for the next disc you open. The current game continues playing while the selected file is checked. Open **Full paths and default BIOS** and select **Set as default** to use it automatically on the next launch. **Clear default BIOS** removes that setting without deleting the BIOS file or changing the current session's selection. Startup and disc opening check that the selected BIOS is still available; a missing default is removed from the configuration and reported so you can choose another file. An unreadable or invalid BIOS is reported without discarding the saved path.
 
-The home page keeps the ten most recently opened disc images, newest first. Select a recent game to open it with the current BIOS without returning to the file picker; each entry remembers whether it used homebrew fast boot. **Clear recent games** removes only the history. Startup selects the default BIOS but does not automatically launch a recent game. Explicit command-line BIOS choices apply to that session without replacing the saved default.
+The home page keeps the ten most recently opened disc images, newest first. Select a recent game to reopen it with the current BIOS and its saved fast-boot setting. When the disc loads, the workspace switches to **Game view**. **Clear recent games** removes only the history. Startup selects the default BIOS but does not automatically launch a recent game. Explicit command-line BIOS choices apply to that session without replacing the saved default.
 
 You can also start from the command line:
 
@@ -163,8 +165,9 @@ Open **Settings (F8) → Controller** to enable turbo for individual action or s
 | Shortcut | Action |
 | --- | --- |
 | `F5` | Run / pause |
-| `F6` / `F7` / `F8` | Toggle game view / CRT filter / graphics settings |
-| `F11` / `Esc` | Toggle fullscreen / exit fullscreen |
+| `F6` | Toggle the picture-only view in the current window |
+| `F7` / `F8` | Cycle CRT filter / open graphics settings |
+| `F11` / `Esc` | Toggle fullscreen / return to the previous view |
 | `F12` | Show or hide fullscreen controls |
 | `F9` / `F10` | Run one slice / step one instruction |
 | `Ctrl+R` | Reset the current session |
