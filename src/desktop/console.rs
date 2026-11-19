@@ -1,5 +1,5 @@
 use super::{
-    Desktop, WorkspacePage,
+    Desktop,
     components::{
         action, button, card, ghost_button, ghost_icon_button, heading, icon_button, label,
         page_heading,
@@ -325,19 +325,7 @@ impl Desktop {
                     .gap_2()
                     .child(self.play_button(cx))
                     .child(self.quick_state_controls(cx))
-                    .child(
-                        ghost_button(
-                            &self.fonts,
-                            p,
-                            "manage-states",
-                            self.tr(Text::ManageSnapshots),
-                            None,
-                        )
-                        .debug_selector(|| "manage-states".into())
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.show_page(WorkspacePage::SaveStates, window, cx);
-                        })),
-                    ),
+                    .child(self.snapshot_menu_button(cx)),
             )
             .child(
                 div()

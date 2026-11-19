@@ -2,6 +2,8 @@ use super::{fonts::Fonts, icons::icon};
 use eidoryn_psx::theme::Palette;
 use gpui::{SharedString, div, prelude::*, px, rgb};
 
+pub(super) const ACTION_HEIGHT: gpui::Pixels = px(36.);
+
 pub(super) fn button(
     fonts: &Fonts,
     p: &Palette,
@@ -25,7 +27,7 @@ pub(super) fn action(
     } else {
         (p.button_surface(), p.tonal_hover)
     };
-    action_content(fonts, p, id, text, symbol, primary)
+    with_label(action_content(fonts, p, id, symbol, primary), p, text)
         .bg(rgb(background))
         .hover(move |style| style.bg(rgb(hover)))
 }
@@ -37,14 +39,44 @@ pub(super) fn ghost_button(
     text: impl Into<SharedString>,
     symbol: Option<&'static str>,
 ) -> gpui::Stateful<gpui::Div> {
-    ghost(action_content(fonts, p, id, text, symbol, false), p)
+    with_label(
+        ghost(action_content(fonts, p, id, symbol, false), p),
+        p,
+        text,
+    )
+}
+
+pub(super) fn dropdown_button(
+    fonts: &Fonts,
+    p: &Palette,
+    id: impl Into<gpui::ElementId>,
+    text: &'static str,
+    expanded: bool,
+) -> gpui::Stateful<gpui::Div> {
+    ghost(action_content(fonts, p, id, None, false), p)
+        .child(text)
+        .child(label(p, if expanded { "▴" } else { "▾" }))
+}
+
+fn with_label(
+    button: gpui::Stateful<gpui::Div>,
+    p: &Palette,
+    text: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    let text = text.into();
+    let hint = text.clone();
+    let palette = *p;
+    button
+        .when(!hint.is_empty(), |button| {
+            button.tooltip(move |_, cx| tooltip(palette, hint.clone(), cx))
+        })
+        .child(text)
 }
 
 fn action_content(
     fonts: &Fonts,
     p: &Palette,
     id: impl Into<gpui::ElementId>,
-    text: impl Into<SharedString>,
     symbol: Option<&'static str>,
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
@@ -53,14 +85,12 @@ fn action_content(
     } else {
         (p.text, p.tonal_pressed)
     };
-    let text = text.into();
-    let tooltip_text = text.clone();
     let palette = *p;
     div()
         .id(id)
         .tab_index(0)
         .px_3()
-        .h(px(36.))
+        .h(ACTION_HEIGHT)
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -79,13 +109,9 @@ fn action_content(
                 palette.primary
             }))
         })
-        .when(!tooltip_text.is_empty(), |button| {
-            button.tooltip(move |_, cx| tooltip(palette, tooltip_text.clone(), cx))
-        })
         .text_color(rgb(foreground))
         .active(move |style| style.bg(rgb(pressed)))
         .children(symbol.map(|symbol| icon(symbol, foreground)))
-        .child(text)
 }
 
 pub(super) fn icon_button(

@@ -161,6 +161,9 @@ fn open_window(
                                 window,
                                 |view: &mut Desktop, window, cx| {
                                     if !window.is_window_active() {
+                                        if view.snapshot_menu.take().is_some() {
+                                            cx.notify();
+                                        }
                                         view.stop_input(cx);
                                     }
                                 },
@@ -216,6 +219,7 @@ fn open_window(
                             closed_settings_groups: std::collections::HashSet::new(),
                             pressed_buttons: 0,
                             selected_save_state: None,
+                            snapshot_menu: None,
                             snapshot_confirmation: None,
                             renaming_state: None,
                             rewind_sources: 0,
@@ -273,6 +277,7 @@ struct Desktop {
     page: WorkspacePage,
     pressed_buttons: u16,
     selected_save_state: Option<std::path::PathBuf>,
+    snapshot_menu: Option<save_states::SnapshotMenu>,
     snapshot_confirmation: Option<save_states::SnapshotConfirmation>,
     renaming_state: Option<save_states::RenameState>,
     rewind_sources: u8,

@@ -1,6 +1,6 @@
 use crate::desktop::{
     Desktop, WorkspacePage,
-    tests::{desktop, press_keys},
+    tests::{click_control, desktop, press_keys},
 };
 use eidoryn_psx::systems::ps1::{
     card_file::CardStore,
@@ -32,6 +32,7 @@ impl Drop for SnapshotFiles {
 
 fn history_window(
     cx: &mut TestAppContext,
+    additional_registers: impl IntoIterator<Item = u32>,
 ) -> (Entity<Desktop>, &mut VisualTestContext, SnapshotFiles) {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let title = format!(
@@ -47,6 +48,10 @@ fn history_window(
     let original = store.save(&saved, &PadInput::default()).unwrap();
     saved.cpu.registers[5] = 29;
     let other = store.save(&saved, &PadInput::default()).unwrap();
+    for register in additional_registers {
+        saved.cpu.registers[5] = register;
+        store.save(&saved, &PadInput::default()).unwrap();
+    }
     let selected = original.clone();
     let (view, cx) = cx.add_window_view(move |window, cx| {
         let mut view = desktop(window, cx);
@@ -102,8 +107,101 @@ fn receive_until(
 }
 
 #[gpui::test]
+fn game_snapshot_menu_loads_the_three_newest_checkpoints_in_place(cx: &mut TestAppContext) {
+    let (view, cx, _files) = history_window(cx, [41, 53]);
+    press_keys(cx, "f6");
+    for (selector, register, width, height, opens_above) in [
+        ("recent-snapshot-0", 53, 1568., 980., true),
+        ("recent-snapshot-1", 41, 980., 1400., false),
+        ("recent-snapshot-2", 29, 1568., 980., true),
+    ] {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
+        let stage = cx.debug_bounds("display-stage").unwrap();
+        click_control(cx, "manage-states");
+        assert_eq!(cx.debug_bounds("display-stage"), Some(stage));
+        let menu = cx.debug_bounds("snapshot-menu").unwrap();
+        let trigger = cx.debug_bounds("manage-states").unwrap();
+        let gap = if opens_above {
+            trigger.top() - menu.bottom()
+        } else {
+            menu.top() - trigger.bottom()
+        };
+        assert!(
+            (px(3.)..=px(5.)).contains(&gap),
+            "menu {menu:?} should sit just above or below trigger {trigger:?}"
+        );
+        assert!(menu.left() >= px(0.) && menu.right() <= px(width));
+        assert!(menu.top() >= px(0.) && menu.bottom() <= px(height));
+        let mut bottom = menu.top();
+        for row in [
+            "recent-snapshot-0",
+            "recent-snapshot-1",
+            "recent-snapshot-2",
+            "manage-all-snapshots",
+        ] {
+            let bounds = cx.debug_bounds(row).expect("visible snapshot menu item");
+            assert!(bounds.top() >= bottom && bounds.bottom() <= menu.bottom());
+            bottom = bounds.bottom();
+        }
+        assert!(cx.debug_bounds("recent-snapshot-3").is_none());
+        if selector == "recent-snapshot-1" {
+            press_keys(cx, "down enter");
+        } else {
+            click_control(cx, selector);
+        }
+        receive_until(&view, cx, |view| view.snapshot.cpu.registers[5] == register);
+        assert!(cx.debug_bounds("snapshot-menu").is_none());
+        assert!(cx.debug_bounds("game-controls").is_some());
+        assert!(cx.update(|window, _| window.is_fullscreen()));
+        assert!(!view.read_with(cx, |view, _| view.snapshot.running));
+    }
+}
+
+#[gpui::test]
+fn game_snapshot_menu_can_be_dismissed_and_manages_an_empty_history(cx: &mut TestAppContext) {
+    let (view, cx, files) = history_window(cx, []);
+    click_control(cx, "nav-game");
+    assert_eq!(view.read_with(cx, |view, _| view.page), WorkspacePage::Game);
+    click_control(cx, "manage-states");
+    assert!(cx.debug_bounds("recent-snapshot-1").is_some());
+    assert!(cx.debug_bounds("recent-snapshot-2").is_none());
+    click_control(cx, "manage-states");
+    assert!(cx.debug_bounds("snapshot-menu").is_none());
+    assert!(cx.debug_bounds("game-controls").is_some(), "after toggle");
+    click_control(cx, "manage-states");
+    cx.simulate_keystrokes("z");
+    assert_eq!(view.read_with(cx, |view, _| view.pressed_buttons), 0);
+    press_keys(cx, "escape");
+    assert!(cx.debug_bounds("snapshot-menu").is_none());
+    assert!(cx.debug_bounds("game-controls").is_some());
+    press_keys(cx, "enter");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("snapshot-menu").is_some());
+    let outside = cx.debug_bounds("display-stage").unwrap().center();
+    cx.simulate_click(outside, Modifiers::none());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("snapshot-menu").is_none());
+    assert!(
+        cx.debug_bounds("game-controls").is_some(),
+        "after outside click"
+    );
+
+    fs::remove_file(&files.original).unwrap();
+    fs::remove_file(&files.other).unwrap();
+    click_control(cx, "manage-states");
+    receive_until(&view, cx, |view| view.snapshot.save_states.is_empty());
+    assert!(cx.debug_bounds("snapshot-menu-empty").is_some());
+    assert!(cx.debug_bounds("recent-snapshot-0").is_none());
+    press_keys(cx, "enter");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("snapshot-menu").is_none());
+    assert!(cx.debug_bounds("save-states-page").is_some());
+}
+
+#[gpui::test]
 fn delete_removes_only_the_confirmed_history_row(cx: &mut TestAppContext) {
-    let (view, cx, files) = history_window(cx);
+    let (view, cx, files) = history_window(cx, []);
     let quick = files.original.parent().unwrap().join("quick/slot.ps1state");
     press_keys(cx, "ctrl-shift-s");
     receive_until(&view, cx, |view| {
@@ -146,7 +244,7 @@ fn delete_removes_only_the_confirmed_history_row(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn delete_reports_a_snapshot_changed_during_confirmation(cx: &mut TestAppContext) {
-    let (view, cx, files) = history_window(cx);
+    let (view, cx, files) = history_window(cx, []);
     let delete = cx.debug_bounds("delete-snapshot-1").unwrap().center();
     cx.simulate_click(delete, Modifiers::none());
     assert!(cx.debug_bounds("confirm-delete-snapshot").is_some());
@@ -170,7 +268,7 @@ fn delete_reports_a_snapshot_changed_during_confirmation(cx: &mut TestAppContext
 
 #[gpui::test]
 fn quick_controls_reuse_one_slot_without_using_the_snapshot_selection(cx: &mut TestAppContext) {
-    let (view, cx, files) = history_window(cx);
+    let (view, cx, files) = history_window(cx, []);
     let quick = files.original.parent().unwrap().join("quick/slot.ps1state");
     for (index, path) in [&files.original, &files.other].into_iter().enumerate() {
         let register = if index == 0 { 17 } else { 29 };
@@ -240,7 +338,7 @@ fn quick_controls_reuse_one_slot_without_using_the_snapshot_selection(cx: &mut T
 
 #[gpui::test]
 fn quick_shortcuts_are_blocked_by_rename_and_settings(cx: &mut TestAppContext) {
-    let (view, cx, files) = history_window(cx);
+    let (view, cx, files) = history_window(cx, []);
     let quick = files.original.parent().unwrap().join("quick/slot.ps1state");
     for mode in [SnapshotMode::Debug, SnapshotMode::Display] {
         if mode == SnapshotMode::Debug {
@@ -272,7 +370,7 @@ fn quick_shortcuts_are_blocked_by_rename_and_settings(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rename_accepts_unicode_and_keeps_the_renamed_snapshot_selected(cx: &mut TestAppContext) {
-    let (view, cx, files) = history_window(cx);
+    let (view, cx, files) = history_window(cx, []);
     open_rename(cx);
     let os = cx.read(|cx| cx.platform_info().os);
     for key in ["tab", "shift-tab"] {
@@ -339,7 +437,7 @@ fn rename_accepts_unicode_and_keeps_the_renamed_snapshot_selected(cx: &mut TestA
 
 #[gpui::test]
 fn cancel_and_conflicting_names_preserve_files_and_game_input(cx: &mut TestAppContext) {
-    let (view, cx, files) = history_window(cx);
+    let (view, cx, files) = history_window(cx, []);
     let original_bytes = fs::read(&files.original).unwrap();
     let other_bytes = fs::read(&files.other).unwrap();
     open_rename(cx);

@@ -352,6 +352,7 @@ impl Desktop {
         if snapshot.media_revision == self.snapshot.media_revision {
             return;
         }
+        self.snapshot_menu = None;
         if self.page == WorkspacePage::Console
             && !self.graphics.open
             && !self.presentation.shows_video()
