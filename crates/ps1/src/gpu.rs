@@ -19,20 +19,54 @@ use renderer::{FrameReadback, Renderer};
 pub use renderer_engine::{RendererAvailability, hardware_backends};
 pub(crate) use state::GpuV1;
 
+/// Internal sampling resolution of the hardware rasterizer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub enum RenderScale {
+    #[default]
+    #[serde(rename = "1x")]
+    Native,
+    #[serde(rename = "2x")]
+    X2,
+    #[serde(rename = "4x")]
+    X4,
+}
+
+impl RenderScale {
+    /// Samples along each axis of a native VRAM pixel.
+    pub const fn factor(self) -> usize {
+        match self {
+            Self::Native => 1,
+            Self::X2 => 2,
+            Self::X4 => 4,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DisplaySettings {
     dimensions: (usize, usize),
     start: (usize, usize),
     disabled: bool,
     rgb24: bool,
+    scale: RenderScale,
+}
+
+impl DisplaySettings {
+    fn output_dimensions(self) -> (usize, usize) {
+        let factor = self.scale.factor();
+        (self.dimensions.0 * factor, self.dimensions.1 * factor)
+    }
 }
 
 pub const VRAM_WIDTH: usize = 1024;
 pub const VRAM_HEIGHT: usize = 512;
-/// Immutable pixels from the end of the visible field, before the guest's
-/// VBlank handler can swap or clear its drawing buffers.
+/// An immutable RGB scanout with its guest and presentation dimensions.
+/// Completed fields capture the display before the guest's VBlank handler.
 #[derive(Clone)]
 pub struct DisplayFrame {
+    /// Guest scanout dimensions at the time of capture.
+    pub native_dimensions: (usize, usize),
+    /// Pixel dimensions of the packed RGB image.
     pub dimensions: (usize, usize),
     pub rgb: Arc<[u8]>,
 }
@@ -295,7 +329,7 @@ impl Gpu {
     /// Advance scanout and the root counters, returning I_STAT interrupt edges.
     /// The interpreter supplies approximate CPU clocks. Integer scanlines model
     /// non-interlaced NTSC/PAL; interlace half-lines and GPU busy timing remain TODO.
-    /// Reference: https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gpu-timings
+    /// Reference: <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gpu-timings>
     #[allow(clippy::similar_names)] // Hardware names distinguish horizontal and vertical blank.
     #[inline]
     pub fn tick(&mut self, clocks: u32, timers: &mut Timers) -> u32 {
@@ -438,16 +472,30 @@ impl Gpu {
         (width, height)
     }
 
+    /// Read the current scanout at the native dimensions returned by `dimensions`.
     pub fn display_rgb(&self) -> Vec<u8> {
-        self.renderer.display(self.display_settings())
+        self.renderer
+            .display(self.display_settings(RenderScale::Native))
     }
 
-    fn display_settings(&self) -> DisplaySettings {
+    /// Capture the current presentation image, including the hardware render scale.
+    pub fn live_frame(&self) -> DisplayFrame {
+        let display = self.display_settings(self.render_scale());
+        DisplayFrame {
+            native_dimensions: display.dimensions,
+            dimensions: display.output_dimensions(),
+            rgb: self.renderer.display(display).into(),
+        }
+    }
+
+    fn display_settings(&self, scale: RenderScale) -> DisplaySettings {
+        let rgb24 = self.display_mode & 0x10 != 0;
         DisplaySettings {
             dimensions: self.dimensions(),
             start: self.display_start,
             disabled: self.display_disabled,
-            rgb24: self.display_mode & 0x10 != 0,
+            rgb24,
+            scale: if rgb24 { RenderScale::Native } else { scale },
         }
     }
 
@@ -471,7 +519,21 @@ impl Gpu {
         self.renderer.error()
     }
     pub fn set_renderer(&mut self, mode: RendererMode) -> std::io::Result<()> {
-        self.renderer.set_mode(mode)
+        self.set_renderer_with_scale(mode, self.render_scale())
+    }
+
+    /// Effective internal resolution. Software rendering uses native resolution.
+    pub fn render_scale(&self) -> RenderScale {
+        self.renderer.scale()
+    }
+
+    /// Switch renderer and internal resolution, preserving the guest VRAM contents.
+    pub fn set_renderer_with_scale(
+        &mut self,
+        mode: RendererMode,
+        scale: RenderScale,
+    ) -> std::io::Result<()> {
+        self.renderer.set_mode(mode, scale)
     }
     pub fn synchronize_renderer(&self) {
         self.renderer.synchronize();
@@ -492,7 +554,10 @@ impl Gpu {
     /// Capture current VRAM for a manual debugger step without advancing video time.
     /// Running frontends should use the field latched by normal GPU timing instead.
     pub fn latch_display(&mut self) {
-        self.completed_frame = Some(self.renderer.capture(self.display_settings()));
+        self.completed_frame = Some(
+            self.renderer
+                .capture(self.display_settings(self.render_scale())),
+        );
     }
 
     pub fn gp1(&mut self, word: u32) -> Result<(), EmuError> {

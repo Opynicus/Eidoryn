@@ -3,7 +3,7 @@ use crate::systems::ps1::{
     card_file::CardStatus,
     cpu::{Cpu, disassemble},
     cpu_engine::{CpuMode, CpuStats},
-    gpu::RendererMode,
+    gpu::{RenderScale, RendererMode},
     machine::Machine,
     state_file::SaveStateInfo,
 };
@@ -76,13 +76,17 @@ pub struct Snapshot {
     pub close_ready: bool,
     pub gpu_status: u32,
     pub renderer: RendererMode,
+    pub render_scale: RenderScale,
     /// Completed renderer-selection requests, including rejected requests.
     pub renderer_revision: u64,
     pub renderer_device: String,
     pub gpu_commands: u64,
     pub slices: u64,
     pub rgb: Arc<[u8]>,
+    /// Pixel dimensions of the RGB image delivered to the host.
     pub dimensions: (usize, usize),
+    /// Guest display mode at the time this field was captured.
+    pub native_dimensions: (usize, usize),
     pub disassembly: Vec<(u32, Option<u32>, String)>,
     pub slices_per_second: f64,
     pub video_frames: u64,
@@ -118,10 +122,10 @@ impl Snapshot {
         mode: SnapshotMode,
     ) -> Self {
         let gpu = &machine.bus.gpu;
-        let (dimensions, rgb) = gpu.completed_frame().map_or_else(
-            || (gpu.dimensions(), gpu.display_rgb().into()),
-            |frame| (frame.dimensions, Arc::clone(&frame.rgb)),
-        );
+        let frame = gpu
+            .completed_frame()
+            .cloned()
+            .unwrap_or_else(|| gpu.live_frame());
         let disassembly = (0..if mode == SnapshotMode::Debug { 9 } else { 0 })
             .map(|n| {
                 let pc = machine.cpu.pc.wrapping_add(n * 4);
@@ -177,12 +181,14 @@ impl Snapshot {
             close_ready: false,
             gpu_status: machine.bus.gpu.status(),
             renderer: machine.bus.gpu.renderer_mode(),
+            render_scale: gpu.render_scale(),
             renderer_revision: 0,
             renderer_device: machine.bus.gpu.renderer_device(),
             gpu_commands: machine.bus.gpu.commands,
             slices: machine.slices,
-            rgb,
-            dimensions,
+            rgb: frame.rgb,
+            dimensions: frame.dimensions,
+            native_dimensions: frame.native_dimensions,
             disassembly,
             slices_per_second: rate,
             video_frames: machine.bus.gpu.frames,

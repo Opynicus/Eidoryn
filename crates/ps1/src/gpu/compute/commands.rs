@@ -322,9 +322,9 @@ fn triangle(
     if !prim.bounds(bounds, Some(state)) {
         return;
     }
-    // Inside a <=1023*511 box, doubled-coordinate barycentric weights sum to
-    // <=2,091,012. Multiplying by any 8-bit attribute stays below i32::MAX.
-    prim.0[24] = area.unsigned_abs() * 4;
+    // The shader scales the sample displacement only. At 4x the weights sum
+    // to at most 8 * 1023 * 511, even for a full-size, clipped triangle.
+    prim.0[24] = area.unsigned_abs();
     for (n, v) in vertices.into_iter().enumerate() {
         prim.vertex(n, v);
     }

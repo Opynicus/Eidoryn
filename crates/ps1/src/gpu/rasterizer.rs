@@ -131,7 +131,12 @@ impl Rasterizer {
         }
         Ok(())
     }
-    #[cfg(feature = "vulkan")]
+    #[cfg(any(
+        feature = "dx12",
+        feature = "vulkan",
+        feature = "opengl",
+        feature = "metal"
+    ))]
     pub(super) fn from_vram(vram: Vec<u16>) -> Self {
         Self {
             vram,

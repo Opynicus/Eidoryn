@@ -1,5 +1,5 @@
 //! Hardware interpolation ROM coefficients, transcribed from the PSX-SPX register reference.
-//! https://psx-spx.consoledev.net/soundprocessingunitspu/#4-point-gaussian-interpolation
+//! <https://psx-spx.consoledev.net/soundprocessingunitspu/#4-point-gaussian-interpolation>
 pub(super) const GAUSS: [i32; 512] = [
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0x0000, 0x0000, 0x0000, 0x0000,
     0x0000, 0x0000, 0x0000, 0x0001, 0x0001, 0x0001, 0x0001, 0x0002, 0x0002, 0x0002, 0x0003, 0x0003,

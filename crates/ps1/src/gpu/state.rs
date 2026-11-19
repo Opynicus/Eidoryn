@@ -158,12 +158,43 @@ struct DisplayFrameV1 {
     rgb: Arc<[u8]>,
 }
 
-impl From<&DisplayFrame> for DisplayFrameV1 {
-    fn from(value: &DisplayFrame) -> Self {
-        Self {
-            dimensions: value.dimensions,
-            rgb: Arc::clone(&value.rgb),
+impl TryFrom<&DisplayFrame> for DisplayFrameV1 {
+    type Error = String;
+
+    fn try_from(frame: &DisplayFrame) -> Result<Self, Self::Error> {
+        let (width, height) = frame.native_dimensions;
+        if ![256, 320, 368, 512, 640].contains(&width) || ![240, 480].contains(&height) {
+            return Err("Invalid native display dimensions".into());
         }
+        let scale = frame.dimensions.0 / width;
+        if ![1, 2, 4].contains(&scale)
+            || frame.dimensions != (width * scale, height * scale)
+            || frame.rgb.len() != width * height * scale * scale * 3
+        {
+            return Err("Invalid completed display frame".into());
+        }
+        // V1 stores a native-sized preview of the latched field. Guest VRAM is
+        // saved separately and always comes from the exact native rasterizer.
+        let rgb = if scale == 1 {
+            Arc::clone(&frame.rgb)
+        } else {
+            let mut pixels = Vec::with_capacity(width * height * 3);
+            for row in frame
+                .rgb
+                .chunks_exact(frame.dimensions.0 * 3)
+                .skip(scale / 2)
+                .step_by(scale)
+            {
+                for pixel in row.as_chunks::<3>().0.iter().skip(scale / 2).step_by(scale) {
+                    pixels.extend_from_slice(pixel);
+                }
+            }
+            pixels.into()
+        };
+        Ok(Self {
+            dimensions: frame.native_dimensions,
+            rgb,
+        })
     }
 }
 
@@ -179,6 +210,7 @@ impl TryFrom<DisplayFrameV1> for DisplayFrame {
             return Err("Invalid completed display frame".into());
         }
         Ok(Self {
+            native_dimensions: value.dimensions,
             dimensions: value.dimensions,
             rgb: value.rgb,
         })
@@ -238,7 +270,10 @@ impl TryFrom<&Gpu> for GpuV1 {
             commands: value.commands,
             revision: value.revision,
             frames: value.frames,
-            completed_frame: value.completed_frame().map(Into::into),
+            completed_frame: value
+                .completed_frame()
+                .map(DisplayFrameV1::try_from)
+                .transpose()?,
             irq: value.irq,
             packet: value.packet.clone(),
             packet_words: value.packet_words,
@@ -360,6 +395,26 @@ mod tests {
     }
 
     #[test]
+    fn enhanced_field_saves_a_native_sized_v1_preview() {
+        let (width, height) = (256, 240);
+        let scale = 2;
+        let mut rgb = vec![0; width * height * scale * scale * 3];
+        let last_pixel = rgb.len() - 3;
+        rgb[last_pixel..].copy_from_slice(&[8, 16, 24]);
+        let frame = DisplayFrame {
+            dimensions: (width * scale, height * scale),
+            native_dimensions: (width, height),
+            rgb: rgb.into(),
+        };
+        let bytes = bincode::serialize(&frame).unwrap();
+        let restored: DisplayFrame = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(restored.native_dimensions, frame.native_dimensions);
+        assert_eq!(restored.dimensions, frame.native_dimensions);
+        assert_eq!(restored.rgb.len(), width * height * 3);
+        assert_eq!(&restored.rgb[restored.rgb.len() - 3..], &[8, 16, 24]);
+    }
+
+    #[test]
     fn direct_deserialization_checks_partial_packet_and_completed_frame() {
         let mut gpu = Gpu::default();
         gpu.gp0(0xa000_0000).unwrap();
@@ -367,7 +422,7 @@ mod tests {
         let bytes = bincode::serialize(&gpu).unwrap();
         assert!(bincode::deserialize::<Gpu>(&bytes).is_err());
 
-        let frame = DisplayFrame {
+        let frame = DisplayFrameV1 {
             dimensions: (320, 240),
             rgb: Arc::from([0; 3]),
         };

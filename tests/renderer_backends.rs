@@ -32,7 +32,7 @@ fn unsupported_backends_preserve_current_software_modes() {
             fill(&mut gpu, 0x0000_00ff);
             let before = gpu.vram();
             let error = gpu.set_renderer(backend).unwrap_err();
-            assert!(!error.to_string().is_empty());
+            assert_ne!(error.to_string(), "");
             assert_eq!(gpu.renderer_mode(), mode);
             assert_eq!(gpu.vram(), before);
             assert_eq!(gpu.renderer_error(), None);
@@ -89,7 +89,7 @@ fn detected_hardware_backends_can_actually_draw() {
         assert_ne!(status.mode, RendererMode::Hardware);
         if let Some(device) = status.device {
             assert_eq!(status.reason, None);
-            assert!(!device.is_empty());
+            assert_ne!(device, "");
             let mut gpu = software.clone();
             gpu.set_renderer(status.mode).unwrap();
             assert_eq!(gpu.renderer_mode(), status.mode);

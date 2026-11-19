@@ -1,5 +1,5 @@
 //! ISO/BIN/CUE/CHD image and bounded ISO-9660 reader. No emulator dependencies.
-//! Layout reference: https://psx-spx.consoledev.net/cdromformat/
+//! Layout reference: <https://psx-spx.consoledev.net/cdromformat/>
 use crate::{EmuError, bus::RAM_SIZE};
 use sha2::{Digest, Sha256};
 use std::{

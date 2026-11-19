@@ -141,7 +141,7 @@ mod tests {
         for &language in Language::ALL {
             assert_eq!(language.id().parse(), Ok(language));
             assert_eq!(Language::from_locale(language.id()), language);
-            assert!(!language.native_name().trim().is_empty());
+            assert_ne!(language.native_name().trim(), "");
             for &key in Text::ALL {
                 assert!(
                     !language.text(key).trim().is_empty(),

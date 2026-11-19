@@ -80,11 +80,10 @@ fn load_at(
     if let Some(id) = &options.theme {
         themes.select(id)?;
     }
-    if let Err(error) = machine
-        .bus
-        .gpu
-        .set_renderer(options.renderer.unwrap_or_else(|| preferences.renderer()))
-    {
+    if let Err(error) = machine.bus.gpu.set_renderer_with_scale(
+        options.renderer.unwrap_or_else(|| preferences.renderer()),
+        preferences.render_scale,
+    ) {
         if options.renderer.is_some() {
             return Err(format!("Cannot start GPU renderer: {error}"));
         }

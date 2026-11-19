@@ -7,7 +7,7 @@ use super::{
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
-    gpu::RendererMode,
+    gpu::{RenderScale, RendererMode},
     input::PadInput,
     machine::{INSTRUCTIONS_PER_SLICE, Machine},
     media::{load_disc, load_path},
@@ -115,6 +115,7 @@ struct Worker {
     input: PadInput,
     initial: Machine,
     renderer: RendererMode,
+    render_scale: RenderScale,
     renderer_revision: u64,
     cpu_mode: CpuMode,
     running: bool,
@@ -162,6 +163,7 @@ impl Worker {
             snapshot_mode,
             initial: machine.clone(),
             renderer: machine.bus.gpu.renderer_mode(),
+            render_scale: machine.bus.gpu.render_scale(),
             renderer_revision: 0,
             cpu_mode: machine.cpu_mode(),
             states: StateStore::new(Path::new("saves"), &machine),
@@ -215,7 +217,11 @@ impl Worker {
             self.running = false;
             return false;
         }
-        if let Err(error) = machine.bus.gpu.set_renderer(self.renderer) {
+        if let Err(error) = machine
+            .bus
+            .gpu
+            .set_renderer_with_scale(self.renderer, self.render_scale)
+        {
             self.message = Some(format!("Cannot start GPU renderer: {error}"));
             self.running = false;
             return false;
@@ -249,10 +255,11 @@ impl Worker {
         self.reset_pacing();
     }
 
-    fn select_renderer(&mut self, mode: RendererMode) {
-        match self.machine.bus.gpu.set_renderer(mode) {
+    fn select_renderer(&mut self, mode: RendererMode, scale: RenderScale) {
+        match self.machine.bus.gpu.set_renderer_with_scale(mode, scale) {
             Ok(()) => {
                 self.renderer = mode;
+                self.render_scale = self.machine.bus.gpu.render_scale();
                 self.message = None;
             }
             Err(error) => {
@@ -360,7 +367,7 @@ impl Worker {
             machine
                 .bus
                 .gpu
-                .set_renderer(self.renderer)
+                .set_renderer_with_scale(self.renderer, self.render_scale)
                 .map_err(|e| format!("Cannot start GPU renderer: {e}"))?;
             Ok((machine, input))
         };
@@ -490,7 +497,10 @@ impl Worker {
             }
             _ => {}
         }
-        if matches!(command, Command::SetRenderer(_)) {
+        if matches!(
+            command,
+            Command::SetRenderer(_) | Command::SetRendererWithScale { .. }
+        ) {
             // Also acknowledge a request rejected by the card-flush guard below.
             self.renderer_revision = self.renderer_revision.wrapping_add(1);
         }
@@ -516,7 +526,8 @@ impl Worker {
                 self.update_input();
             }
             Command::SetCpuMode(mode) => self.select_cpu(mode),
-            Command::SetRenderer(mode) => self.select_renderer(mode),
+            Command::SetRenderer(mode) => self.select_renderer(mode, self.render_scale),
+            Command::SetRendererWithScale { mode, scale } => self.select_renderer(mode, scale),
             Command::Toggle => {
                 self.message = None;
                 self.running = !self.running;
@@ -702,6 +713,7 @@ impl Worker {
             self.rewind.available(self.machine.elapsed_cycles());
         if snapshot.rewinding {
             snapshot.renderer = self.renderer;
+            snapshot.render_scale = self.render_scale;
             snapshot.cpu_mode = self.cpu_mode;
         }
         if snapshot.message.is_none() {

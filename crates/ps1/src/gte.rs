@@ -1,5 +1,5 @@
 //! Independent integer GTE, derived from the hardware register/operation descriptions:
-//! https://psx-spx.consoledev.net/geometrytransformationenginegte/
+//! <https://psx-spx.consoledev.net/geometrytransformationenginegte/>
 //! Results are synchronous. Command busy times and register pipeline hazards are not modeled.
 
 #[derive(Clone, Debug, Default)]

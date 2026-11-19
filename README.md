@@ -76,6 +76,8 @@ Windows packages do not enable the Linux-only experimental JIT.
 
 Enable **Settings → Graphics / F8 → Hardware acceleration**, or pass `--renderer hardware` for automatic selection. The settings panel probes devices and shader initialization in the background; unavailable backends remain disabled with a reason. `--renderer dx12`, `vulkan`, `opengl`, or `metal` requests a specific backend. Windows prefers DirectX 12, Linux prefers Vulkan, and macOS prefers Metal; unavailable automatic candidates are tried in order. Explicit selections fail without silently changing to another API, preserving the active session.
 
+Under **Display options → Internal resolution**, select 1×, 2×, or 4× with hardware acceleration enabled. All three fit the game to the same 4:3 viewport. The desktop remembers your hardware resolution when you switch renderers.
+
 Use `./target/release/eidoryn.exe --list-renderers | Out-Host` in PowerShell to list detected backends and any unavailability reasons.
 
 The `hardware` build feature includes all four wgpu backends; individual `dx12`, `vulkan`, `opengl`, and `metal` features remain available. Backends also require platform and driver support. All share the integer compute rasterizer: drawing, texture lookup, blending and display conversion run on the GPU, then frames are read back for the desktop UI. Performance depends on the game and driver. wgpu 30 has no native DirectX 11 backend; older Windows GPUs can use OpenGL if compute support is available, or software rendering. Metal and non-Windows runtime behavior need validation on their respective platforms.

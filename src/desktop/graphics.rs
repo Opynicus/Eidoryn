@@ -6,7 +6,7 @@ use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
     systems::ps1::{
         cpu_engine::CpuMode,
-        gpu::{RendererAvailability, RendererMode, hardware_backends},
+        gpu::{RenderScale, RendererAvailability, RendererMode, hardware_backends},
         runner::{Command, Snapshot},
     },
     theme::Palette,
@@ -200,7 +200,24 @@ impl Desktop {
     }
 
     fn select_renderer(&mut self, mode: RendererMode, cx: &mut Context<Self>) {
-        match self.runner.send(Command::SetRenderer(mode)) {
+        let scale = if mode.is_hardware() {
+            self.preferences.render_scale
+        } else {
+            RenderScale::Native
+        };
+        self.select_renderer_with_scale(mode, scale, cx);
+    }
+
+    fn select_renderer_with_scale(
+        &mut self,
+        mode: RendererMode,
+        scale: RenderScale,
+        cx: &mut Context<Self>,
+    ) {
+        match self
+            .runner
+            .send(Command::SetRendererWithScale { mode, scale })
+        {
             Ok(()) => {
                 self.graphics.pending = Some(mode);
                 self.graphics.pending_revision = self.snapshot.renderer_revision;
@@ -259,6 +276,34 @@ impl Desktop {
         .on_click(cx.listener(|view, _, _, cx| view.toggle_clean_fullscreen(cx)))
     }
 
+    fn render_scale_choices(&self, ready: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let mode = self.snapshot.renderer;
+        let enabled = mode.is_hardware() && ready;
+        div().flex().gap_2().children(
+            [RenderScale::Native, RenderScale::X2, RenderScale::X4]
+                .into_iter()
+                .map(|scale| {
+                    button(
+                        &self.fonts,
+                        p,
+                        ("render-scale", scale.factor()),
+                        format!("{}×", scale.factor()),
+                        self.snapshot.render_scale == scale,
+                    )
+                    .when(!enabled, |button| button.opacity(0.45))
+                    .when(
+                        enabled && self.snapshot.render_scale != scale,
+                        |button| {
+                            button.on_click(cx.listener(move |view, _, _, cx| {
+                                view.select_renderer_with_scale(mode, scale, cx);
+                            }))
+                        },
+                    )
+                }),
+        )
+    }
+
     fn crt_choices(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let fonts = &self.fonts;
@@ -296,6 +341,8 @@ impl Desktop {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .child(label(p, self.tr(Text::InternalResolution)))
+                    .child(self.render_scale_choices(ready, cx))
                     .child(label(p, self.tr(Text::Crt)))
                     .child(self.crt_choices(cx))
                     .child(self.clean_fullscreen_control(cx))

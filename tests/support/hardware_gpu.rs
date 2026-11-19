@@ -1,7 +1,7 @@
 //! Shared pixel-accurate hardware tests for all wgpu backends.
 use super::HARDWARE_MODE;
 use eidoryn_psx::{
-    gpu::{Gpu, RendererMode},
+    gpu::{Gpu, RenderScale, RendererMode},
     timers::Timers,
 };
 
@@ -206,6 +206,49 @@ fn hardware_vblank_snapshot_precedes_buffer_clear_and_survives_reset_and_switch(
         gpu.set_renderer(mode).unwrap();
         assert_eq!(gpu.renderer_mode(), mode);
         assert_eq!(gpu.vram(), checkpoint.vram());
+    }
+}
+
+#[test]
+#[ignore = "requires a physical GPU with the selected backend"]
+fn scale_switch_preserves_guest_vram_and_latched_field_dimensions() {
+    let [mut serial, mut hardware] = pair();
+    for scale in [RenderScale::X2, RenderScale::X4, RenderScale::Native] {
+        hardware
+            .set_renderer_with_scale(HARDWARE_MODE, scale)
+            .unwrap();
+        assert_eq!(hardware.render_scale(), scale);
+        for gpu in [&mut serial, &mut hardware] {
+            gpu.gp1(0x0800_0001).unwrap(); // RGB15, 320x240
+            send(
+                gpu,
+                &[
+                    0x3000_00ff,
+                    xy(0, 0),
+                    0x00ff_0000,
+                    xy(16, 7),
+                    0x0000_ff00,
+                    xy(2, 8),
+                ],
+            );
+        }
+        equal(&serial, &hardware);
+        hardware.latch_display();
+        hardware.gp1(0x0800_0013).unwrap(); // switch to 640x240 packed RGB24
+        let completed = hardware.completed_frame().unwrap();
+        assert_eq!(completed.native_dimensions, (320, 240));
+        assert_eq!(
+            completed.dimensions,
+            (320 * scale.factor(), 240 * scale.factor())
+        );
+        assert_eq!(
+            completed.rgb.len(),
+            completed.dimensions.0 * completed.dimensions.1 * 3
+        );
+        let live = hardware.live_frame();
+        assert_eq!(live.dimensions, (640, 240));
+        assert_eq!(live.native_dimensions, live.dimensions);
+        assert_eq!(&*live.rgb, hardware.display_rgb());
     }
 }
 

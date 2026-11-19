@@ -4,7 +4,7 @@ use crate::{
     keybindings::KeyBindings,
     systems::ps1::{
         bus::BIOS_SIZE,
-        gpu::RendererMode,
+        gpu::{RenderScale, RendererMode},
         input::TurboConfig,
         runner::{DEFAULT_REWIND_SECONDS, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS},
     },
@@ -36,6 +36,8 @@ pub struct Preferences {
     pub volume: u8,
     pub muted: bool,
     pub renderer: String,
+    /// Preferred hardware raster resolution, retained in software mode.
+    pub render_scale: RenderScale,
     pub clean_fullscreen: bool,
     pub turbo_buttons: u16,
     pub turbo_hz: u8,
@@ -56,6 +58,7 @@ impl Default for Preferences {
             volume: 75,
             muted: false,
             renderer: "serial".into(),
+            render_scale: RenderScale::Native,
             clean_fullscreen: false,
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
@@ -328,6 +331,30 @@ mod tests {
         );
         assert!(preferences.bios_path.is_none());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hardware_resolution_defaults_to_native_for_older_preferences() {
+        let legacy: Preferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.render_scale, RenderScale::Native);
+        for (scale, id) in [
+            (RenderScale::Native, "1x"),
+            (RenderScale::X2, "2x"),
+            (RenderScale::X4, "4x"),
+        ] {
+            let preferences = Preferences {
+                render_scale: scale,
+                ..Preferences::default()
+            };
+            let json = serde_json::to_value(preferences).unwrap();
+            assert_eq!(json["render_scale"], id);
+            assert_eq!(
+                serde_json::from_value::<Preferences>(json)
+                    .unwrap()
+                    .render_scale,
+                scale
+            );
+        }
     }
 
     #[test]
