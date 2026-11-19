@@ -1,7 +1,7 @@
 //! One ordered GPU worker overlaps software/hardware drawing with CPU interpretation.
 //! Bounded batches preserve texture feedback, blending and transfer ordering.
 use super::{
-    ColorDepth, DisplayFrame, DisplaySettings, RenderScale,
+    AntiAliasing, ColorDepth, DisplayFrame, DisplaySettings, RenderScale,
     rasterizer::{RasterCommand, Rasterizer},
     renderer_engine::Engine,
 };
@@ -123,6 +123,7 @@ impl FromStr for RendererMode {
 pub(super) struct Renderer {
     backend: RefCell<Backend>,
     inherited_error: Option<String>,
+    pub(super) preferred_anti_aliasing: AntiAliasing,
 }
 
 enum Backend {
@@ -132,10 +133,7 @@ enum Backend {
 
 impl Default for Renderer {
     fn default() -> Self {
-        Self {
-            backend: RefCell::new(Backend::Serial(Rasterizer::default())),
-            inherited_error: None,
-        }
+        Self::from_raster(Rasterizer::default())
     }
 }
 
@@ -145,8 +143,8 @@ impl Clone for Renderer {
     fn clone(&self) -> Self {
         let raster = self.snapshot();
         Self {
-            backend: RefCell::new(Backend::Serial(raster)),
             inherited_error: self.error(),
+            ..Self::from_raster(raster)
         }
     }
 }
@@ -156,6 +154,7 @@ impl Renderer {
         Self {
             backend: RefCell::new(Backend::Serial(raster)),
             inherited_error: None,
+            preferred_anti_aliasing: AntiAliasing::Off,
         }
     }
 
@@ -195,6 +194,13 @@ impl Renderer {
         match &*self.backend.borrow() {
             Backend::Serial(_) => RenderScale::Native,
             Backend::Threaded(worker) => worker.scale,
+        }
+    }
+
+    pub(super) fn take_presentation_warning(&self) -> Option<String> {
+        match &*self.backend.borrow() {
+            Backend::Serial(_) => None,
+            Backend::Threaded(worker) => worker.warnings.try_recv().ok(),
         }
     }
 
@@ -338,6 +344,7 @@ struct Worker {
     mode: RendererMode,
     device_name: String,
     error: Arc<OnceLock<String>>,
+    warnings: mpsc::Receiver<String>,
     sender: mpsc::SyncSender<Message>,
     pending: Vec<RasterCommand>,
     recycled: mpsc::Receiver<Vec<RasterCommand>>,
@@ -349,6 +356,7 @@ impl Worker {
         let (sender, receiver) = mpsc::sync_channel(QUEUED_BATCHES);
         let (recycle, recycled) = mpsc::channel();
         let (ready, initialized) = mpsc::sync_channel(1);
+        let (warning, warnings) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("eidoryn-gpu".into())
             .spawn(move || {
@@ -386,10 +394,14 @@ impl Worker {
                             let _ = reply.send(resolve(engine.read(indices), &status, || [0; 2]));
                         }
                         Message::Display(display, reply) => {
-                            let _ = reply.send(resolve(engine.display(display), &status, || {
+                            let rgb = resolve(engine.display(display), &status, || {
                                 let (width, height) = display.output_dimensions();
                                 vec![0; width * height * 3]
-                            }));
+                            });
+                            if let Some(message) = engine.take_presentation_warning() {
+                                let _ = warning.try_send(message);
+                            }
+                            let _ = reply.send(rgb);
                         }
                         Message::Snapshot(reply) => {
                             let _ = reply.send(resolve(
@@ -425,6 +437,7 @@ impl Worker {
             mode,
             device_name,
             error,
+            warnings,
             sender,
             pending: Vec::with_capacity(BATCH_SIZE),
             recycled,

@@ -66,6 +66,15 @@ pub fn run(machine: Machine, options: Options, store: CardStore) -> Result<(), S
     run_with_probe(machine, options, store, None)
 }
 
+fn append_notice(notice: &mut Option<String>, message: String) {
+    if let Some(existing) = notice {
+        existing.push('\n');
+        existing.push_str(&message);
+    } else {
+        *notice = Some(message);
+    }
+}
+
 pub fn run_with_probe(
     mut machine: Machine,
     options: Options,
@@ -79,12 +88,7 @@ pub fn run_with_probe(
     let audio_output = match AudioOutput::open(audio_buffer.clone()) {
         Ok(output) => Some(output),
         Err(error) => {
-            startup.notice = Some(
-                startup
-                    .notice
-                    .take()
-                    .map_or_else(|| error.clone(), |notice| format!("{notice}\n{error}")),
-            );
+            append_notice(&mut startup.notice, error);
             None
         }
     };
@@ -93,8 +97,6 @@ pub fn run_with_probe(
     } else {
         SnapshotMode::Display
     };
-    let mut snapshot = Snapshot::capture_with_mode(&machine, options.auto_run, None, 0.0, mode);
-    snapshot.cards = store.status(&machine.bus.sio.cards);
     let runner = Runner::with_snapshot_mode(
         machine,
         options.auto_run,
@@ -103,6 +105,12 @@ pub fn run_with_probe(
         mode,
     )
     .map_err(|e| e.to_string())?;
+    let mut snapshot = runner
+        .take_snapshot()
+        .ok_or("Missing initial emulator snapshot")?;
+    if let Some(warning) = snapshot.presentation_warning.take() {
+        append_notice(&mut startup.notice, warning);
+    }
     runner.send(Command::SetTurbo(startup.preferences.turbo()?))?;
     runner.send(Command::SetRewindSeconds(
         startup.preferences.rewind_seconds,
@@ -421,13 +429,13 @@ impl Desktop {
             if let Some(probe) = &mut self.probe {
                 probe.receive(&snapshot);
             }
-            if let Some(mode) = self.graphics.receive(&snapshot) {
-                mode.id().clone_into(&mut self.preferences.renderer);
-                if mode.is_hardware() {
-                    self.preferences.render_scale = snapshot.render_scale;
-                    self.preferences.color_depth = snapshot.color_depth;
-                }
+            if let Some(change) = self.graphics.receive(&snapshot) {
+                change.save_to(&mut self.preferences);
                 self.save_preferences();
+            }
+            let show_warning = snapshot.presentation_warning.is_some();
+            if let Some(warning) = snapshot.presentation_warning.take() {
+                append_notice(&mut self.notice, warning);
             }
             self.receive_media_selection(&snapshot, cx);
             if snapshot.renamed_state != self.snapshot.renamed_state
@@ -442,6 +450,7 @@ impl Desktop {
                 image.dirty = true;
             }
             let redraw = frame_changed
+                || show_warning
                 || snapshot.renderer_revision != self.snapshot.renderer_revision
                 || snapshot.rewinding != self.snapshot.rewinding
                 || snapshot.rewind_states != self.snapshot.rewind_states

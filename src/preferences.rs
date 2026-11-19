@@ -4,7 +4,7 @@ use crate::{
     keybindings::KeyBindings,
     systems::ps1::{
         bus::BIOS_SIZE,
-        gpu::{ColorDepth, RenderScale, RendererMode},
+        gpu::{AntiAliasing, ColorDepth, RenderScale, RendererMode},
         input::TurboConfig,
         runner::{DEFAULT_REWIND_SECONDS, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS},
     },
@@ -40,6 +40,8 @@ pub struct Preferences {
     pub render_scale: RenderScale,
     /// Preferred hardware presentation color depth, retained in software mode.
     pub color_depth: ColorDepth,
+    /// Hardware anti-aliasing preference, retained while using a software renderer.
+    pub anti_aliasing: AntiAliasing,
     pub clean_fullscreen: bool,
     pub turbo_buttons: u16,
     pub turbo_hz: u8,
@@ -62,6 +64,7 @@ impl Default for Preferences {
             renderer: "serial".into(),
             render_scale: RenderScale::Native,
             color_depth: ColorDepth::Native,
+            anti_aliasing: AntiAliasing::Off,
             clean_fullscreen: true,
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
@@ -341,9 +344,26 @@ mod tests {
         let legacy: Preferences = serde_json::from_str("{}").unwrap();
         assert_eq!(legacy.render_scale, RenderScale::Native);
         assert_eq!(legacy.color_depth, ColorDepth::Native);
+        assert_eq!(legacy.anti_aliasing, AntiAliasing::Off);
         let legacy: Preferences = serde_json::from_str(r#"{"render_scale":"4x"}"#).unwrap();
         assert_eq!(legacy.render_scale, RenderScale::X4);
         assert_eq!(legacy.color_depth, ColorDepth::Native);
+    }
+
+    #[test]
+    fn anti_aliasing_round_trips_independently_of_renderer() {
+        for (mode, id) in [(AntiAliasing::Off, "off"), (AntiAliasing::Fxaa, "fxaa")] {
+            let preferences = Preferences {
+                anti_aliasing: mode,
+                ..Preferences::default()
+            };
+            let json = serde_json::to_value(&preferences).unwrap();
+            assert_eq!(json["anti_aliasing"], id);
+            assert_eq!(
+                serde_json::from_value::<Preferences>(json).unwrap(),
+                preferences
+            );
+        }
     }
 
     #[test]

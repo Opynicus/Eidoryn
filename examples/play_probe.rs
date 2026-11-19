@@ -469,9 +469,9 @@ impl Session {
                     .ok_or("Missing frame count")?
                     .parse()
                     .map_err(|e: std::num::ParseIntError| e.to_string())?,
-                mask(fields.next())?,
+                frames::Input::Pulsed(mask(fields.next())?),
                 Path::new(fields.next().ok_or("Missing output prefix")?),
-                None,
+                frames::Capture::default(),
             )?,
             Some("pace") => self.pace(
                 fields

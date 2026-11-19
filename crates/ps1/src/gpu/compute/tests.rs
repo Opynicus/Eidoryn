@@ -1,6 +1,7 @@
 //! Headless shader regressions. Set `WGPU_BACKEND` to select the compute API.
 //! Run with `cargo test -p eidoryn-ps1 --features vulkan gpu::compute::tests -- --ignored`.
 
+mod fxaa;
 mod true_color;
 
 use super::ComputeRenderer;
@@ -59,6 +60,7 @@ fn draw(gpu: &mut ComputeRenderer, words: &[u32], state: DrawState) {
 
 fn scanout(scale: RenderScale, dimensions: (usize, usize)) -> DisplaySettings {
     DisplaySettings {
+        anti_aliasing: crate::gpu::AntiAliasing::Off,
         dimensions,
         start: (0, 0),
         disabled: false,

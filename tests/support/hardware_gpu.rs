@@ -1,7 +1,7 @@
 //! Shared pixel-accurate hardware tests for all wgpu backends.
 use super::HARDWARE_MODE;
 use eidoryn_psx::{
-    gpu::{ColorDepth, Gpu, RenderScale, RendererMode},
+    gpu::{AntiAliasing, ColorDepth, DisplayFrame, Gpu, RenderScale, RendererMode},
     machine::Machine,
     timers::Timers,
 };
@@ -13,6 +13,127 @@ fn send(gpu: &mut Gpu, words: &[u32]) {
 }
 fn xy(x: u32, y: u32) -> u32 {
     x | (y << 16)
+}
+
+fn draw_fxaa_scene(gpu: &mut Gpu) {
+    gpu.gp1(0x0300_0000).unwrap();
+    gpu.gp1(0x0500_0000).unwrap();
+    send(
+        gpu,
+        &[
+            0xe407_ffff,
+            0x28ff_ffff,
+            xy(8, 16),
+            xy(104, 48),
+            xy(8, 28),
+            xy(104, 60),
+            0x6064_6464,
+            xy(0, 90),
+            xy(16, 16),
+            0x6067_6767,
+            xy(16, 90),
+            xy(16, 16),
+        ],
+    );
+}
+
+fn frame_pixel(frame: &DisplayFrame, x: usize, y: usize) -> &[u8] {
+    let offset = (y * frame.dimensions.0 + x) * 3;
+    &frame.rgb[offset..offset + 3]
+}
+
+#[test]
+#[ignore = "requires a physical GPU with the selected backend"]
+fn fxaa_smooths_only_presentation_across_all_scales_and_color_depths() {
+    let mut software = Gpu::default();
+    draw_fxaa_scene(&mut software);
+    let native = software.display_rgb();
+    let vram = software.vram();
+    let mut gpu = Gpu::default();
+    for scale in [RenderScale::Native, RenderScale::X2, RenderScale::X4] {
+        let factor = scale.factor();
+        for depth in [ColorDepth::Native, ColorDepth::TrueColor] {
+            gpu.set_renderer_config(HARDWARE_MODE, scale, depth)
+                .unwrap();
+            gpu.gp1(0x0800_0000).unwrap();
+            gpu.set_anti_aliasing(AntiAliasing::Off);
+            draw_fxaa_scene(&mut gpu);
+            let original = gpu.live_frame();
+            gpu.set_anti_aliasing(AntiAliasing::Fxaa);
+            let filtered = gpu.live_frame();
+            assert_eq!(filtered.dimensions, original.dimensions);
+            assert_eq!(filtered.native_dimensions, software.dimensions());
+            assert_eq!(filtered.rgb.len(), original.rgb.len());
+            assert_eq!(frame_pixel(&filtered, 40 * factor, 32 * factor), &[255; 3]);
+            assert_eq!(frame_pixel(&filtered, 40 * factor, 12 * factor), &[0; 3]);
+            for (x, color) in [(8, 100), (24, 103)] {
+                let gray = if depth == ColorDepth::Native {
+                    99
+                } else {
+                    color
+                };
+                assert_eq!(frame_pixel(&filtered, x * factor, 96 * factor), &[gray; 3]);
+            }
+            assert!(
+                (14 * factor..61 * factor).any(|y| (9 * factor..102 * factor).any(|x| {
+                    let gray = frame_pixel(&filtered, x, y)[0];
+                    gray != 0 && gray != 255 && frame_pixel(&original, x, y)[0] != gray
+                })),
+                "diagonal did not gain intermediate coverage at {scale:?} {depth:?}"
+            );
+            assert_eq!(gpu.display_rgb(), native);
+            assert_eq!(gpu.vram(), vram);
+            send(&mut gpu, &[0xc000_0000, xy(15, 96), xy(2, 1)]);
+            assert_eq!(gpu.read(), 0x318c_318c);
+            gpu.set_anti_aliasing(AntiAliasing::Off);
+            assert_eq!(gpu.live_frame().rgb, original.rgb);
+
+            gpu.gp1(0x0800_0010).unwrap();
+            let movie = gpu.live_frame();
+            gpu.set_anti_aliasing(AntiAliasing::Fxaa);
+            assert_eq!(gpu.live_frame().rgb, movie.rgb);
+            assert_eq!(&*movie.rgb, gpu.display_rgb());
+            gpu.gp1(0x0300_0001).unwrap();
+            assert!(gpu.live_frame().rgb.iter().all(|&v| v == 0));
+            assert_eq!(gpu.take_presentation_warning(), None);
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a physical GPU with the selected backend"]
+fn fxaa_toggle_applies_after_the_latched_field_and_survives_state_restore() {
+    let mut machine = Machine::demo();
+    let gpu = &mut machine.bus.gpu;
+    gpu.set_renderer(HARDWARE_MODE).unwrap();
+    draw_fxaa_scene(gpu);
+    let original = gpu.live_frame();
+    let mut timers = Timers::default();
+    while gpu.tick(1000, &mut timers) & 1 == 0 {}
+    let at_vblank = (gpu.frames, gpu.commands, gpu.revision, gpu.status());
+    gpu.set_anti_aliasing(AntiAliasing::Fxaa);
+    assert_eq!(
+        at_vblank,
+        (gpu.frames, gpu.commands, gpu.revision, gpu.status())
+    );
+    assert_eq!(gpu.completed_frame().unwrap().rgb, original.rgb);
+    while gpu.tick(1000, &mut timers) & 1 == 0 {}
+    let filtered = gpu.completed_frame().unwrap().rgb.clone();
+    assert_ne!(filtered, original.rgb);
+    gpu.set_anti_aliasing(AntiAliasing::Off);
+    assert_eq!(gpu.completed_frame().unwrap().rgb, filtered);
+    let mut restored = Machine::load_state(&machine.save_state().unwrap()).unwrap();
+    let gpu = &mut restored.bus.gpu;
+    gpu.set_anti_aliasing(AntiAliasing::Fxaa);
+    assert_eq!(gpu.anti_aliasing(), AntiAliasing::Off);
+    gpu.set_renderer(HARDWARE_MODE).unwrap();
+    assert_eq!(gpu.anti_aliasing(), AntiAliasing::Fxaa);
+    assert_eq!(gpu.completed_frame().unwrap().rgb, filtered);
+    assert_eq!(gpu.live_frame().rgb, filtered);
+    gpu.set_renderer(RendererMode::Threaded).unwrap();
+    assert_eq!(gpu.anti_aliasing(), AntiAliasing::Off);
+    assert_eq!(gpu.live_frame().rgb, original.rgb);
+    assert_eq!(gpu.completed_frame().unwrap().rgb, filtered);
 }
 
 fn pair() -> [Gpu; 2] {

@@ -3,7 +3,7 @@ use crate::systems::ps1::{
     card_file::CardStatus,
     cpu::{Cpu, disassemble},
     cpu_engine::{CpuMode, CpuStats},
-    gpu::{ColorDepth, RenderScale, RendererMode},
+    gpu::{AntiAliasing, ColorDepth, DisplayFrame, RenderScale, RendererMode},
     machine::Machine,
     state_file::SaveStateInfo,
 };
@@ -79,6 +79,10 @@ pub struct Snapshot {
     pub renderer: RendererMode,
     pub render_scale: RenderScale,
     pub color_depth: ColorDepth,
+    /// Effective anti-aliasing mode for new presentation frames.
+    pub anti_aliasing: AntiAliasing,
+    /// A recoverable presentation warning delivered once to the frontend.
+    pub presentation_warning: Option<String>,
     /// Completed renderer-selection requests, including rejected requests.
     pub renderer_revision: u64,
     pub renderer_device: String,
@@ -123,11 +127,25 @@ impl Snapshot {
         rate: f64,
         mode: SnapshotMode,
     ) -> Self {
+        Self::capture_with_preview(machine, running, message, rate, mode, &mut None)
+    }
+
+    /// Reuse the host's initial scanout between snapshots until the GPU latches a field.
+    pub(super) fn capture_with_preview(
+        machine: &Machine,
+        running: bool,
+        message: Option<String>,
+        rate: f64,
+        mode: SnapshotMode,
+        unlatched_preview: &mut Option<DisplayFrame>,
+    ) -> Self {
         let gpu = &machine.bus.gpu;
-        let frame = gpu
-            .completed_frame()
-            .cloned()
-            .unwrap_or_else(|| gpu.live_frame());
+        let frame = if let Some(completed) = gpu.completed_frame() {
+            *unlatched_preview = None;
+            completed
+        } else {
+            unlatched_preview.get_or_insert_with(|| gpu.live_frame())
+        };
         let disassembly = (0..if mode == SnapshotMode::Debug { 9 } else { 0 })
             .map(|n| {
                 let pc = machine.cpu.pc.wrapping_add(n * 4);
@@ -185,11 +203,13 @@ impl Snapshot {
             renderer: machine.bus.gpu.renderer_mode(),
             render_scale: gpu.render_scale(),
             color_depth: gpu.color_depth(),
+            anti_aliasing: gpu.anti_aliasing(),
+            presentation_warning: None,
             renderer_revision: 0,
             renderer_device: machine.bus.gpu.renderer_device(),
             gpu_commands: machine.bus.gpu.commands,
             slices: machine.slices,
-            rgb: frame.rgb,
+            rgb: Arc::clone(&frame.rgb),
             dimensions: frame.dimensions,
             native_dimensions: frame.native_dimensions,
             disassembly,

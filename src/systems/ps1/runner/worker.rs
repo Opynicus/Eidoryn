@@ -7,7 +7,7 @@ use super::{
 use crate::systems::ps1::{
     card_file::CardStore,
     cpu_engine::CpuMode,
-    gpu::{ColorDepth, RenderScale, RendererMode},
+    gpu::{AntiAliasing, ColorDepth, DisplayFrame, RenderScale, RendererMode},
     input::PadInput,
     machine::{INSTRUCTIONS_PER_SLICE, Machine},
     media::{load_disc, load_path},
@@ -32,9 +32,11 @@ pub(super) fn run(
     output: &SharedSnapshot,
     store: CardStore,
     audio: Option<AudioBuffer>,
-    mode: SnapshotMode,
+    initial_view: (SnapshotMode, Option<DisplayFrame>),
 ) {
+    let (mode, preview) = initial_view;
     let mut worker = Worker::new(machine, auto_run, store, audio, mode);
+    worker.unlatched_preview = preview;
     loop {
         let wait = worker.rewind.wait_duration().or_else(|| {
             worker
@@ -53,7 +55,10 @@ pub(super) fn run(
                 Err(_) => break,
             }
         };
-        let view_only = matches!(command, Some(Command::SetSnapshotMode(_)));
+        let view_only = matches!(
+            command,
+            Some(Command::SetSnapshotMode(_) | Command::SetAntiAliasing(_))
+        );
         let state_command = matches!(
             command,
             Some(
@@ -111,12 +116,14 @@ pub(super) fn run(
 
 struct Worker {
     snapshot_mode: SnapshotMode,
+    unlatched_preview: Option<DisplayFrame>,
     machine: Machine,
     input: PadInput,
     initial: Machine,
     renderer: RendererMode,
     hardware_render_scale: RenderScale,
     hardware_color_depth: ColorDepth,
+    hardware_anti_aliasing: AntiAliasing,
     renderer_revision: u64,
     cpu_mode: CpuMode,
     running: bool,
@@ -162,10 +169,12 @@ impl Worker {
         let mut worker = Self {
             input,
             snapshot_mode,
+            unlatched_preview: None,
             initial: machine.clone(),
             renderer: machine.bus.gpu.renderer_mode(),
             hardware_render_scale: machine.bus.gpu.render_scale(),
             hardware_color_depth: machine.bus.gpu.color_depth(),
+            hardware_anti_aliasing: machine.bus.gpu.preferred_anti_aliasing(),
             renderer_revision: 0,
             cpu_mode: machine.cpu_mode(),
             states: StateStore::new(Path::new("saves"), &machine),
@@ -228,9 +237,14 @@ impl Worker {
             self.running = false;
             return false;
         }
+        machine
+            .bus
+            .gpu
+            .set_anti_aliasing(self.hardware_anti_aliasing);
         machine.bus.sio.cards = std::mem::take(&mut self.machine.bus.sio.cards);
         machine.bus.sio.deselect_cards();
         self.machine = machine;
+        self.unlatched_preview = None;
         self.release_input();
         self.initial.clone_from(&self.machine);
         self.states = StateStore::new(Path::new("saves"), &self.initial);
@@ -266,6 +280,7 @@ impl Worker {
         {
             Ok(()) => {
                 self.renderer = mode;
+                self.unlatched_preview = None;
                 if mode.is_hardware() {
                     self.hardware_render_scale = scale;
                     self.hardware_color_depth = color_depth;
@@ -389,12 +404,17 @@ impl Worker {
                     self.hardware_color_depth,
                 )
                 .map_err(|e| format!("Cannot start GPU renderer: {e}"))?;
+            machine
+                .bus
+                .gpu
+                .set_anti_aliasing(self.hardware_anti_aliasing);
             Ok((machine, input))
         };
         match prepare() {
             Ok((machine, input)) => {
                 let held = self.input.held_buttons();
                 self.machine = machine;
+                self.unlatched_preview = None;
                 self.input = input;
                 if self.running {
                     // Resuming immediately must not keep historical buttons stuck down.
@@ -432,6 +452,12 @@ impl Worker {
     #[allow(clippy::too_many_lines)] // Keep command ordering and persistence guards together.
     fn apply(&mut self, command: Command) -> bool {
         match command {
+            Command::SetAntiAliasing(mode) => {
+                self.machine.bus.gpu.set_anti_aliasing(mode);
+                self.hardware_anti_aliasing = mode;
+                self.renderer_revision = self.renderer_revision.wrapping_add(1);
+                return false;
+            }
             Command::SetRewinding(enabled) => {
                 if enabled {
                     self.begin_rewind();
@@ -599,6 +625,7 @@ impl Worker {
             }
             Command::FlushCards => self.message = None,
             Command::SaveState
+            | Command::SetAntiAliasing(_)
             | Command::SetRewinding(_)
             | Command::SetRewindEnabled(_)
             | Command::SetRewindSeconds(_)
@@ -663,6 +690,7 @@ impl Worker {
     }
 
     fn run_batch(&mut self) -> bool {
+        self.unlatched_preview = None;
         let start = Instant::now();
         let mut frame_finished = false;
         loop {
@@ -729,12 +757,13 @@ impl Worker {
             self.epoch_frames = self.machine.bus.gpu.frames;
             self.epoch = Instant::now();
         }
-        let mut snapshot = Snapshot::capture_with_mode(
+        let mut snapshot = Snapshot::capture_with_preview(
             &self.machine,
             self.running,
             self.message.clone(),
             if self.running { self.rate } else { 0.0 },
             self.snapshot_mode,
+            &mut self.unlatched_preview,
         );
         snapshot.bios_path.clone_from(&self.bios_path);
         snapshot.disc_path.clone_from(&self.disc_path);
@@ -752,6 +781,7 @@ impl Worker {
             if self.renderer.is_hardware() {
                 snapshot.render_scale = self.hardware_render_scale;
                 snapshot.color_depth = self.hardware_color_depth;
+                snapshot.anti_aliasing = self.hardware_anti_aliasing;
             }
             snapshot.cpu_mode = self.cpu_mode;
         }
@@ -765,10 +795,17 @@ impl Worker {
         snapshot.cards = self.store.status(&self.machine.bus.sio.cards);
         snapshot.video_fps = if self.running { self.video_fps } else { 0.0 };
         snapshot.close_ready = close_ready;
+        snapshot.presentation_warning = self.machine.bus.gpu.take_presentation_warning();
         let previous = {
             let Ok(mut slot) = output.lock() else {
                 return false;
             };
+            // Coalescing frames must still deliver an unseen warning to the UI.
+            if snapshot.presentation_warning.is_none() {
+                snapshot.presentation_warning = slot
+                    .as_mut()
+                    .and_then(|old| old.presentation_warning.take());
+            }
             slot.replace(snapshot)
         };
         // Releasing strings/pixels can reach the allocator. Keep that work
@@ -783,6 +820,42 @@ impl Worker {
 mod tests {
     use super::*;
     use crate::systems::ps1::{input::TurboConfig, timing::CPU_CLOCK_HZ};
+
+    #[test]
+    fn unread_presentation_warning_survives_coalesced_frames_once() {
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        let output = SharedSnapshot::default();
+        assert!(worker.publish(&output, false));
+        output
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .presentation_warning = Some("FXAA unavailable".into());
+        assert!(worker.publish(&output, false));
+        let delivered = output.lock().unwrap().take().unwrap();
+        assert_eq!(
+            delivered.presentation_warning.as_deref(),
+            Some("FXAA unavailable")
+        );
+        assert!(delivered.running && !delivered.halted);
+        assert!(worker.publish(&output, false));
+        assert!(
+            output
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .presentation_warning
+                .is_none()
+        );
+    }
 
     #[test]
     fn audio_publication_drains_spu_and_reuses_staging_capacity() {

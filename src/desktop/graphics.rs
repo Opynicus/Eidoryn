@@ -4,9 +4,13 @@ use super::{
 };
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
+    preferences::Preferences,
     systems::ps1::{
         cpu_engine::CpuMode,
-        gpu::{ColorDepth, RenderScale, RendererAvailability, RendererMode, hardware_backends},
+        gpu::{
+            AntiAliasing, ColorDepth, RenderScale, RendererAvailability, RendererMode,
+            hardware_backends,
+        },
         runner::{Command, Snapshot},
     },
     theme::Palette,
@@ -14,13 +18,51 @@ use eidoryn_psx::{
 };
 use gpui::{Context, div, prelude::*, px, rgb};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GraphicsChange {
+    Renderer(RendererMode, RenderScale, ColorDepth),
+    AntiAliasing(AntiAliasing),
+}
+
+impl GraphicsChange {
+    pub(super) fn save_to(self, preferences: &mut Preferences) {
+        match self {
+            Self::Renderer(mode, scale, color_depth) => {
+                mode.id().clone_into(&mut preferences.renderer);
+                if mode.is_hardware() {
+                    preferences.render_scale = scale;
+                    preferences.color_depth = color_depth;
+                }
+            }
+            Self::AntiAliasing(mode) => preferences.anti_aliasing = mode,
+        }
+    }
+
+    fn confirmed(self, snapshot: &Snapshot) -> bool {
+        match self {
+            Self::Renderer(mode, scale, depth) => {
+                snapshot.message.is_none()
+                    && (mode, scale, depth)
+                        == (
+                            snapshot.renderer,
+                            snapshot.render_scale,
+                            snapshot.color_depth,
+                        )
+            }
+            Self::AntiAliasing(mode) => {
+                snapshot.renderer.is_hardware() && snapshot.anti_aliasing == mode
+            }
+        }
+    }
+}
+
 pub(super) struct GraphicsControls {
     pub open: bool,
     software: RendererMode,
     hardware: RendererMode,
     backends: Option<Vec<RendererAvailability>>,
     detecting: bool,
-    pending: Option<(RendererMode, RenderScale, ColorDepth)>,
+    pending: Option<GraphicsChange>,
     pending_revision: u64,
     pending_cpu: Option<CpuMode>,
 }
@@ -61,16 +103,11 @@ impl GraphicsControls {
         self
     }
 
-    pub(super) fn receive(&mut self, snapshot: &Snapshot) -> Option<RendererMode> {
+    pub(super) fn receive(&mut self, snapshot: &Snapshot) -> Option<GraphicsChange> {
         let completed = snapshot.renderer_revision != self.pending_revision;
-        let confirmed = completed
-            && snapshot.message.is_none()
-            && self.pending
-                == Some((
-                    snapshot.renderer,
-                    snapshot.render_scale,
-                    snapshot.color_depth,
-                ));
+        let confirmed = self
+            .pending
+            .filter(|request| completed && request.confirmed(snapshot));
         if self.pending_cpu == Some(snapshot.cpu_mode) || snapshot.message.is_some() {
             self.pending_cpu = None;
         }
@@ -85,7 +122,7 @@ impl GraphicsControls {
         } else if snapshot.message.is_none() {
             self.hardware = snapshot.renderer;
         }
-        confirmed.then_some(snapshot.renderer)
+        confirmed
     }
 }
 
@@ -210,23 +247,21 @@ impl Desktop {
         } else {
             (RenderScale::Native, ColorDepth::Native)
         };
-        self.select_renderer_config(mode, scale, color_depth, cx);
+        self.request_graphics_change(GraphicsChange::Renderer(mode, scale, color_depth), cx);
     }
 
-    fn select_renderer_config(
-        &mut self,
-        mode: RendererMode,
-        scale: RenderScale,
-        color_depth: ColorDepth,
-        cx: &mut Context<Self>,
-    ) {
-        match self.runner.send(Command::SetRendererConfig {
-            mode,
-            scale,
-            color_depth,
-        }) {
+    fn request_graphics_change(&mut self, change: GraphicsChange, cx: &mut Context<Self>) {
+        let command = match change {
+            GraphicsChange::Renderer(mode, scale, color_depth) => Command::SetRendererConfig {
+                mode,
+                scale,
+                color_depth,
+            },
+            GraphicsChange::AntiAliasing(mode) => Command::SetAntiAliasing(mode),
+        };
+        match self.runner.send(command) {
             Ok(()) => {
-                self.graphics.pending = Some((mode, scale, color_depth));
+                self.graphics.pending = Some(change);
                 self.graphics.pending_revision = self.snapshot.renderer_revision;
                 self.notice = None;
             }
@@ -303,10 +338,12 @@ impl Desktop {
                         enabled && self.snapshot.render_scale != scale,
                         |button| {
                             button.on_click(cx.listener(move |view, _, _, cx| {
-                                view.select_renderer_config(
-                                    mode,
-                                    scale,
-                                    view.snapshot.color_depth,
+                                view.request_graphics_change(
+                                    GraphicsChange::Renderer(
+                                        mode,
+                                        scale,
+                                        view.snapshot.color_depth,
+                                    ),
                                     cx,
                                 );
                             }))
@@ -333,12 +370,33 @@ impl Desktop {
                     .when(!enabled, |button| button.opacity(0.45).tab_index(-1))
                     .when(enabled && !selected, |button| {
                         button.on_click(cx.listener(move |view, _, _, cx| {
-                            view.select_renderer_config(
-                                mode,
-                                view.snapshot.render_scale,
-                                depth,
+                            view.request_graphics_change(
+                                GraphicsChange::Renderer(mode, view.snapshot.render_scale, depth),
                                 cx,
                             );
+                        }))
+                    })
+            }),
+        )
+    }
+
+    fn anti_aliasing_choices(&self, ready: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let enabled = self.snapshot.renderer.is_hardware() && ready;
+        div().flex().gap_2().children(
+            [
+                (AntiAliasing::Off, self.tr(Text::Off), "aa-off"),
+                (AntiAliasing::Fxaa, "FXAA", "aa-fxaa"),
+            ]
+            .into_iter()
+            .map(|(mode, title, id)| {
+                let selected = self.snapshot.anti_aliasing == mode;
+                button(&self.fonts, p, id, title, selected)
+                    .debug_selector(move || id.into())
+                    .when(!enabled, |button| button.opacity(0.45).tab_index(-1))
+                    .when(enabled && !selected, |button| {
+                        button.on_click(cx.listener(move |view, _, _, cx| {
+                            view.request_graphics_change(GraphicsChange::AntiAliasing(mode), cx);
                         }))
                     })
             }),
@@ -386,6 +444,9 @@ impl Desktop {
                     .child(self.render_scale_choices(ready, cx))
                     .child(label(p, self.tr(Text::RenderColorDepth)))
                     .child(self.color_depth_choices(ready, cx))
+                    .child(label(p, self.tr(Text::AntiAliasing)))
+                    .child(self.anti_aliasing_choices(ready, cx))
+                    .child(label(p, self.tr(Text::AntiAliasingHint)))
                     .child(label(p, self.tr(Text::Crt)))
                     .child(self.crt_choices(cx))
                     .child(self.clean_fullscreen_control(cx))
@@ -516,7 +577,7 @@ mod tests {
     #[test]
     fn only_confirmed_renderer_changes_are_persisted() {
         let mut controls = GraphicsControls::new(RendererMode::Serial, false);
-        let threaded = Some((
+        let threaded = Some(GraphicsChange::Renderer(
             RendererMode::Threaded,
             RenderScale::Native,
             ColorDepth::Native,
@@ -531,9 +592,13 @@ mod tests {
         snapshot.message = None;
         snapshot.renderer = RendererMode::Threaded;
         snapshot.renderer_revision = 1;
-        assert_eq!(controls.receive(&snapshot), Some(RendererMode::Threaded));
+        assert_eq!(controls.receive(&snapshot), threaded);
         assert_eq!(controls.receive(&snapshot), None);
-        controls.pending = Some((RendererMode::Vulkan, RenderScale::X2, ColorDepth::TrueColor));
+        controls.pending = Some(GraphicsChange::Renderer(
+            RendererMode::Vulkan,
+            RenderScale::X2,
+            ColorDepth::TrueColor,
+        ));
         controls.pending_revision = snapshot.renderer_revision;
         snapshot.message = Some("Renderer unavailable".into());
         snapshot.renderer_revision = 2;
@@ -542,7 +607,11 @@ mod tests {
 
         // An intervening notification may have cleared the backend error before this snapshot.
         // Matching the backend by itself cannot confirm a color-depth or scale change.
-        controls.pending = Some((RendererMode::Vulkan, RenderScale::X2, ColorDepth::TrueColor));
+        controls.pending = Some(GraphicsChange::Renderer(
+            RendererMode::Vulkan,
+            RenderScale::X2,
+            ColorDepth::TrueColor,
+        ));
         controls.pending_revision = snapshot.renderer_revision;
         snapshot.renderer = RendererMode::Vulkan;
         snapshot.render_scale = RenderScale::X2;
@@ -562,17 +631,26 @@ mod tests {
             RendererMode::Vulkan,
             RendererMode::Metal,
         ] {
-            controls.pending = Some((mode, RenderScale::X2, ColorDepth::TrueColor));
+            controls.pending = Some(GraphicsChange::Renderer(
+                mode,
+                RenderScale::X2,
+                ColorDepth::TrueColor,
+            ));
             controls.pending_revision = snapshot.renderer_revision;
             snapshot.renderer = mode;
             snapshot.render_scale = RenderScale::X2;
             snapshot.color_depth = ColorDepth::TrueColor;
             snapshot.renderer_revision += 1;
-            assert_eq!(controls.receive(&snapshot), Some(mode));
+            let pending = controls.pending;
+            assert_eq!(controls.receive(&snapshot), pending);
             assert_eq!(controls.software, RendererMode::Threaded);
             assert_eq!(controls.hardware, mode);
         }
-        controls.pending = Some((RendererMode::OpenGl, RenderScale::X2, ColorDepth::TrueColor));
+        controls.pending = Some(GraphicsChange::Renderer(
+            RendererMode::OpenGl,
+            RenderScale::X2,
+            ColorDepth::TrueColor,
+        ));
         controls.pending_revision = snapshot.renderer_revision;
         snapshot.renderer = RendererMode::Threaded;
         snapshot.message = Some("OpenGL unavailable".into());
@@ -640,13 +718,52 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert_eq!(
                 view.graphics.pending,
-                Some((
+                Some(GraphicsChange::Renderer(
                     RendererMode::Hardware,
                     RenderScale::X4,
                     ColorDepth::TrueColor
                 ))
             );
             assert_eq!(view.preferences.color_depth, ColorDepth::Native);
+        });
+    }
+
+    #[cfg(feature = "ui-tests")]
+    #[gpui::test]
+    fn fxaa_requires_hardware_and_waits_for_the_worker(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = cx.add_window_view(super::super::tests::desktop);
+        cx.simulate_resize(gpui::size(px(1280.), px(1400.)));
+        view.update(cx, |view, cx| {
+            view.graphics.open = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let click = |cx: &mut gpui::VisualTestContext| {
+            let bounds = cx.debug_bounds("aa-fxaa").unwrap();
+            cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+            cx.run_until_parked();
+        };
+        click(cx);
+        assert!(view.read_with(cx, |view, _| view.graphics.pending.is_none()));
+        view.update(cx, |view, cx| {
+            view.snapshot.renderer = RendererMode::Vulkan;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click(cx);
+        view.update(cx, |view, _| {
+            assert_eq!(
+                view.graphics.pending,
+                Some(GraphicsChange::AntiAliasing(AntiAliasing::Fxaa))
+            );
+            assert_eq!(view.preferences.anti_aliasing, AntiAliasing::Off);
+            assert_eq!(view.graphics.receive(&view.snapshot), None);
+            view.snapshot.anti_aliasing = AntiAliasing::Fxaa;
+            view.snapshot.renderer_revision += 1;
+            let confirmed = view.graphics.receive(&view.snapshot).unwrap();
+            confirmed.save_to(&mut view.preferences);
+            assert_eq!(view.preferences.anti_aliasing, AntiAliasing::Fxaa);
+            assert_eq!(view.preferences.renderer, RendererMode::Serial.id());
         });
     }
 
@@ -660,6 +777,7 @@ mod tests {
             view.preferences_path = None;
             view.graphics = GraphicsControls::new(RendererMode::Threaded, true)
                 .with_backends(detected_backends());
+            view.closed_settings_groups.insert(Text::DisplayOptions);
             cx.notify();
         });
         cx.simulate_resize(gpui::size(px(1280.), px(1200.)));
