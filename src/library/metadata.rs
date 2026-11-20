@@ -14,7 +14,7 @@ use matching::{has_title_candidate, index_names, matching_serial, title_hint};
 use providers::{is_release_serial, lookup_release};
 use refresh::download_serial;
 pub(super) use refresh::{Batch, Prepared};
-pub use refresh::{RefreshOutcome, refresh_online};
+pub use refresh::{RefreshOutcome, refresh_online, refresh_online_cancellable};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -61,7 +61,13 @@ pub struct Release {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent persisted release, cover and job states"
+)]
 pub struct Metadata {
+    /// Hide retained user data and suppress automatic lookups after a cache clear.
+    pub cache_cleared: bool,
     pub title: Option<String>,
     pub region: Option<String>,
     pub date: Option<String>,
@@ -230,6 +236,7 @@ fn assign(
 
 struct Evidence {
     cache_generation: i64,
+    cache_cleared: bool,
     serial: Option<String>,
     region: Option<String>,
     selected: Option<String>,
@@ -240,7 +247,7 @@ fn evidence(conn: &Connection, id: i64) -> rusqlite::Result<Evidence> {
     conn.query_row(
         "SELECT CASE WHEN confirmed THEN release_serial ELSE disc_serial END,
                 CASE WHEN confirmed THEN auto_region ELSE disc_region END,
-                CASE WHEN confirmed THEN release_id END, filename, cache_generation
+                CASE WHEN confirmed THEN release_id END, filename, cache_generation, cache_cleared
          FROM game_metadata WHERE game_id=?",
         [id],
         |r| {
@@ -250,6 +257,7 @@ fn evidence(conn: &Connection, id: i64) -> rusqlite::Result<Evidence> {
                 selected: r.get(2)?,
                 filename: r.get(3)?,
                 cache_generation: r.get(4)?,
+                cache_cleared: r.get(5)?,
             })
         },
     )
@@ -261,6 +269,9 @@ pub fn refresh(lib: &Library, id: i64) -> Result<(), String> {
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let evidence = evidence(&tx, id).map_err(|e| e.to_string())?;
+    if evidence.cache_cleared {
+        return Ok(());
+    }
     if let Some(key) = evidence.selected {
         assign(&tx, id, &key, true).map_err(|e| e.to_string())?;
     } else {
@@ -311,7 +322,17 @@ pub fn select(lib: &Library, id: i64, release_id: &str) -> Result<(), String> {
     if assign(&tx, id, release_id, true).map_err(|e| e.to_string())? == 0 {
         return Err("Unknown game or cached release".into());
     }
+    restore_display(&tx, id).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
+}
+
+/// Publish explicitly restored release details or artwork inside the transaction that saved them.
+pub(super) fn restore_display(db: &Connection, id: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE game_metadata SET cache_cleared=0 WHERE game_id=? AND cache_cleared",
+        [id],
+    )?;
+    Ok(())
 }
 
 fn valid_date(date: &str) -> bool {
@@ -388,6 +409,9 @@ pub fn set_overrides(
         )
         .map_err(|e| e.to_string())?;
     }
+    if changes.iter().any(|(_, value)| value.is_some()) {
+        restore_display(&tx, id).map_err(|e| e.to_string())?;
+    }
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -413,7 +437,7 @@ fn read_metadata(lib: &Library, ids: Option<&str>) -> Result<HashMap<i64, Metada
         COALESCE(a.state,CASE WHEN c.thumb IS NOT NULL THEN 'ready' END),m.source,m.refreshed,m.pending,m.work_date,
         EXISTS(SELECT 1 FROM scrape_jobs j WHERE j.game_id=m.game_id AND j.status IN ('pending','running','retry_wait')),
         CASE WHEN release_id IS NOT NULL THEN auto_title || COALESCE(' · ' || NULLIF(auto_region,''),'') END,
-        user_title IS NOT NULL,user_region IS NOT NULL,user_date IS NOT NULL,u.game_id IS NOT NULL
+        user_title IS NOT NULL,user_region IS NOT NULL,user_date IS NOT NULL,u.game_id IS NOT NULL,m.cache_cleared
         FROM game_metadata m LEFT JOIN cover_assets u ON u.game_id=m.game_id AND u.kind='user'
         LEFT JOIN cover_assets c ON c.game_id=m.game_id AND c.kind='download' AND c.serial=COALESCE(release_serial,disc_serial)
         LEFT JOIN cover_attempts a ON a.game_id=m.game_id AND a.serial=COALESCE(release_serial,disc_serial)
@@ -435,6 +459,7 @@ fn read_metadata(lib: &Library, ids: Option<&str>) -> Result<HashMap<i64, Metada
         Ok((
             r.get(0)?,
             Metadata {
+                cache_cleared: r.get(21)?,
                 title: r.get(1)?,
                 region: r.get(2)?,
                 date: r.get(3)?,

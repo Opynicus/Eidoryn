@@ -1,6 +1,8 @@
 //! Transactional cleanup of automatic release metadata and its shared source records.
 use super::{Library, gamedb, title_hint};
+use crate::library::covers;
 use rusqlite::{Transaction, TransactionBehavior, params};
+use std::collections::BTreeSet;
 
 /// Games whose automatically scraped release metadata should be cleared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,17 +14,18 @@ pub enum CacheScope {
 }
 
 impl Library {
-    /// Clear automatic release data, keeping user corrections, confirmed editions and cover art.
+    /// Clear scraped release data and downloaded art. Retain custom fields, confirmed editions and chosen art.
     pub fn clear_metadata_cache(&self, scope: CacheScope) -> Result<(), String> {
         let mut db = self.connect()?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
-        clear_in_transaction(&tx, scope, None).map_err(|e| e.to_string())?;
+        let originals = clear_in_transaction(&tx, scope, None).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         if scope == CacheScope::All {
             gamedb::clear_cache();
         }
+        covers::collect_released(self, &mut db, &originals);
         Ok(())
     }
 }
@@ -31,7 +34,7 @@ pub(in crate::library) fn clear_in_transaction(
     tx: &Transaction<'_>,
     scope: CacheScope,
     removed_ids: Option<&str>,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<BTreeSet<String>> {
     tx.execute_batch(
         "CREATE TEMP TABLE clear_games(id INTEGER PRIMARY KEY);
          CREATE TEMP TABLE clear_serials(serial TEXT PRIMARY KEY) WITHOUT ROWID;",
@@ -69,5 +72,10 @@ pub(in crate::library) fn clear_in_transaction(
             retain.execute([title_hint(row.get_ref(0)?.as_str()?)])?;
         }
     }
-    tx.execute_batch(include_str!("clear_cache.sql"))
+    let originals = tx
+        .prepare("DELETE FROM cover_assets WHERE kind='download' AND game_id IN clear_games RETURNING original")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    tx.execute_batch(include_str!("clear_cache.sql"))?;
+    Ok(originals)
 }

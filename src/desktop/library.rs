@@ -40,8 +40,13 @@ pub(super) fn open() -> Result<Library, String> {
     Ok(Library::deferred(&path))
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Artwork, cache visibility and scrape progress are independent"
+)]
 struct Entry {
     game: Game,
+    cache_cleared: bool,
     title: String,
     search: String,
     sort_title: String,
@@ -64,6 +69,12 @@ struct Entry {
 
 impl Entry {
     fn new(game: Game, metadata: Option<metadata::Metadata>) -> Self {
+        let cache_cleared = metadata.as_ref().is_some_and(|m| m.cache_cleared);
+        let pending = metadata.as_ref().is_some_and(|m| m.pending);
+        let scrape_active = metadata.as_ref().is_some_and(|m| m.scrape_active);
+        // Manual overrides and confirmed editions survive a clear for future edits.
+        // A cleared card presents only its local disc identity until explicitly restored.
+        let metadata = metadata.filter(|m| !m.cache_cleared);
         let title = metadata
             .as_ref()
             .and_then(|m| m.title.clone())
@@ -85,9 +96,10 @@ impl Entry {
             .len();
         Self {
             discs,
+            cache_cleared,
             sort_title: title.to_lowercase(),
-            pending: metadata.as_ref().is_some_and(|m| m.pending),
-            scrape_active: metadata.as_ref().is_some_and(|m| m.scrape_active),
+            pending,
+            scrape_active,
             source: metadata.as_ref().and_then(|m| m.source.clone()),
             refreshed: metadata.as_ref().and_then(|m| m.refreshed),
             title,
@@ -130,11 +142,19 @@ impl Entry {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum MetadataLookup {
-    Fetching(u64),
+    Fetching(Arc<AtomicBool>),
     Finished(Text),
     Failed(String),
+}
+
+impl MetadataLookup {
+    fn cancel(&self) {
+        if let Self::Fetching(cancel) = self {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 #[expect(
@@ -184,7 +204,6 @@ pub(super) struct Workspace {
     match_generation: u64,
     launch_generation: u64,
     metadata_lookups: HashMap<i64, MetadataLookup>,
-    lookup_sequence: u64,
     clear_playtime_confirmation: Option<i64>,
     settings: bool,
 }
@@ -234,7 +253,6 @@ impl Workspace {
             match_generation: 0,
             launch_generation: 0,
             metadata_lookups: HashMap::new(),
-            lookup_sequence: 0,
             clear_playtime_confirmation: None,
             settings: false,
         }

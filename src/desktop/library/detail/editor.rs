@@ -367,7 +367,11 @@ impl Desktop {
                             false,
                             cx,
                             move |v, _, cx| {
-                                v.fetch_cover_editions(vec![id], Some(release.clone()), cx);
+                                v.fetch_library_covers(
+                                    vec![id],
+                                    super::CoverRequest::Edition(release.clone()),
+                                    cx,
+                                );
                             },
                         )
                         .opacity(if self.library.scraping.busy() {

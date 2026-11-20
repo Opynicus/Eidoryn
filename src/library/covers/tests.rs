@@ -4,6 +4,15 @@ use image::{DynamicImage, RgbImage};
 use std::fs;
 
 const SERIAL: &str = "SCUS-94900";
+const MATCHING: Remote<'static> = Remote {
+    serial: SERIAL,
+    generation: 0,
+    kind: RemoteKind::Matching(Mode::Incremental),
+};
+const REFRESH: Remote<'static> = Remote {
+    kind: RemoteKind::Matching(Mode::Full),
+    ..MATCHING
+};
 
 pub(super) fn fixture() -> (tempfile::TempDir, Library) {
     let dir = tempfile::tempdir().unwrap();
@@ -37,7 +46,7 @@ fn cached_download_local_override_and_atomic_failures() {
     let (dir, lib) = fixture();
     let cancel = AtomicBool::new(false);
     let remote = url("cover");
-    let status = fetch_url(&lib, 1, Remote::Matching(SERIAL), &remote, &cancel, || {
+    let status = fetch_url(&lib, 1, MATCHING, &remote, &cancel, || {
         Ok(Some(response(200, encoded(ImageFormat::Jpeg))))
     })
     .unwrap();
@@ -46,7 +55,7 @@ fn cached_download_local_override_and_atomic_failures() {
     assert_eq!(image::image_dimensions(&cached).unwrap(), (256, 64));
     // Positive cache also rebuilds a missing thumbnail without a new request.
     fs::remove_file(&cached).unwrap();
-    fetch_url(&lib, 1, Remote::Matching(SERIAL), &remote, &cancel, || {
+    fetch_url(&lib, 1, MATCHING, &remote, &cancel, || {
         panic!("cached cover contacted server")
     })
     .unwrap();
@@ -64,25 +73,15 @@ fn cached_download_local_override_and_atomic_failures() {
     fs::write(&local, b"not a PNG").unwrap();
     assert!(set_local(&lib, 1, &local).is_err());
     assert!(
-        fetch_url(
-            &lib,
-            1,
-            Remote::Matching(SERIAL),
-            &url("corrupt"),
-            &cancel,
-            || Ok(Some(response(200, vec![1, 2])))
-        )
+        fetch_url(&lib, 1, MATCHING, &url("corrupt"), &cancel, || Ok(Some(
+            response(200, vec![1, 2])
+        )))
         .is_err()
     );
     assert!(
-        fetch_url(
-            &lib,
-            1,
-            Remote::Matching(SERIAL),
-            &url("offline"),
-            &cancel,
-            || Err("offline".into())
-        )
+        fetch_url(&lib, 1, MATCHING, &url("offline"), &cancel, || Err(
+            "offline".into()
+        ))
         .is_err()
     );
     assert_eq!(
@@ -112,21 +111,17 @@ fn negative_cache_and_server_backoff_apply_across_requests() {
     let cancel = AtomicBool::new(false);
     let missing = url("missing");
     assert_eq!(
-        fetch_url(&lib, 1, Remote::Matching(SERIAL), &missing, &cancel, || Ok(
-            Some(response(404, vec![]))
-        ))
+        fetch_url(&lib, 1, MATCHING, &missing, &cancel, || Ok(Some(response(
+            404,
+            vec![]
+        ))))
         .unwrap(),
         "not_found"
     );
     assert_eq!(
-        fetch_url(
-            &lib,
-            1,
-            Remote::Matching(SERIAL),
-            &missing,
-            &cancel,
-            || panic!("retried 404")
-        )
+        fetch_url(&lib, 1, MATCHING, &missing, &cancel, || panic!(
+            "retried 404"
+        ))
         .unwrap(),
         "not_found"
     );
@@ -134,15 +129,13 @@ fn negative_cache_and_server_backoff_apply_across_requests() {
     let after = 3600;
     let now = seconds(SystemTime::now());
     assert_eq!(
-        fetch_url(&lib, 1, Remote::Matching(SERIAL), &queued, &cancel, || Ok(
-            Some(
-                http::Response::builder()
-                    .status(429)
-                    .header("Retry-After", after.to_string())
-                    .body(Vec::new())
-                    .unwrap()
-            )
-        ))
+        fetch_url(&lib, 1, MATCHING, &queued, &cancel, || Ok(Some(
+            http::Response::builder()
+                .status(429)
+                .header("Retry-After", after.to_string())
+                .body(Vec::new())
+                .unwrap()
+        )))
         .unwrap(),
         "retry"
     );
@@ -154,14 +147,9 @@ fn negative_cache_and_server_backoff_apply_across_requests() {
         .unwrap();
     assert!(until >= now + after);
     assert_eq!(
-        fetch_url(
-            &lib,
-            1,
-            Remote::Matching(SERIAL),
-            &url("another"),
-            &cancel,
-            || panic!("retried throttled host")
-        )
+        fetch_url(&lib, 1, MATCHING, &url("another"), &cancel, || panic!(
+            "retried throttled host"
+        ))
         .unwrap(),
         "retry"
     );
@@ -186,14 +174,9 @@ fn rejects_oversize_invalid_and_cancelled_work_before_committing() {
             .body(encoded(ImageFormat::Png))
             .unwrap(),
     ] {
-        let err = fetch_url(
-            &lib,
-            1,
-            Remote::Refresh(SERIAL),
-            &url("large"),
-            &cancel,
-            || Ok(Some(response)),
-        )
+        let err = fetch_url(&lib, 1, REFRESH, &url("large"), &cancel, || {
+            Ok(Some(response))
+        })
         .unwrap_err();
         assert!(err.contains("8 MiB"));
     }
@@ -216,14 +199,9 @@ fn rejects_oversize_invalid_and_cancelled_work_before_committing() {
     );
     cancel.store(true, Ordering::Relaxed);
     assert!(
-        fetch_url(
-            &lib,
-            1,
-            Remote::Matching(SERIAL),
-            &url("stopped"),
-            &cancel,
-            || panic!("cancelled task sent request")
-        )
+        fetch_url(&lib, 1, MATCHING, &url("stopped"), &cancel, || panic!(
+            "cancelled task sent request"
+        ))
         .is_err()
     );
     assert!(metadata::list(&lib).unwrap()[&1].thumbnail.is_none());
@@ -287,7 +265,7 @@ fn loopback_http_response_uses_real_transport_and_negative_cache() {
     let (_dir, lib) = fixture();
     let cancel = AtomicBool::new(false);
     assert_eq!(
-        fetch_url(&lib, 1, Remote::Matching(SERIAL), &url, &cancel, || {
+        fetch_url(&lib, 1, MATCHING, &url, &cancel, || {
             let client = reqwest::Client::builder().no_proxy().build().unwrap();
             transport::cover(client.get(url.clone()), MAX_BYTES, &cancel)
                 .map(Some)
@@ -298,10 +276,7 @@ fn loopback_http_response_uses_real_transport_and_negative_cache() {
     );
     server.join().unwrap();
     assert_eq!(
-        fetch_url(&lib, 1, Remote::Matching(SERIAL), &url, &cancel, || panic!(
-            "throttled"
-        ))
-        .unwrap(),
+        fetch_url(&lib, 1, MATCHING, &url, &cancel, || panic!("throttled")).unwrap(),
         "retry"
     );
 }
@@ -310,23 +285,21 @@ fn loopback_http_response_uses_real_transport_and_negative_cache() {
 fn user_selected_art_from_another_region_survives_background_refresh() {
     let (_dir, lib) = fixture();
     let cancel = AtomicBool::new(false);
-    let chosen = Remote::Chosen {
+    let chosen = Remote {
         serial: "SCPS-10031",
-        revision: reserve_selection(&lib.connect().unwrap(), 1).unwrap(),
+        generation: 0,
+        kind: RemoteKind::Chosen {
+            revision: reserve_selection(&lib.connect().unwrap(), 1).unwrap(),
+        },
     };
     fetch_url(&lib, 1, chosen, &url("japan"), &cancel, || {
         Ok(Some(response(200, encoded(ImageFormat::Png))))
     })
     .unwrap();
     let selected = metadata::list(&lib).unwrap()[&1].thumbnail.clone();
-    fetch_url(
-        &lib,
-        1,
-        Remote::Matching(SERIAL),
-        &url("us"),
-        &cancel,
-        || Ok(Some(response(200, encoded(ImageFormat::Jpeg)))),
-    )
+    fetch_url(&lib, 1, MATCHING, &url("us"), &cancel, || {
+        Ok(Some(response(200, encoded(ImageFormat::Jpeg))))
+    })
     .unwrap();
     let refreshed = metadata::list(&lib).unwrap();
     assert_eq!(refreshed[&1].thumbnail, selected);
@@ -346,9 +319,12 @@ fn a_late_download_cannot_restore_a_superseded_user_selection() {
     let local = dir.path().join("latest.png");
     fs::write(&local, encoded(ImageFormat::Png)).unwrap();
     for reset in [false, true] {
-        let chosen = Remote::Chosen {
+        let chosen = Remote {
             serial: "SCPS-10031",
-            revision: reserve_selection(&lib.connect().unwrap(), 1).unwrap(),
+            generation: 0,
+            kind: RemoteKind::Chosen {
+                revision: reserve_selection(&lib.connect().unwrap(), 1).unwrap(),
+            },
         };
         // Perform the next explicit user action while the older request is outstanding.
         let outcome = fetch_url(&lib, 1, chosen, &url("late"), &cancel, || {
@@ -378,8 +354,8 @@ fn full_refresh_revalidates_cached_and_missing_art_but_keeps_good_files_on_failu
             Ok(Some(response(status, bytes)))
         })
     };
-    let cached = Remote::Matching(SERIAL);
-    let full = Remote::Refresh(SERIAL);
+    let cached = MATCHING;
+    let full = REFRESH;
     assert_eq!(fetch(cached, 404, vec![]).unwrap(), "not_found");
     assert_eq!(
         fetch(full, 200, encoded(ImageFormat::Jpeg)).unwrap(),
@@ -558,7 +534,7 @@ fn migration_redacts_custom_urls_for_automatic_and_user_selected_art() {
     tx.execute("INSERT INTO games(id,fallback_title) VALUES(2,'Other')", [])
         .unwrap();
     tx.execute("INSERT INTO cover_assets(game_id,kind,serial,source,original,thumb) VALUES(2,'user',NULL,'My cover.jpg','covers/c','covers/d')", []).unwrap();
-    record(&tx, 1, SERIAL, sensitive, "ready", 0).unwrap();
+    record(&tx, 1, MATCHING, sensitive, "ready", 0).unwrap();
     migrate_private_sources(&tx).unwrap();
     let expected = private_key(Url::parse(sensitive).unwrap());
     assert_eq!(expected.host_str(), Some("images.example"));
@@ -624,7 +600,7 @@ fn cover_download_validates_mime_against_the_encoded_image() {
         ("text/html", ImageFormat::Png, false),
     ] {
         let previous = metadata::list(&lib).unwrap()[&1].thumbnail.clone();
-        let result = fetch_url(&lib, 1, Remote::Refresh(SERIAL), &key, &cancel, || {
+        let result = fetch_url(&lib, 1, REFRESH, &key, &cancel, || {
             Ok(Some(
                 http::Response::builder()
                     .status(200)
@@ -691,10 +667,9 @@ fn a_late_response_from_the_replaced_provider_cannot_publish_an_asset() {
                 &lib,
                 1,
                 Source::Download {
-                    art: Remote::Job {
-                        serial: SERIAL,
-                        full: true,
-                        claim,
+                    art: Remote {
+                        kind: RemoteKind::Job { full: true, claim },
+                        ..MATCHING
                     },
                     url: provider,
                 },
@@ -714,4 +689,154 @@ fn a_late_response_from_the_replaced_provider_cannot_publish_an_asset() {
         assert_eq!(jobs::due_games(&lib).unwrap(), []);
         assert_eq!(jobs::recent_failures(&lib).unwrap(), []);
     }
+}
+
+#[test]
+fn clearing_covers_removes_downloads_by_scope_and_keeps_shared_and_custom_files() {
+    let (dir, lib) = fixture();
+    let mut conn = lib.connect().unwrap();
+    let tx = conn.transaction().unwrap();
+    tx.execute("INSERT INTO games(id,fallback_title) VALUES(2,'Copy')", [])
+        .unwrap();
+    metadata::identify(&tx, 2, Some(SERIAL), Some("USA"), "Copy").unwrap();
+    tx.commit().unwrap();
+    let cancel = AtomicBool::new(false);
+    let source = url("shared");
+    for id in [1, 2] {
+        fetch_url(&lib, id, MATCHING, &source, &cancel, || {
+            Ok(Some(response(200, encoded(ImageFormat::Jpeg))))
+        })
+        .unwrap();
+    }
+    let downloaded = metadata::list(&lib).unwrap()[&1].thumbnail.clone().unwrap();
+    let external = dir.path().join("chosen.png");
+    fs::write(&external, encoded(ImageFormat::Png)).unwrap();
+    set_local(&lib, 1, &external).unwrap();
+    let custom = metadata::list(&lib).unwrap()[&1].thumbnail.clone().unwrap();
+    let rows = |id| -> (usize, usize) {
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM cover_assets WHERE game_id=?1 AND kind='download'),
+                          (SELECT count(*) FROM cover_attempts WHERE game_id=?1)",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    lib.remove_games_and_clear_metadata(&[1]).unwrap();
+    assert_eq!(rows(1), (0, 0));
+    assert_eq!(rows(2), (1, 1));
+    assert!(downloaded.is_file());
+    lib.clear_metadata_cache(metadata::CacheScope::All).unwrap();
+    assert_eq!(rows(2), (0, 0));
+    assert!(!downloaded.parent().unwrap().exists());
+    assert!(external.is_file());
+    assert!(custom.is_file());
+    drop(conn);
+    drop(lib);
+    let lib = Library::open(&dir.path().join("library.db")).unwrap();
+    // A queued browse request after restarting must skip before constructing a source URL.
+    assert_eq!(
+        fetch_missing(&lib, 2, Provider::Custom, "", &cancel).unwrap(),
+        "skipped"
+    );
+    assert!(metadata::list(&lib).unwrap()[&2].cache_cleared);
+    let art = Remote {
+        generation: 1,
+        ..MATCHING
+    };
+    fetch_url(&lib, 2, art, &source, &cancel, || {
+        Ok(Some(response(200, encoded(ImageFormat::Jpeg))))
+    })
+    .unwrap();
+    assert!(downloaded.is_file());
+    assert!(!metadata::list(&lib).unwrap()[&2].cache_cleared);
+}
+
+#[test]
+fn late_cover_responses_and_failures_cannot_refill_a_cleared_cache() {
+    for status in [200, 404, 500] {
+        let (_dir, lib) = fixture();
+        let cancel = AtomicBool::new(false);
+        let result = fetch_url(&lib, 1, MATCHING, &url("stale"), &cancel, || {
+            lib.clear_metadata_cache(metadata::CacheScope::All)?;
+            Ok(Some(response(status, encoded(ImageFormat::Png))))
+        });
+        if status == 200 {
+            assert_eq!(result.unwrap(), "superseded");
+        }
+        let db = lib.connect().unwrap();
+        let counts: (usize, usize) = db
+            .query_row(
+                "SELECT (SELECT count(*) FROM cover_assets), (SELECT count(*) FROM cover_attempts)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (0, 0));
+        assert!(metadata::list(&lib).unwrap()[&1].cache_cleared);
+    }
+}
+
+#[test]
+fn staged_cover_job_cannot_run_after_its_clear() {
+    use crate::library::jobs::{self, Stage};
+    let (_dir, lib) = fixture();
+    let mut db = lib.connect().unwrap();
+    jobs::prepare_targets(&mut db, &[1], Mode::Full, Provider::Custom, false).unwrap();
+    let meta = jobs::claim(&mut db, "worker", Stage::Metadata, 1)
+        .unwrap()
+        .pop()
+        .unwrap();
+    meta.finish(&db, "updated").unwrap();
+    let cover = jobs::claim(&mut db, "worker", Stage::Cover, 1)
+        .unwrap()
+        .pop()
+        .unwrap();
+    lib.clear_metadata_cache(metadata::CacheScope::All).unwrap();
+    assert_eq!(
+        scrape_claim(
+            &lib,
+            1,
+            Provider::Custom,
+            "",
+            Mode::Full,
+            &AtomicBool::new(false),
+            &cover
+        )
+        .unwrap(),
+        "superseded"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT status FROM scrape_jobs WHERE id=?",
+            [cover.id],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "cancelled"
+    );
+}
+
+#[test]
+fn detached_cover_with_a_damaged_object_path_does_not_undo_removal() {
+    let (_dir, lib) = fixture();
+    let directory = format!("covers/objects/{}", "1".repeat(64));
+    let damaged = lib.base_dir().join(&directory);
+    fs::create_dir_all(damaged.parent().unwrap()).unwrap();
+    // A regular file left at the object's directory path makes remove_dir_all fail.
+    fs::write(&damaged, b"damaged cover").unwrap();
+    let db = lib.connect().unwrap();
+    db.execute(
+        "INSERT INTO cover_assets(game_id,kind,source,original,thumb) VALUES(1,'download','remote',?1,?2)",
+        params![format!("{directory}/original.png"), format!("{directory}/thumb.png")],
+    ).unwrap();
+    lib.remove_games_and_clear_metadata(&[1]).unwrap();
+    assert!(lib.games().unwrap().is_empty());
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM cover_assets", [], |r| r
+            .get::<_, usize>(0))
+            .unwrap(),
+        0
+    );
+    assert!(damaged.is_file());
 }

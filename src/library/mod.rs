@@ -86,7 +86,7 @@ fn european_market(market: &str) -> bool {
     )
 }
 
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 const SCHEMA: &str = include_str!("schema.sql");
 
 impl Library {
@@ -349,7 +349,7 @@ impl Library {
             let current: i64 = sqlx::query_scalar("PRAGMA user_version")
                 .fetch_one(&mut *tx)
                 .await?;
-            if !(4..=6).contains(&current) {
+            if !(4..=7).contains(&current) {
                 return Err(format!("Unsupported library schema version {current}").into());
             }
             if current == 4 {
@@ -365,12 +365,14 @@ impl Library {
                     .execute(&mut *tx)
                     .await?;
             }
-            sqlx::raw_sql(
-                "ALTER TABLE game_metadata ADD COLUMN cache_generation INTEGER NOT NULL DEFAULT 0;
-                 PRAGMA user_version=7;",
-            )
-            .execute(&mut *tx)
-            .await?;
+            if current <= 6 {
+                sqlx::query("ALTER TABLE game_metadata ADD COLUMN cache_generation INTEGER NOT NULL DEFAULT 0")
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            sqlx::raw_sql(include_str!("metadata/placeholder.sql"))
+                .execute(&mut *tx)
+                .await?;
             tx.commit().await?;
             Ok(())
         })

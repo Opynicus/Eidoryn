@@ -306,6 +306,13 @@ impl Desktop {
         removal.state = RemovalState::Saving;
         let ids = Arc::clone(&removal.ids);
         let clear_metadata = self.preferences.library.clear_metadata_on_remove;
+        if clear_metadata {
+            for id in ids.iter() {
+                if let Some(lookup) = self.library.metadata_lookups.get(id) {
+                    lookup.cancel();
+                }
+            }
+        }
         cx.notify();
         cx.spawn(async move |this, cx| {
             let (ids, result) = cx

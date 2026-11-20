@@ -61,7 +61,7 @@ impl Desktop {
         })
         .when(!running, |b| {
             b.on_click(cx.listener(|v, _, _, cx| {
-                v.library.menu = Some(OverviewMenu::ClearMetadata(CacheScope::Removed));
+                v.library.menu = Some(OverviewMenu::ClearMetadata(CacheScope::All));
                 cx.notify();
             }))
         });
@@ -107,14 +107,14 @@ impl Desktop {
         let p = self.library_palette();
         let scopes = [
             (
-                CacheScope::Removed,
-                Text::LibraryCacheScopeRemoved,
-                "lib-cache-scope-removed",
-            ),
-            (
                 CacheScope::All,
                 Text::LibraryCacheScopeAll,
                 "lib-cache-scope-all",
+            ),
+            (
+                CacheScope::Removed,
+                Text::LibraryCacheScopeRemoved,
+                "lib-cache-scope-removed",
             ),
         ];
         let choices =

@@ -198,8 +198,8 @@ impl CoverClaim {
         .map(|n| n == 1)
     }
 
-    pub(super) fn owns(&self, tx: &Transaction<'_>) -> rusqlite::Result<bool> {
-        tx.prepare_cached("SELECT 1 FROM scrape_jobs WHERE id=?1 AND owner=?2 AND attempt_count=?3 AND status='running' AND lease_until>unixepoch()")?
+    pub(super) fn owns(&self, db: &Connection) -> rusqlite::Result<bool> {
+        db.prepare_cached("SELECT 1 FROM scrape_jobs WHERE id=?1 AND owner=?2 AND attempt_count=?3 AND status='running' AND lease_until>unixepoch()")?
             .exists(params![self.id,self.owner,self.attempt])
     }
 }

@@ -216,8 +216,12 @@ impl Desktop {
                             .border_color(rgba(0xffffff25)),
                     ),
             );
+        let cover = cover.bg(rgb(tone));
+        if entry.cache_cleared {
+            let id = entry.game.id;
+            return cover.child(disc.debug_selector(move || format!("library-placeholder-{id}")));
+        }
         cover
-            .bg(rgb(tone))
             .p_3()
             .flex()
             .flex_col()
@@ -281,15 +285,17 @@ impl Desktop {
             .flex_wrap()
             .gap(px(4.))
             .items_center()
-            .child(badge(
-                entry
-                    .region
-                    .clone()
-                    .unwrap_or_else(|| self.tr(Text::LibraryUnknown).into()),
-                p.muted,
-                p.border,
-            ))
-            .when(discs > 1, |row| {
+            .when(!entry.cache_cleared, |row| {
+                row.child(badge(
+                    entry
+                        .region
+                        .clone()
+                        .unwrap_or_else(|| self.tr(Text::LibraryUnknown).into()),
+                    p.muted,
+                    p.border,
+                ))
+            })
+            .when(!entry.cache_cleared && discs > 1, |row| {
                 row.child(badge(
                     self.tr(Text::LibraryDiscCount)
                         .replace("{count}", &discs.to_string()),
@@ -380,7 +386,12 @@ impl Desktop {
                 .child(value)
         };
         let (date_label, date) = entry.publication_date();
-        let release_date = field(date.unwrap_or(self.tr(Text::LibraryUnknown)).to_owned())
+        let fallback_date = if entry.cache_cleared {
+            ""
+        } else {
+            self.tr(Text::LibraryUnknown)
+        };
+        let release_date = field(date.unwrap_or(fallback_date).to_owned())
             .when(date_label == Text::LibraryWorkDate, |cell| {
                 cell.flex().flex_col().child(label(&p, self.tr(date_label)))
             });

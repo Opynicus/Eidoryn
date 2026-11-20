@@ -186,6 +186,59 @@ fn downloaded(key: &str, title: &str) -> Release {
 }
 
 #[test]
+fn cleared_games_survive_reopen_and_incremental_work_until_explicitly_restored() {
+    use crate::library::{covers::Provider, scrape};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("index.db");
+    let lib = Library::open(&path).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let release = downloaded("Q1", "Release title");
+    refresh_with(&lib, 1, |_| Ok(response(vec![release.clone()]))).unwrap();
+    select(&lib, 1, &release.id).unwrap();
+    lib.clear_metadata_cache(CacheScope::All).unwrap();
+    drop(lib);
+
+    let lib = Library::open(&path).unwrap();
+    assert!(list(&lib).unwrap()[&1].cache_cleared);
+    // A manual request can be waiting for a worker when the UI clears the cache.
+    assert!(refresh_online_cancellable(&lib, 1, &AtomicBool::new(true)).is_err());
+    // Another game can use the preserved edition, but this one stays cleared.
+    fixture(&lib, 2, Some(TEST_SERIAL));
+    refresh(&lib, 1).unwrap();
+    assert!(list(&lib).unwrap()[&1].cache_cleared);
+    assert_eq!(
+        list(&lib).unwrap()[&2].release_id.as_ref(),
+        Some(&release.id)
+    );
+    scrape::enqueue_games(&lib, &[1, 2], Mode::Incremental, Provider::Libretro).unwrap();
+    assert_eq!(scrape::due_games(&lib).unwrap(), [(2, Mode::Incremental)]);
+    assert!(
+        Batch::default()
+            .refresh_with(&lib, 1, Mode::Incremental, &AtomicBool::new(false), |_| {
+                panic!("cleared games must not fetch during an automatic refresh")
+            })
+            .is_err()
+    );
+    assert_eq!(
+        refresh_with(&lib, 1, |_| Ok(response(vec![]))).unwrap(),
+        RefreshOutcome::NotFound
+    );
+    assert!(list(&lib).unwrap()[&1].cache_cleared);
+    assert_eq!(
+        refresh_with(&lib, 1, |_| Ok(response(vec![release.clone()]))).unwrap(),
+        RefreshOutcome::Updated
+    );
+    assert!(!list(&lib).unwrap()[&1].cache_cleared);
+    lib.clear_metadata_cache(CacheScope::All).unwrap();
+    select(&lib, 1, &release.id).unwrap();
+    assert!(!list(&lib).unwrap()[&1].cache_cleared);
+    lib.clear_metadata_cache(CacheScope::All).unwrap();
+    set_override(&lib, 1, Field::Title, Some("Edited")).unwrap();
+    assert!(!list(&lib).unwrap()[&1].cache_cleared);
+}
+
+#[test]
 fn online_results_survive_reopen_and_seed_new_offline_entries() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("index.db");

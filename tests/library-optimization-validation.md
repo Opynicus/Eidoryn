@@ -59,6 +59,8 @@
 ```sh
 schema_dir=$(mktemp -d)
 sqlite3 "$schema_dir/schema.db" < src/library/schema.sql
+sqlite3 "$schema_dir/schema.db" < src/library/metadata/schema.sql
+sqlite3 "$schema_dir/schema.db" < src/library/metadata/placeholder.sql
 sqlite3 "$schema_dir/schema.db" < src/library/jobs/schema.sql
 SQLX_OFFLINE_DIR="$PWD/.sqlx" DATABASE_URL="sqlite://$schema_dir/schema.db" cargo check --locked --features desktop
 ```

@@ -23,11 +23,22 @@ pub enum RefreshOutcome {
 
 /// Fetch the selected edition, preserving local corrections made while the request runs.
 pub fn refresh_online(lib: &Library, id: i64) -> Result<RefreshOutcome, String> {
-    let cancel = AtomicBool::new(false);
+    refresh_online_cancellable(lib, id, &AtomicBool::new(false))
+}
+
+/// Refresh one game while allowing a later cache clear to cancel the request.
+pub fn refresh_online_cancellable(
+    lib: &Library,
+    id: i64,
+    cancel: &AtomicBool,
+) -> Result<RefreshOutcome, String> {
     let batch = Batch::default();
     let prepared = batch
-        .prepare(lib, id, Mode::Full, &cancel)
+        .prepare(lib, id, Mode::Full, cancel)
         .map_err(|e| e.to_string())?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ProviderError::Cancelled.to_string());
+    }
     commit_one(lib, id, prepared)
 }
 
@@ -128,6 +139,9 @@ impl Batch {
     ) -> Result<Prepared, ProviderError> {
         let conn = lib.worker_connection().map_err(ProviderError::Database)?;
         let evidence = evidence(&conn, id)?;
+        if mode == Mode::Incremental && evidence.cache_cleared {
+            return Err(ProviderError::Cancelled);
+        }
         let Some(key) = evidence.serial.as_deref() else {
             return Ok(Prepared {
                 cache_generation: evidence.cache_generation,
@@ -334,6 +348,9 @@ impl Prepared {
         };
         if let Some(release) = release {
             assign(tx, id, &release.id, ev.selected.is_some()).map_err(|e| e.to_string())?;
+            if ev.cache_cleared {
+                super::restore_display(tx, id).map_err(|e| e.to_string())?;
+            }
             Ok(Some(RefreshOutcome::Updated))
         } else if ev.selected.is_some() {
             // This source has no update for the edition the user chose. Keep its

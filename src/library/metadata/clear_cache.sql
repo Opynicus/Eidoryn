@@ -17,8 +17,10 @@ DELETE FROM clear_serials WHERE serial IN (
 -- The lease prevents workers from publishing results after cleanup. The per-game
 -- generation also invalidates manual requests and cached lookups already in flight.
 UPDATE scrape_jobs SET status='cancelled', owner=NULL, lease_until=NULL, updated_at=unixepoch()
-WHERE job_type='metadata' AND status IN ('pending','running','retry_wait') AND game_id IN clear_games;
-UPDATE game_metadata SET cache_generation=cache_generation+1 WHERE game_id IN clear_games;
+WHERE status IN ('pending','running','retry_wait') AND game_id IN clear_games;
+DELETE FROM cover_attempts WHERE game_id IN clear_games;
+UPDATE game_metadata SET cache_generation=cache_generation+1, cover_revision=cover_revision+1,
+    cache_cleared=1 WHERE game_id IN clear_games;
 UPDATE game_metadata SET release_id=NULL, release_serial=NULL, auto_title=NULL, auto_region=NULL,
     auto_date=NULL, aliases=NULL, work_date=NULL, source=NULL, refreshed=NULL, source_revision=NULL, pending=0
 WHERE game_id IN clear_games AND NOT confirmed;

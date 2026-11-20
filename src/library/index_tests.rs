@@ -55,6 +55,35 @@ fn replace_file(path: &Path, byte: u8) {
 }
 
 #[test]
+fn rescanning_after_a_clear_only_queues_new_games() {
+    use super::{covers::Provider, metadata, scrape};
+    let mut f = Fixture::new();
+    f.image("Existing.iso", 1);
+    f.scan();
+    let original = f.db.games().unwrap()[0].id;
+    f.db.clear_metadata_cache(metadata::CacheScope::All)
+        .unwrap();
+    f.db = Library::open(&f.root.path().join("index.sqlite3")).unwrap();
+    f.db.configure_import_scraping(Some(Provider::Libretro));
+    f.image("New.iso", 2);
+    let report = f.scan();
+    assert_eq!((report.existing, report.added), (1, 1));
+    let rows = metadata::list(&f.db).unwrap();
+    assert!(rows[&original].cache_cleared);
+    let new =
+        f.db.games()
+            .unwrap()
+            .into_iter()
+            .find(|g| g.id != original)
+            .unwrap();
+    assert!(!rows[&new.id].cache_cleared);
+    assert_eq!(
+        scrape::due_games(&f.db).unwrap(),
+        [(new.id, scrape::Mode::Incremental)]
+    );
+}
+
+#[test]
 fn scans_are_incremental_and_an_overwritten_path_does_not_inherit_playtime() {
     let f = Fixture::new();
     let image = f.image("Game.iso", 0);
@@ -613,16 +642,24 @@ fn independent_simultaneous_drops_preserve_each_others_changes() {
 }
 
 #[test]
-fn migrating_v5_and_v6_preserves_games_positions_and_playtime() {
-    for (version, position) in [(5, None), (6, Some(7))] {
+fn migrating_v5_through_v7_preserves_games_positions_and_playtime() {
+    for (version, position) in [(5, None), (6, Some(7)), (7, Some(8))] {
         let f = Fixture::new();
         f.image("Original.iso", 1);
         f.scan();
         let game = f.db.games().unwrap()[0].id;
         f.session(game, 26);
         let db = f.db.connect().unwrap();
-        db.execute_batch("ALTER TABLE game_metadata DROP COLUMN cache_generation")
+        db.execute_batch("ALTER TABLE game_metadata DROP COLUMN cache_cleared")
             .unwrap();
+        if version < 7 {
+            db.execute_batch("ALTER TABLE game_metadata DROP COLUMN cache_generation")
+                .unwrap();
+        } else {
+            // v7 recorded earlier clears, but users could subsequently restore their data.
+            db.execute_batch("UPDATE game_metadata SET cache_generation=2")
+                .unwrap();
+        }
         if version == 5 {
             db.execute_batch("ALTER TABLE games DROP COLUMN manual_position")
                 .unwrap();
@@ -636,6 +673,7 @@ fn migrating_v5_and_v6_preserves_games_positions_and_playtime() {
 
         let migrated = Library::open(&f.root.path().join("index.sqlite3")).unwrap();
         let old_game = migrated.games().unwrap().remove(0);
+        assert!(!super::metadata::list(&migrated).unwrap()[&game].cache_cleared);
         assert_eq!(
             (old_game.id, old_game.seconds, old_game.manual_position),
             (game, 26, position)

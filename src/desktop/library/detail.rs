@@ -1,12 +1,16 @@
 pub(super) mod editor;
 
 use self::editor::Edit;
-use super::{Desktop, Entry, MetadataLookup, Text, card, div, label, tasks::Picker};
+use super::{
+    Desktop, Entry, MetadataLookup, Text, card, div, label,
+    tasks::{CoverRequest, Picker},
+};
 use eidoryn_psx::{
     library::{Location, covers, metadata},
     theme::Palette,
 };
 use gpui::{Context, Div, SharedString, Window, prelude::*, px, rgb};
+use std::sync::{Arc, atomic::AtomicBool};
 
 impl Desktop {
     pub(super) fn find_releases(&mut self, id: i64, query: String, cx: &mut Context<Self>) {
@@ -44,21 +48,26 @@ impl Desktop {
             return;
         }
         let generation = self.library.match_generation;
-        self.library.lookup_sequence = self.library.lookup_sequence.wrapping_add(1);
-        let request = self.library.lookup_sequence;
+        let request = Arc::new(AtomicBool::new(false));
         self.library
             .metadata_lookups
-            .insert(id, MetadataLookup::Fetching(request));
+            .insert(id, MetadataLookup::Fetching(Arc::clone(&request)));
         cx.spawn_in(window, async move |this, cx| {
+            let cancel = Arc::clone(&request);
             let result = cx
                 .background_executor()
-                .spawn(async move { metadata::refresh_online(&store, id) })
+                .spawn(async move { metadata::refresh_online_cancellable(&store, id, &cancel) })
                 .await;
             let _ = this.update_in(cx, |v, window, cx| {
                 use metadata::RefreshOutcome;
-                if v.library.metadata_lookups.get(&id) != Some(&MetadataLookup::Fetching(request)) {
+                if !matches!(v.library.metadata_lookups.get(&id), Some(MetadataLookup::Fetching(current)) if Arc::ptr_eq(current, &request)) {
                     return;
                 }
+                let restored = matches!(result, Ok(RefreshOutcome::Updated))
+                    && v.library
+                        .entries
+                        .iter()
+                        .any(|e| e.game.id == id && e.cache_cleared);
                 let status = match result {
                     Ok(RefreshOutcome::Candidates) => {
                         if v.page == crate::desktop::WorkspacePage::Library
@@ -88,6 +97,9 @@ impl Desktop {
                     Err(error) => MetadataLookup::Failed(error),
                 };
                 v.library.metadata_lookups.insert(id, status);
+                if restored {
+                    v.library.auto_attempted.retain(|(game, _)| *game != id);
+                }
                 v.update_library_games([id], cx);
                 cx.notify();
             });
@@ -613,7 +625,9 @@ impl Desktop {
                             Text::LibraryGetCover,
                             false,
                             cx,
-                            move |v, _, cx| v.fetch_covers(vec![id], cx),
+                            move |v, _, cx| {
+                                v.fetch_library_covers(vec![id], CoverRequest::Game, cx);
+                            },
                         )
                         .when(self.library.scraping.busy(), |b| {
                             b.opacity(0.45).cursor_default()

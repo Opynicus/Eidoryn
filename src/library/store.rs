@@ -3,7 +3,7 @@ use crate::preferences::RecentDisc;
 use eidoryn_ps1::disc::{DiscImage, DiscProbe, DiscRegion};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -509,10 +509,13 @@ impl Library {
             "UPDATE games SET hidden=1 WHERE id IN (SELECT value FROM json_each(?1)) AND NOT hidden",
             [&ids],
         )?;
-        if clear_metadata {
-            metadata::clear_in_transaction(&tx, metadata::CacheScope::Removed, Some(&ids))?;
-        }
+        let originals = if clear_metadata {
+            metadata::clear_in_transaction(&tx, metadata::CacheScope::Removed, Some(&ids))?
+        } else {
+            BTreeSet::new()
+        };
         tx.commit()?;
+        super::covers::collect_released(self, &mut db, &originals);
         Ok(())
     }
 

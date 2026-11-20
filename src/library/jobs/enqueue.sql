@@ -1,5 +1,6 @@
 INSERT INTO scrape_jobs(game_id,provider,job_type,mode,dependency)
 SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM games WHERE id=?1 AND NOT hidden)
+  AND (?4='full' OR NOT EXISTS(SELECT 1 FROM game_metadata WHERE game_id=?1 AND cache_cleared))
 ON CONFLICT(game_id,provider,job_type) WHERE status IN ('pending','retry_wait','running')
 DO UPDATE SET
   mode=CASE WHEN excluded.mode='full' THEN 'full' ELSE scrape_jobs.mode END,

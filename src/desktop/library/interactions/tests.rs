@@ -51,10 +51,10 @@ fn context_actions_target_the_right_clicked_game(cx: &mut TestAppContext) {
     view.read_with(cx, |v, _| {
         assert_eq!(v.library.selected, Some(3));
         assert_eq!(v.library.metadata_lookups.len(), 1);
-        assert_eq!(
+        assert!(matches!(
             v.library.metadata_lookups.get(&3),
-            Some(&MetadataLookup::Finished(Text::LibraryMetadataNoSerial))
-        );
+            Some(MetadataLookup::Finished(Text::LibraryMetadataNoSerial))
+        ));
         assert!(!v.library.details);
     });
 

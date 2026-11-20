@@ -40,6 +40,12 @@ pub(super) struct CoverTask {
     pub(super) chosen_edition: bool,
 }
 
+pub(super) enum CoverRequest {
+    Missing,
+    Game,
+    Edition(metadata::Release),
+}
+
 pub(super) struct DirectChoice {
     cues: Vec<PathBuf>,
     fast_boot: bool,
@@ -248,6 +254,14 @@ impl Desktop {
         if matches!(self.library.cache_clear, CacheClearState::Running) {
             return;
         }
+        if scope == metadata::CacheScope::All {
+            for lookup in self.library.metadata_lookups.values() {
+                lookup.cancel();
+            }
+            if let Some(cover) = &self.library.cover {
+                cover.cancel.store(true, Ordering::Relaxed);
+            }
+        }
         self.library.cache_clear = CacheClearState::Running;
         cx.notify();
         let previous = self.library.scraping.queue_write.take();
@@ -264,6 +278,8 @@ impl Desktop {
                     Ok(()) => {
                         v.library.cache_clear = CacheClearState::Finished;
                         if scope == metadata::CacheScope::All {
+                            v.library.thumbnails.clear();
+                            v.library.auto_attempted.clear();
                             v.library.matches.clear();
                             v.library.match_generation = v.library.match_generation.wrapping_add(1);
                             v.library.metadata_lookups.clear();
@@ -410,6 +426,9 @@ impl Desktop {
                 }
                 match result {
                     Ok(rows) => {
+                        let missing_art = rows.iter().any(|e| {
+                            !e.cache_cleared && e.thumbnail.is_none() && e.serial.is_some()
+                        });
                         // The bounded list is sorted. Missing rows were removed or grouped.
                         v.library
                             .entries
@@ -423,6 +442,9 @@ impl Desktop {
                             v.library.selected = None;
                             v.library.details = false;
                             v.library.close_editor();
+                        }
+                        if missing_art {
+                            v.auto_covers(cx);
                         }
                     }
                     Err(e) => v.notice = Some(e),
@@ -727,6 +749,7 @@ impl Desktop {
     pub(super) fn auto_covers(&mut self, cx: &mut Context<Self>) {
         if self.page != crate::desktop::WorkspacePage::Library
             || !self.preferences.library.auto_covers
+            || self.library.cache_clear == super::settings::CacheClearState::Running
             || self.library.cover.is_some()
             || self.library.scan.is_some()
             || self.library.scraping.busy()
@@ -738,7 +761,8 @@ impl Desktop {
             .entries
             .iter()
             .filter(|e| {
-                e.thumbnail.is_none()
+                !e.cache_cleared
+                    && e.thumbnail.is_none()
                     && e.serial.as_ref().is_some_and(|serial| {
                         self.library
                             .auto_attempted
@@ -747,17 +771,13 @@ impl Desktop {
             })
             .map(|e| e.game.id)
             .collect();
-        self.fetch_covers(ids, cx);
+        self.fetch_library_covers(ids, CoverRequest::Missing, cx);
     }
 
-    pub(super) fn fetch_covers(&mut self, ids: Vec<i64>, cx: &mut Context<Self>) {
-        self.fetch_cover_editions(ids, None, cx);
-    }
-
-    pub(super) fn fetch_cover_editions(
+    pub(super) fn fetch_library_covers(
         &mut self,
         ids: Vec<i64>,
-        edition: Option<metadata::Release>,
+        request: CoverRequest,
         cx: &mut Context<Self>,
     ) {
         if ids.is_empty() || self.library.cover.is_some() || self.library.scraping.busy() {
@@ -769,11 +789,11 @@ impl Desktop {
         let cancel = Arc::new(AtomicBool::new(false));
         self.library.cover = Some(CoverTask {
             cancel: cancel.clone(),
-            chosen_edition: edition.is_some(),
+            chosen_edition: matches!(request, CoverRequest::Edition(_)),
         });
         let provider = self.preferences.library.cover_provider;
         let template: Arc<str> = self.preferences.library.cover_template.as_str().into();
-        let edition = edition.map(Arc::new);
+        let request = Arc::new(request);
         cx.spawn(async move |this, cx| {
             let mut errors = Vec::new();
             let mut changed = Vec::new();
@@ -785,12 +805,12 @@ impl Desktop {
                 let store = store.clone();
                 let cancel_fetch = cancel.clone();
                 let template = template.clone();
-                let edition = edition.clone();
+                let request = Arc::clone(&request);
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        match edition.as_deref() {
-                            Some(release) => covers::fetch_release(
+                        match &*request {
+                            CoverRequest::Edition(release) => covers::fetch_release(
                                 &store,
                                 id,
                                 provider,
@@ -798,7 +818,16 @@ impl Desktop {
                                 release,
                                 &cancel_fetch,
                             ),
-                            None => covers::fetch(&store, id, provider, &template, &cancel_fetch),
+                            CoverRequest::Game => {
+                                covers::fetch(&store, id, provider, &template, &cancel_fetch)
+                            }
+                            CoverRequest::Missing => covers::fetch_missing(
+                                &store,
+                                id,
+                                provider,
+                                &template,
+                                &cancel_fetch,
+                            ),
                         }
                     })
                     .await;
@@ -827,6 +856,7 @@ impl Desktop {
                 }
                 v.update_library_games(changed, cx);
                 v.poll_library_scrape(cx);
+                v.auto_covers(cx);
                 cx.notify();
             });
         })

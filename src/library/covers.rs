@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 pub use assets::collect_orphans;
+pub(super) use assets::collect_released;
 use assets::{decode_thumbnail, remove_unreferenced, store};
 use image::ImageFormat;
 use reqwest::Url;
@@ -78,41 +79,49 @@ fn read_bounded(mut reader: impl Read, cancel: &AtomicBool) -> Result<Vec<u8>, S
     }
 }
 
+/// Capture both the intended edition and the cache generation before contacting a provider.
 #[derive(Clone, Copy)]
-enum Remote<'a> {
-    Matching(&'a str),
-    Refresh(&'a str),
+struct Remote<'a> {
+    serial: &'a str,
+    generation: i64,
+    kind: RemoteKind<'a>,
+}
+
+#[derive(Clone, Copy)]
+enum RemoteKind<'a> {
+    Matching(Mode),
     Job {
-        serial: &'a str,
         full: bool,
         claim: &'a super::scrape::CoverClaim,
     },
     Chosen {
-        serial: &'a str,
         revision: i64,
     },
 }
 
-impl<'a> Remote<'a> {
-    fn serial(self) -> &'a str {
-        match self {
-            Self::Matching(serial)
-            | Self::Refresh(serial)
-            | Self::Job { serial, .. }
-            | Self::Chosen { serial, .. } => serial,
-        }
-    }
-
+impl Remote<'_> {
     fn full(self) -> bool {
-        matches!(self, Self::Refresh(_) | Self::Job { full: true, .. })
+        matches!(
+            self.kind,
+            RemoteKind::Matching(Mode::Full) | RemoteKind::Job { full: true, .. }
+        )
     }
 
-    fn kind(self) -> &'static str {
-        match self {
-            Self::Matching(_) | Self::Refresh(_) | Self::Job { .. } => "download",
-            Self::Chosen { .. } => "user",
+    fn asset_kind(self) -> &'static str {
+        if matches!(self.kind, RemoteKind::Chosen { .. }) {
+            "user"
+        } else {
+            "download"
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum CoverRequest<'a> {
+    Missing,
+    Explicit,
+    Edition(&'a super::metadata::Release),
+    Job(Mode, &'a super::scrape::CoverClaim),
 }
 
 #[derive(Clone, Copy)]
@@ -239,14 +248,15 @@ fn cover_url(template: &str, serial: &str) -> Result<Url, String> {
 fn record(
     conn: &Connection,
     id: i64,
-    serial: &str,
+    art: Remote<'_>,
     url: &str,
     state: &str,
     retry: i64,
 ) -> rusqlite::Result<()> {
-    conn.execute("INSERT INTO cover_attempts(game_id,serial,url,state,retry_after,updated) VALUES(?1,?2,?3,?4,?5,unixepoch())
+    conn.execute("INSERT INTO cover_attempts(game_id,serial,url,state,retry_after,updated)
+        SELECT ?1,?2,?3,?4,?5,unixepoch() FROM game_metadata WHERE game_id=?1 AND cache_generation=?6
         ON CONFLICT(game_id,serial,url) DO UPDATE SET state=excluded.state,retry_after=excluded.retry_after,updated=excluded.updated",
-        params![id,serial,url,state,retry])?;
+        params![id,art.serial,url,state,retry,art.generation])?;
     Ok(())
 }
 
@@ -257,16 +267,18 @@ pub fn fetch(
     template: &str,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    fetch_edition(
-        lib,
-        id,
-        provider,
-        template,
-        None,
-        Mode::Incremental,
-        cancel,
-        None,
-    )
+    fetch_edition(lib, id, provider, template, CoverRequest::Explicit, cancel)
+}
+
+/// Fill missing art while browsing, respecting the user's persistent cache clear.
+pub fn fetch_missing(
+    lib: &Library,
+    id: i64,
+    provider: Provider,
+    template: &str,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    fetch_edition(lib, id, provider, template, CoverRequest::Missing, cancel)
 }
 
 /// Assign art from a user-selected edition while retaining the game's metadata match.
@@ -283,10 +295,8 @@ pub fn fetch_release(
         id,
         provider,
         template,
-        Some(release),
-        Mode::Incremental,
+        CoverRequest::Edition(release),
         cancel,
-        None,
     )
 }
 
@@ -299,29 +309,51 @@ pub(super) fn scrape_claim(
     cancel: &AtomicBool,
     claim: &super::scrape::CoverClaim,
 ) -> Result<String, String> {
-    fetch_edition(lib, id, provider, template, None, mode, cancel, Some(claim))
+    fetch_edition(
+        lib,
+        id,
+        provider,
+        template,
+        CoverRequest::Job(mode, claim),
+        cancel,
+    )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn fetch_edition(
     lib: &Library,
     id: i64,
     provider: Provider,
     template: &str,
-    chosen: Option<&super::metadata::Release>,
-    mode: Mode,
+    request: CoverRequest<'_>,
     cancel: &AtomicBool,
-    claim: Option<&super::scrape::CoverClaim>,
 ) -> Result<String, String> {
     check_cancel(cancel)?;
     let conn = lib.worker_connection()?;
     // A local filename and manual display title are private. Only send a catalog
     // title to a title-based service, or a verified disc serial to a serial-based one.
-    let (serial, title, region) = conn.query_row(
-        "SELECT COALESCE(release_serial,disc_serial),auto_title,COALESCE(auto_region,disc_region)
-         FROM game_metadata WHERE game_id=?",
-        [id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
+    let (serial, title, region, generation, cleared) = conn.query_row(
+        "SELECT COALESCE(release_serial,disc_serial),auto_title,COALESCE(auto_region,disc_region),
+                cache_generation,cache_cleared FROM game_metadata WHERE game_id=?",
+        [id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?,
+                      r.get::<_, Option<String>>(2)?, r.get(3)?, r.get::<_, bool>(4)?))
     ).map_err(|e|e.to_string())?;
+    if cleared
+        && matches!(
+            request,
+            CoverRequest::Missing | CoverRequest::Job(Mode::Incremental, _)
+        )
+    {
+        return Ok("skipped".into());
+    }
+    if let CoverRequest::Job(_, claim) = request
+        && !claim.owns(&conn).map_err(|e| e.to_string())?
+    {
+        return Ok("superseded".into());
+    }
+    let chosen = match request {
+        CoverRequest::Edition(release) => Some(release),
+        _ => None,
+    };
     let title = chosen
         .map(|r| r.title.as_str())
         .or(title.as_deref())
@@ -337,21 +369,20 @@ fn fetch_edition(
     if provider == Provider::Igdb && title.is_empty() {
         return Err("Choose a release or fetch its release details before searching IGDB".into());
     }
-    let art = if chosen.is_some() {
-        Remote::Chosen {
-            serial,
+    let kind = match request {
+        CoverRequest::Edition(_) => RemoteKind::Chosen {
             revision: reserve_selection(&conn, id)?,
-        }
-    } else if let Some(claim) = claim {
-        Remote::Job {
-            serial,
+        },
+        CoverRequest::Job(mode, claim) => RemoteKind::Job {
             full: mode == Mode::Full,
             claim,
-        }
-    } else if mode == Mode::Full {
-        Remote::Refresh(serial)
-    } else {
-        Remote::Matching(serial)
+        },
+        CoverRequest::Missing | CoverRequest::Explicit => RemoteKind::Matching(Mode::Incremental),
+    };
+    let art = Remote {
+        serial,
+        generation,
+        kind,
     };
     drop(conn);
     let key = provider_key(provider, template, serial, title, region)?;
@@ -485,7 +516,7 @@ fn fetch_url(
     cancel: &AtomicBool,
     request: impl FnOnce() -> Result<Option<http::Response<Vec<u8>>>, String>,
 ) -> Result<String, String> {
-    let serial = art.serial();
+    let serial = art.serial;
     let conn = lib.worker_connection()?;
     let now = seconds(SystemTime::now());
     if !art.full() {
@@ -493,19 +524,25 @@ fn fetch_url(
             .query_row(
                 "SELECT original,thumb FROM cover_assets
              WHERE game_id=?1 AND kind=?4 AND serial=?2 AND source=?3",
-                params![id, serial, url.as_str(), art.kind()],
+                params![id, serial, url.as_str(), art.asset_kind()],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if let Some((original, thumb)) = cached {
-            if lib.base_dir().join(&thumb).is_file() {
-                return Ok("ready".into());
+        if let Some((original, thumb)) = cached
+            && (lib.base_dir().join(&thumb).is_file() || lib.base_dir().join(&original).is_file())
+        {
+            restore_thumbnail(lib, &original, &thumb, cancel)?;
+            // A deliberately selected edition may reuse preserved custom artwork.
+            if let RemoteKind::Chosen { revision } = art.kind {
+                conn.execute(
+                    "UPDATE game_metadata SET cache_cleared=0 WHERE game_id=?1
+                        AND cache_cleared AND cache_generation=?2 AND cover_revision=?3",
+                    params![id, art.generation, revision],
+                )
+                .map_err(|e| e.to_string())?;
             }
-            if lib.base_dir().join(&original).is_file() {
-                restore_thumbnail(lib, &original, &thumb, cancel)?;
-                return Ok("ready".into());
-            }
+            return Ok("ready".into());
         }
         let state: Option<String> = conn
             .query_row(
@@ -517,7 +554,7 @@ fn fetch_url(
             .optional()
             .map_err(|e| e.to_string())?;
         if let Some(state) = state
-            && !(matches!(art, Remote::Job { .. }) && state == "failed")
+            && !(matches!(art.kind, RemoteKind::Job { .. }) && state == "failed")
         {
             // The durable scheduler has already honored its own retry deadline.
             return Ok(state);
@@ -532,7 +569,7 @@ fn fetch_url(
         )
         .map_err(|e| e.to_string())?;
     if limited {
-        record(&conn, id, serial, url.as_str(), "retry", 0).map_err(|e| e.to_string())?;
+        record(&conn, id, art, url.as_str(), "retry", 0).map_err(|e| e.to_string())?;
         return Ok("retry".into());
     }
     check_cancel(cancel)?;
@@ -543,7 +580,7 @@ fn fetch_url(
             record(
                 &conn,
                 id,
-                serial,
+                art,
                 url.as_str(),
                 "not_found",
                 now + NOT_FOUND_SECONDS,
@@ -556,7 +593,7 @@ fn fetch_url(
         record(
             &conn,
             id,
-            serial,
+            art,
             url.as_str(),
             "failed",
             seconds(SystemTime::now()).saturating_add(RETRY_SECONDS),
@@ -577,13 +614,12 @@ fn download(
 ) -> Result<String, String> {
     check_cancel(cancel)?;
     let now = seconds(SystemTime::now());
-    let serial = art.serial();
     match response.status().as_u16() {
         404 | 410 => {
             record(
                 conn,
                 id,
-                serial,
+                art,
                 url.as_str(),
                 "not_found",
                 now + NOT_FOUND_SECONDS,
@@ -601,7 +637,7 @@ fn download(
             );
             let host = url.host_str().ok_or("Missing cover source host")?;
             conn.execute("INSERT INTO cover_rate_limits(host,retry_after) VALUES(?1,?2) ON CONFLICT(host) DO UPDATE SET retry_after=MAX(retry_after,excluded.retry_after)",params![host,until]).map_err(|e|e.to_string())?;
-            record(conn, id, serial, url.as_str(), "retry", until).map_err(|e| e.to_string())?;
+            record(conn, id, art, url.as_str(), "retry", until).map_err(|e| e.to_string())?;
             Ok("retry".into())
         }
         status if !(200..300).contains(&status) => {

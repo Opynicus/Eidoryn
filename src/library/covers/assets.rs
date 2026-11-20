@@ -1,8 +1,8 @@
 //! Immutable, content-addressed artwork shared by local and remote selections.
-use super::{Library, MAX_PIXELS, Remote, Source, THUMB_SIZE, check_cancel, record};
+use super::{Library, MAX_PIXELS, RemoteKind, Source, THUMB_SIZE, check_cancel, record};
 use crate::library::http_retry::RequestLimit;
 use image::{ImageFormat, ImageReader};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -70,7 +70,7 @@ pub(super) fn store(
     let hash = format!("{:x}", Sha256::digest(bytes));
     let (kind, serial, attribution) = match source {
         Source::User { name, .. } => ("user", None, name),
-        Source::Download { art, url } => (art.kind(), Some(art.serial()), url),
+        Source::Download { art, url } => (art.asset_kind(), Some(art.serial), url),
     };
     let folder = lib.base_dir().join("covers/objects");
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
@@ -95,6 +95,7 @@ pub(super) fn store(
     if !still_selected(&tx, id, source).map_err(|e| e.to_string())? {
         return Ok(false);
     }
+    crate::library::metadata::restore_display(&tx, id).map_err(|e| e.to_string())?;
     let previous: Option<String> = tx
         .query_row(
             "SELECT original FROM cover_assets WHERE game_id=?1 AND kind=?2",
@@ -111,13 +112,11 @@ pub(super) fn store(
         params![id,kind,serial,attribution,format!("{relative}/{name}"),format!("{relative}/thumb.png"),
             hash, if ext == "png" {"image/png"} else {"image/jpeg"},width,height]).map_err(|e|e.to_string())?;
     if let Source::Download { art, url } = source {
-        record(&tx, id, art.serial(), url, "ready", 0).map_err(|e| e.to_string())?;
+        record(&tx, id, art, url, "ready", 0).map_err(|e| e.to_string())?;
     }
     check_cancel(cancel)?;
-    if let Source::Download {
-        art: Remote::Job { claim, .. },
-        ..
-    } = source
+    if let Source::Download { art, .. } = source
+        && let RemoteKind::Job { claim, .. } = art.kind
     {
         claim.finish_cover(&tx)?;
     }
@@ -153,20 +152,24 @@ fn still_selected(
     source: Source<'_>,
 ) -> rusqlite::Result<bool> {
     match source {
-        Source::User { revision, .. }
-        | Source::Download {
-            art: Remote::Chosen { revision, .. },
-            ..
-        } => db.query_row(
+        Source::User { revision, .. } => db.query_row(
             "SELECT cover_revision=?2 FROM game_metadata WHERE game_id=?1",
             params![id, revision],
             |r| r.get(0),
         ),
-        Source::Download { art, .. } => db.query_row(
-            "SELECT COALESCE(release_serial,disc_serial) IS ?2 FROM game_metadata WHERE game_id=?1",
-            params![id, art.serial()],
-            |r| r.get(0),
-        ),
+        Source::Download { art, .. } => {
+            let revision = match art.kind {
+                RemoteKind::Chosen { revision } => Some(revision),
+                _ => None,
+            };
+            db.query_row(
+                "SELECT cache_generation=?2 AND CASE WHEN ?3 IS NULL THEN
+                    COALESCE(release_serial,disc_serial) IS ?4 ELSE cover_revision=?3 END
+                 FROM game_metadata WHERE game_id=?1",
+                params![id, art.generation, revision, art.serial],
+                |r| r.get(0),
+            )
+        }
     }
 }
 
@@ -219,6 +222,14 @@ fn has_legacy_backup(lib: &Library) -> std::io::Result<bool> {
 }
 
 pub(super) fn remove_unreferenced(lib: &Library, original: &str) -> Result<bool, String> {
+    remove_unreferenced_with(lib, &mut lib.connect()?, original)
+}
+
+fn remove_unreferenced_with(
+    lib: &Library,
+    db: &mut Connection,
+    original: &str,
+) -> Result<bool, String> {
     let Some(parent) = Path::new(original)
         .parent()
         .filter(|p| managed_directory(p))
@@ -228,7 +239,6 @@ pub(super) fn remove_unreferenced(lib: &Library, original: &str) -> Result<bool,
     if !parent.starts_with("covers/objects") && has_legacy_backup(lib).map_err(|e| e.to_string())? {
         return Ok(false);
     }
-    let mut db = lib.connect()?;
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -254,6 +264,19 @@ pub(super) fn remove_unreferenced(lib: &Library, original: &str) -> Result<bool,
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Release only artwork detached by this operation. A concurrent or shared reference wins.
+pub(in crate::library) fn collect_released(
+    lib: &Library,
+    db: &mut Connection,
+    originals: &std::collections::BTreeSet<String>,
+) {
+    for original in originals {
+        // The database commit already detached the artwork. Orphan collection retries
+        // on startup if the operating system temporarily prevents deleting the files.
+        let _ = remove_unreferenced_with(lib, db, original);
     }
 }
 
