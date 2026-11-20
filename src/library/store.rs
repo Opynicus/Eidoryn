@@ -160,6 +160,7 @@ impl Library {
     // One SQLite transaction per completed entry. Long fingerprints are calculated
     // before taking the writer lock, only for explicit verification/association.
     pub(super) fn index(
+        &self,
         db: &mut Connection,
         path: &Path,
         mode: Mode,
@@ -261,19 +262,20 @@ impl Library {
             let verified = identity
                 .as_deref()
                 .map(|id| (id, verified.is_some_and(|(_, fast)| fast)));
-            return Self::insert_revision(tx, &path, &key, probe, &stamps, mode, verified);
+            return self.insert_revision(tx, &path, probe, &stamps, mode, verified);
         }
     }
 
     fn insert_revision(
+        &self,
         tx: Transaction<'_>,
         path: &Path,
-        key: &[u8],
         probe: DiscProbe,
         stamps: &[Stamp],
         mode: Mode,
         verified: Option<(&str, bool)>,
     ) -> IndexResult<IndexedFile> {
+        let key = path_key(path);
         let title = path.file_stem().unwrap_or_default().to_string_lossy();
         let region = probe.region.map(|r| match r {
             DiscRegion::America => "USA",
@@ -332,6 +334,12 @@ impl Library {
         metadata::identify(&tx, home, probe.serial.as_deref(), region, title.as_ref())?;
         let pending = needs_confirmation(&tx, home, game)?;
         tx.commit()?;
+        // A verified copy gets a home ID for its own sessions, but shares the existing game card.
+        if game == home
+            && let Some(additions) = &self.additions
+        {
+            let _ = additions.send(game);
+        }
         Ok(IndexedFile {
             change: Change::Added,
             home,
@@ -346,7 +354,7 @@ impl Library {
         identity: &str,
         fast_boot: bool,
     ) -> Result<i64, String> {
-        Self::index(
+        self.index(
             &mut self.connect()?,
             path,
             Mode::Explicit,
@@ -495,7 +503,7 @@ impl Library {
                 continue;
             }
             // Respect removal even after a crash between indexing and migration bookkeeping.
-            if Self::index(&mut db, &path, Mode::Directory, None).is_err() {
+            if self.index(&mut db, &path, Mode::Directory, None).is_err() {
                 continue;
             }
             let tx = db.transaction()?;

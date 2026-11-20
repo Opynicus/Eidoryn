@@ -354,3 +354,79 @@ fn a_late_download_cannot_restore_a_superseded_user_selection() {
         );
     }
 }
+
+#[test]
+fn full_refresh_revalidates_cached_and_missing_art_but_keeps_good_files_on_failure_and_backoff() {
+    let (_dir, lib) = fixture();
+    let cancel = AtomicBool::new(false);
+    let source = url("full");
+    let fetch = |art, status, bytes| {
+        fetch_url(&lib, 1, art, &source, &cancel, || {
+            Ok(Some(response(status, bytes)))
+        })
+    };
+    let cached = Remote::Matching(SERIAL);
+    let full = Remote::Refresh(SERIAL);
+    assert_eq!(fetch(cached, 404, vec![]).unwrap(), "not_found");
+    assert_eq!(
+        fetch(full, 200, encoded(ImageFormat::Jpeg)).unwrap(),
+        "ready"
+    );
+    let first = metadata::list(&lib).unwrap()[&1].thumbnail.clone().unwrap();
+    assert!(first.is_file());
+    assert!(fetch(full, 200, vec![0]).is_err());
+    assert!(first.is_file());
+    assert_eq!(
+        fetch(full, 200, encoded(ImageFormat::Png)).unwrap(),
+        "ready"
+    );
+    let second = metadata::list(&lib).unwrap()[&1].thumbnail.clone().unwrap();
+    assert_ne!(second, first);
+    assert_eq!(fetch(full, 429, vec![]).unwrap(), "retry");
+    assert_eq!(
+        fetch_url(&lib, 1, full, &source, &cancel, || panic!(
+            "refresh ignored backoff"
+        ))
+        .unwrap(),
+        "retry"
+    );
+    assert!(second.is_file());
+    assert_eq!(
+        metadata::list(&lib).unwrap()[&1].thumbnail.as_ref(),
+        Some(&second)
+    );
+}
+
+#[test]
+#[ignore = "live batch using the Wikidata and Libretro services; requires network"]
+fn live_library_batch_full_and_incremental_smoke() {
+    use crate::library::scrape;
+
+    let (directory, lib) = fixture();
+    let cancel = AtomicBool::new(false);
+    metadata::set_override(&lib, 1, metadata::Field::Title, Some("My copy")).unwrap();
+    let run = |mode| {
+        let report = scrape::run(&lib, &[1], mode, Provider::Libretro, "", &cancel, |_, _| {});
+        assert_eq!(
+            (report.finished, report.failed, report.skipped),
+            (1, 0, 0),
+            "{:?}",
+            report.errors
+        );
+        let rows = metadata::list(&lib).unwrap();
+        let game = &rows[&1];
+        assert_eq!(game.title.as_deref(), Some("My copy"));
+        assert_eq!(game.date.as_deref(), Some("1996-09-09"));
+        assert_eq!(game.source.as_deref(), Some("Wikidata (online)"));
+        let thumbnail = game.thumbnail.as_ref().unwrap();
+        assert!(thumbnail.starts_with(directory.path().join("covers/download")));
+        assert!(thumbnail.with_file_name("original.png").is_file());
+        assert!(image::image_dimensions(thumbnail).is_ok());
+        thumbnail.clone()
+    };
+    let first = run(scrape::Mode::Full);
+    assert_eq!(run(scrape::Mode::Incremental), first);
+    let refreshed = run(scrape::Mode::Full);
+    assert_ne!(refreshed, first);
+    assert!(!first.exists());
+}

@@ -29,6 +29,13 @@ pub(super) enum Picker {
     Bios(PathBuf, bool),
 }
 
+pub(super) struct CoverTask {
+    pub(super) cancel: Arc<AtomicBool>,
+    // An explicit cover from another edition is a user override. A full refresh
+    // can replace automatic downloads but must let this selection finish.
+    pub(super) chosen_edition: bool,
+}
+
 pub(super) struct DirectChoice {
     cues: Vec<PathBuf>,
     fast_boot: bool,
@@ -187,6 +194,7 @@ impl Desktop {
         }
         self.library.last_refresh = Instant::now();
         self.library.reading = true;
+        let prepare_full = self.library.scraping.preparing_full;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -205,8 +213,15 @@ impl Desktop {
                 .await;
             let _ = this.update(cx, |v, cx| {
                 v.library.reading = false;
+                if prepare_full {
+                    v.library.scraping.preparing_full = false;
+                }
                 match result {
                     Ok((entries, roots)) => {
+                        if prepare_full {
+                            // Imports may have committed since the last visible grid update.
+                            v.library.scraping.include_full_library(&entries);
+                        }
                         v.library.loaded = true;
                         v.library.entries = entries;
                         v.library.roots = roots;
@@ -219,6 +234,7 @@ impl Desktop {
                             v.library.close_editor();
                         }
                         v.library.reorder();
+                        v.poll_library_scrape(cx);
                         v.auto_covers(cx);
                     }
                     Err(error) => v.notice = Some(error),
@@ -362,8 +378,10 @@ impl Desktop {
         let path = loc.path.clone();
         let fast_boot = loc.fast_boot;
         self.library.location = Some(loc.id);
-        self.library.details = true;
+        self.library.pending_bios = None;
         if !loc.available || !path.is_file() {
+            let location_id = loc.id;
+            self.library_picker(Picker::Relocate(location_id), cx);
             self.notice = Some(self.tr(Text::LibraryMissing).to_owned());
             cx.notify();
             return;
@@ -373,7 +391,6 @@ impl Desktop {
             cx.notify();
             return;
         }
-        self.library.pending_bios = None;
         self.command(
             Command::LaunchLibraryDisc {
                 path,
@@ -455,9 +472,11 @@ impl Desktop {
     }
 
     pub(super) fn auto_covers(&mut self, cx: &mut Context<Self>) {
-        if !self.preferences.library.auto_covers
+        if self.page != crate::desktop::WorkspacePage::Library
+            || !self.preferences.library.auto_covers
             || self.library.cover.is_some()
             || self.library.scan.is_some()
+            || self.library.scraping.busy()
         {
             return;
         }
@@ -488,14 +507,17 @@ impl Desktop {
         edition: Option<metadata::Release>,
         cx: &mut Context<Self>,
     ) {
-        if ids.is_empty() || self.library.cover.is_some() {
+        if ids.is_empty() || self.library.cover.is_some() || self.library.scraping.busy() {
             return;
         }
         let Some(store) = self.library.store.clone() else {
             return;
         };
         let cancel = Arc::new(AtomicBool::new(false));
-        self.library.cover = Some(cancel.clone());
+        self.library.cover = Some(CoverTask {
+            cancel: cancel.clone(),
+            chosen_edition: edition.is_some(),
+        });
         let provider = self.preferences.library.cover_provider;
         let template = self.preferences.library.cover_template.clone();
         cx.spawn(async move |this, cx| {
@@ -618,7 +640,12 @@ impl Desktop {
                     },
                 ));
         }
-        self.scan_report_panel(panel, cx)
+        let panel = self.scan_report_panel(panel, cx);
+        if self.library.scraping.busy() || self.library.scraping.last.is_some() {
+            panel.child(self.scrape_status(cx))
+        } else {
+            panel
+        }
     }
     fn scan_report_panel(&self, mut panel: Div, cx: &Context<Self>) -> Div {
         let p = self.themes.active().palette;
@@ -721,15 +748,18 @@ impl Desktop {
                 &self.themes.active().palette,
                 self.tr(Text::LibraryDownloading),
             ))
-            .when_some(self.library.cover.clone(), |s, flag| {
-                s.child(self.library_button(
-                    "lib-stop-cover",
-                    Text::LibraryCancel,
-                    false,
-                    cx,
-                    move |_, _, _| flag.store(true, Ordering::Relaxed),
-                ))
-            })
+            .when_some(
+                self.library.cover.as_ref().map(|task| task.cancel.clone()),
+                |s, flag| {
+                    s.child(self.library_button(
+                        "lib-stop-cover",
+                        Text::LibraryCancel,
+                        false,
+                        cx,
+                        move |_, _, _| flag.store(true, Ordering::Relaxed),
+                    ))
+                },
+            )
     }
 }
 

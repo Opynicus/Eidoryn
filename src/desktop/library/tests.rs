@@ -1,7 +1,7 @@
 use super::*;
 use crate::desktop::{
     WorkspacePage,
-    tests::{click_control, desktop, press_keys},
+    tests::{click_control, desktop, press_keys, wait_for_snapshot},
 };
 use gpui::{
     Modifiers, ScrollDelta, ScrollEvent, ScrollSource, TestAppContext, TouchPhase, point, size,
@@ -124,6 +124,7 @@ fn library_enter_requires_bios_then_navigates_only_after_success(cx: &mut TestAp
     click_control(cx, "nav-library");
     click_control(cx, "library-entry-1");
     press_keys(cx, "enter");
+    assert!(cx.debug_bounds("library-details").is_none());
     assert!(cx.debug_bounds("lib-bios-continue").is_some());
     assert_eq!(view.read_with(cx, |v, _| v.snapshot.media_revision), 0);
     click_control(cx, "lib-bios-continue");
@@ -135,22 +136,32 @@ fn library_enter_requires_bios_then_navigates_only_after_success(cx: &mut TestAp
     click_control(cx, "lib-bios-continue");
     cx.simulate_path_prompt_response(|_| Some(vec![bios]));
     cx.run_until_parked();
-    let deadline = Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        view.update(cx, Desktop::receive_snapshot);
-        if view.read_with(cx, |v, _| v.page) == WorkspacePage::Game {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "library launch receipt timed out"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    wait_for_snapshot(&view, cx, |s| s.media_revision == 1);
+    assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Game);
+    cx.run_until_parked();
+
+    click_control(cx, "nav-library");
+    click_control(cx, "lib-start");
+    assert!(!view.read_with(cx, |v, _| v.library.details));
+    wait_for_snapshot(&view, cx, |s| s.media_revision == 2);
+    assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Game);
     assert_eq!(
         view.read_with(cx, |v, _| v.snapshot.disc_path.clone()),
-        Some(path)
+        Some(path.clone())
     );
+    cx.run_until_parked();
+
+    click_control(cx, "nav-library");
+    std::fs::rename(&path, tmp.path().join("moved.iso")).unwrap();
+    click_control(cx, "lib-start");
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && !options.multiple);
+        None
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("library-details").is_none());
+    assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Library);
+    assert_eq!(view.read_with(cx, |v, _| v.snapshot.media_revision), 2);
 }
 
 #[test]
@@ -241,6 +252,14 @@ fn cover_settings_persist_provider_and_keep_custom_template(cx: &mut TestAppCont
         view.read_with(cx, |v, _| v.preferences.library.cover_provider),
         Provider::Libretro,
     );
+    assert!(view.read_with(cx, |v, _| v.preferences.library.scrape_new_games));
+    click_control(cx, "lib-scrape-new");
+    assert!(
+        !Preferences::load(&settings)
+            .unwrap()
+            .library
+            .scrape_new_games
+    );
     assert!(cx.debug_bounds("lib-template").is_none());
     click_control(cx, Text::LibraryCustomCoverSource.id());
     click_control(cx, "lib-template");
@@ -303,4 +322,88 @@ fn library_folder_import_confirms_recursion_without_starting_game(cx: &mut TestA
         view.read_with(cx, |v, _| v.preferences.recent_discs.is_empty()
             && v.snapshot.media_revision == 0)
     );
+}
+
+#[gpui::test]
+fn scrape_refreshes_all_games_and_only_new_imports(cx: &mut TestAppContext) {
+    use eidoryn_psx::library::scrape::Mode;
+    use std::time::Duration;
+
+    fn wait_for_batch(
+        view: &Entity<Desktop>,
+        cx: &mut gpui::VisualTestContext,
+        mode: Mode,
+        expected: usize,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            view.update(cx, Desktop::poll_library_scrape);
+            cx.executor().advance_clock(Duration::from_millis(150));
+            cx.run_until_parked();
+            if let Some(outcome) = view.update(cx, |v, _| v.library.scraping.last.take()) {
+                let (actual_mode, report, cancelled) = outcome;
+                assert_eq!(actual_mode, mode);
+                assert!(!cancelled);
+                assert_eq!(
+                    (report.total, report.finished, report.skipped, report.failed),
+                    (expected, expected, expected, 0)
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "no scrape report for {mode:?}");
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Library::open(&tmp.path().join("library.db")).unwrap();
+    let image = |name: &str, byte| {
+        let path = tmp.path().join(name);
+        std::fs::write(&path, vec![byte; 2048 * 8]).unwrap();
+        path
+    };
+    let old = image("First.iso", 1u8);
+    let second = image("Second.iso", 2);
+    db.scan_files(&[old.clone(), second], &AtomicBool::default(), |_| {})
+        .unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    let watched = view.update(cx, |v, _| {
+        v.preferences_path = Some(tmp.path().join("preferences.json"));
+        v.library = Workspace::new(Some(db));
+        v.library.store.clone().unwrap()
+    });
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    cx.run_until_parked();
+    click_control(cx, "nav-library");
+    click_control(cx, "library-search");
+    cx.simulate_input("Second");
+    assert_eq!(view.read_with(cx, |v, _| v.library.order.len()), 1);
+    // Another library connection can commit a game before this view reloads.
+    let external = Library::open(&tmp.path().join("library.db")).unwrap();
+    external
+        .scan_files(&[image("Third.iso", 4)], &AtomicBool::default(), |_| {})
+        .unwrap();
+    assert_eq!(view.read_with(cx, |v, _| v.library.entries.len()), 2);
+    click_control(cx, "lib-refresh-all");
+    wait_for_batch(&view, cx, Mode::Full, 3);
+
+    // Import after leaving the filtered list, as when a game is opened directly.
+    click_control(cx, "nav-game");
+    let new = image("New.iso", 3);
+    let files = [old, new];
+    let scan = watched
+        .scan_files(&files, &AtomicBool::default(), |_| {})
+        .unwrap();
+    assert_eq!((scan.added, scan.existing), (1, 1));
+    wait_for_batch(&view, cx, Mode::Incremental, 1);
+
+    let unchanged = watched
+        .scan_files(&files, &AtomicBool::default(), |_| {})
+        .unwrap();
+    assert_eq!((unchanged.added, unchanged.existing), (0, 2));
+    view.update(cx, Desktop::poll_library_scrape);
+    cx.run_until_parked();
+    view.update(cx, Desktop::poll_library_scrape);
+    assert!(view.read_with(cx, |v, _| {
+        !v.library.scraping.busy() && v.library.scraping.last.is_none()
+    }));
 }

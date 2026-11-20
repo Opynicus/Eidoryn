@@ -116,7 +116,8 @@ fn verified_images_keep_their_history_across_timestamp_changes_and_moves() {
 
 #[test]
 fn concurrent_imports_of_the_same_path_create_one_entry() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    let additions = f.db.watch_additions();
     let path = f.image("shared.iso", 9);
     let barrier = std::sync::Barrier::new(4);
     std::thread::scope(|workers| {
@@ -131,6 +132,7 @@ fn concurrent_imports_of_the_same_path_create_one_entry() {
     let games = f.db.games().unwrap();
     assert_eq!(games.len(), 1);
     assert_eq!(games[0].locations.len(), 1);
+    assert_eq!(additions.try_iter().collect::<Vec<_>>(), [games[0].id]);
 }
 
 #[test]
@@ -360,7 +362,8 @@ fn finding_a_cue_after_its_track_hides_the_standalone_card() {
 
 #[test]
 fn cancellation_preserves_completed_entries_migration_is_idempotent() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    let additions = f.db.watch_additions();
     let first = f.image("a.iso", 0);
     f.image("b.iso", 2);
     let flag = AtomicBool::new(false);
@@ -372,7 +375,11 @@ fn cancellation_preserves_completed_entries_migration_is_idempotent() {
         })
         .unwrap();
     assert_eq!(partial.added, 1);
+    let first_id = f.db.games().unwrap()[0].id;
+    assert_eq!(additions.try_iter().collect::<Vec<_>>(), [first_id]);
     assert_eq!(f.scan().added, 1);
+    let second_id = f.db.games().unwrap()[1].id;
+    assert_eq!(additions.try_iter().collect::<Vec<_>>(), [second_id]);
     let recent = crate::preferences::RecentDisc {
         path: first,
         fast_boot: true,
@@ -387,6 +394,34 @@ fn cancellation_preserves_completed_entries_migration_is_idempotent() {
     f.db.remove(games[0].id).unwrap();
     f.db.migrate_recents(&[recent]).unwrap();
     assert_eq!(f.db.games().unwrap().len(), 1);
+}
+
+#[test]
+fn additions_include_first_launch_and_migration_but_skip_verified_copies_and_reopens() {
+    let mut f = Fixture::new();
+    let additions = f.db.watch_additions();
+    let writer = f.db.clone();
+    let path = f.image("direct.iso", 3);
+    let identity = DiscImage::open(&path).unwrap().identity().to_owned();
+    let id = writer.associate_opened(&path, &identity, true).unwrap();
+    assert_eq!(additions.try_iter().collect::<Vec<_>>(), [id]);
+    writer.associate_opened(&path, &identity, false).unwrap();
+    let copy = f.image("copy.iso", 3);
+    let copy_home = writer.associate_opened(&copy, &identity, true).unwrap();
+    assert_ne!(copy_home, id);
+    assert_eq!(f.db.games().unwrap().len(), 1);
+    assert!(additions.try_iter().next().is_none());
+
+    let recent = crate::preferences::RecentDisc {
+        path: f.image("recent.iso", 4),
+        fast_boot: false,
+    };
+    for _ in 0..2 {
+        f.db.migrate_recents(std::slice::from_ref(&recent)).unwrap();
+    }
+    f.scan();
+    let recent_id = f.db.games().unwrap()[1].id;
+    assert_eq!(additions.try_iter().collect::<Vec<_>>(), [recent_id]);
 }
 
 #[test]

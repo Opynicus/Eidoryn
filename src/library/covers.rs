@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use image::{ImageFormat, ImageReader};
 use reqwest::Url;
@@ -12,7 +12,11 @@ use reqwest::blocking::Client;
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use super::Library;
+use super::{
+    Library,
+    http_retry::{RETRY_SECONDS, retry_deadline, seconds},
+    scrape::Mode,
+};
 
 mod igdb;
 mod libretro;
@@ -41,28 +45,6 @@ const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PIXELS: u64 = 16 * 1024 * 1024;
 const THUMB_SIZE: u32 = 256;
 const NOT_FOUND_SECONDS: i64 = 86_400;
-const RETRY_SECONDS: i64 = 300;
-
-fn seconds(time: SystemTime) -> i64 {
-    i64::try_from(
-        time.duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    )
-    .unwrap_or(i64::MAX)
-}
-
-fn retry_deadline(header: Option<&str>, now: i64) -> i64 {
-    header
-        .and_then(|h| {
-            h.parse::<u64>()
-                .ok()
-                .map(|s| now.saturating_add(i64::try_from(s).unwrap_or(i64::MAX)))
-                .or_else(|| httpdate::parse_http_date(h).ok().map(seconds))
-        })
-        .unwrap_or_else(|| now.saturating_add(RETRY_SECONDS))
-        .max(now)
-}
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
@@ -91,19 +73,20 @@ fn read_bounded(mut reader: impl Read, cancel: &AtomicBool) -> Result<Vec<u8>, S
 #[derive(Clone, Copy)]
 enum Remote<'a> {
     Matching(&'a str),
+    Refresh(&'a str),
     Chosen { serial: &'a str, revision: i64 },
 }
 
 impl<'a> Remote<'a> {
     fn serial(self) -> &'a str {
         match self {
-            Self::Matching(serial) | Self::Chosen { serial, .. } => serial,
+            Self::Matching(serial) | Self::Refresh(serial) | Self::Chosen { serial, .. } => serial,
         }
     }
 
     fn kind(self) -> &'static str {
         match self {
-            Self::Matching(_) => "download",
+            Self::Matching(_) | Self::Refresh(_) => "download",
             Self::Chosen { .. } => "user",
         }
     }
@@ -180,6 +163,21 @@ fn store(
                 "SELECT cover_revision=?2 FROM game_metadata WHERE game_id=?1",
                 params![id, revision],
                 |r| r.get::<_, bool>(0),
+            )
+            .map_err(|e| e.to_string())?
+    {
+        return Ok(false);
+    }
+    if let Source::Download {
+        art: Remote::Matching(serial) | Remote::Refresh(serial),
+        ..
+    } = source
+        && !tx
+            .query_row(
+                "SELECT COALESCE(release_serial,disc_serial) IS ?2
+             FROM game_metadata WHERE game_id=?1",
+                params![id, serial],
+                |row| row.get::<_, bool>(0),
             )
             .map_err(|e| e.to_string())?
     {
@@ -357,7 +355,7 @@ pub fn fetch(
     template: &str,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    fetch_edition(lib, id, provider, template, None, cancel)
+    fetch_edition(lib, id, provider, template, None, Mode::Incremental, cancel)
 }
 
 /// Assign art from a user-selected edition while retaining the game's metadata match.
@@ -369,7 +367,26 @@ pub fn fetch_release(
     release: &super::metadata::Release,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    fetch_edition(lib, id, provider, template, Some(release), cancel)
+    fetch_edition(
+        lib,
+        id,
+        provider,
+        template,
+        Some(release),
+        Mode::Incremental,
+        cancel,
+    )
+}
+
+pub(super) fn scrape(
+    lib: &Library,
+    id: i64,
+    provider: Provider,
+    template: &str,
+    mode: Mode,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    fetch_edition(lib, id, provider, template, None, mode, cancel)
 }
 
 fn fetch_edition(
@@ -378,6 +395,7 @@ fn fetch_edition(
     provider: Provider,
     template: &str,
     chosen: Option<&super::metadata::Release>,
+    mode: Mode,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     check_cancel(cancel)?;
@@ -411,6 +429,8 @@ fn fetch_edition(
             serial,
             revision: reserve_selection(&conn, id)?,
         }
+    } else if mode == Mode::Full {
+        Remote::Refresh(serial)
     } else {
         Remote::Matching(serial)
     };
@@ -487,24 +507,38 @@ fn fetch_url(
 ) -> Result<String, String> {
     let serial = art.serial();
     let conn = lib.connect()?;
-    let cached = conn.query_row(
-        "SELECT original,thumb FROM cover_assets WHERE game_id=?1 AND kind=?4 AND serial=?2 AND source=?3",
-        params![id, serial, url.as_str(), art.kind()], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))
-    ).optional().map_err(|e|e.to_string())?;
-    if let Some((original, thumb)) = cached {
-        if lib.base_dir().join(&thumb).is_file() {
-            return Ok("ready".into());
-        }
-        if lib.base_dir().join(&original).is_file() {
-            restore_thumbnail(lib, &original, &thumb, cancel)?;
-            return Ok("ready".into());
-        }
-    }
     let now = seconds(SystemTime::now());
-    let state:Option<String>=conn.query_row("SELECT state FROM cover_attempts WHERE game_id=?1 AND serial=?2 AND url=?3 AND retry_after>?4",
-        params![id,serial,url.as_str(),now],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
-    if let Some(state) = state {
-        return Ok(state);
+    if !matches!(art, Remote::Refresh(_)) {
+        let cached = conn
+            .query_row(
+                "SELECT original,thumb FROM cover_assets
+             WHERE game_id=?1 AND kind=?4 AND serial=?2 AND source=?3",
+                params![id, serial, url.as_str(), art.kind()],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some((original, thumb)) = cached {
+            if lib.base_dir().join(&thumb).is_file() {
+                return Ok("ready".into());
+            }
+            if lib.base_dir().join(&original).is_file() {
+                restore_thumbnail(lib, &original, &thumb, cancel)?;
+                return Ok("ready".into());
+            }
+        }
+        let state: Option<String> = conn
+            .query_row(
+                "SELECT state FROM cover_attempts
+             WHERE game_id=?1 AND serial=?2 AND url=?3 AND retry_after>?4",
+                params![id, serial, url.as_str(), now],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(state) = state {
+            return Ok(state);
+        }
     }
     let host = url.host_str().ok_or("Missing cover source host")?;
     let limited: bool = conn

@@ -773,7 +773,7 @@ fn missing_recent_games_are_removed_and_clearing_history_keeps_files(cx: &mut Te
     assert!(discs[0].0.is_file());
 }
 
-fn wait_for_snapshot(
+pub(super) fn wait_for_snapshot(
     view: &gpui::Entity<Desktop>,
     cx: &mut VisualTestContext,
     ready: impl Fn(&Snapshot) -> bool,

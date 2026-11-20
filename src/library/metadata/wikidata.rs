@@ -1,15 +1,19 @@
-//! Query the source catalog for one identified PS1 edition on explicit request.
+//! Query the source catalog by PS1 serial and preserve the reported date precision.
 use super::{Release, valid_date};
+use crate::library::http_retry::{retry_deadline, seconds};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
-    time::Duration,
+    sync::atomic::{AtomicI64, Ordering},
+    time::{Duration, SystemTime},
 };
 
 const ENDPOINT: &str = "https://query.wikidata.org/sparql";
 const MAX_RESPONSE: u64 = 1024 * 1024;
+static RETRY_AFTER: AtomicI64 = AtomicI64::new(0);
+const RATE_LIMITED: &str = "Wikidata rate limit reached. Retry later.";
 
 // The serial and all substitutions below come from checked identifiers and fixed tables.
 // Start with the indexed P2606 literal. Work-level platform alone is ambiguous for ports.
@@ -209,6 +213,9 @@ fn parse(bytes: &[u8], serial: &str, region: &str) -> Result<Vec<Release>, Strin
 
 pub(super) fn fetch(serial: &str) -> Result<Vec<Release>, String> {
     let territory = territory(serial)?;
+    if RETRY_AFTER.load(Ordering::Relaxed) > seconds(SystemTime::now()) {
+        return Err(RATE_LIMITED.into());
+    }
     let response = Client::builder()
         .https_only(true)
         .connect_timeout(Duration::from_secs(5))
@@ -229,7 +236,20 @@ pub(super) fn fetch(serial: &str) -> Result<Vec<Release>, String> {
                 .header("Accept", "application/sparql-results+json")
                 .send()
         })
-        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|e| format!("Wikidata request failed: {}", e.without_url()))?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|h| h.to_str().ok());
+        RETRY_AFTER.fetch_max(
+            retry_deadline(after, seconds(SystemTime::now())),
+            Ordering::Relaxed,
+        );
+        return Err(RATE_LIMITED.into());
+    }
+    let response = response
+        .error_for_status()
         .map_err(|e| format!("Wikidata request failed: {}", e.without_url()))?;
     let mut bytes = Vec::new();
     response

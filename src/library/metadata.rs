@@ -3,11 +3,12 @@ mod wikidata;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
-use super::Library;
+use super::{Library, scrape::Mode};
 
 pub(super) const SCHEMA: &str = include_str!("metadata/schema.sql");
 const SNAPSHOT: &str = "Wikidata/PS1/2026-11-20";
@@ -309,21 +310,89 @@ fn refresh_with(
     id: i64,
     fetch: impl FnOnce(&str) -> Result<Vec<Release>, String>,
 ) -> Result<RefreshOutcome, String> {
-    let mut conn = lib.connect()?;
-    let Some(serial) = evidence(&conn, id).map_err(|e| e.to_string())?.serial else {
-        return Ok(RefreshOutcome::NoSerial);
-    };
+    apply_lookup(lib, id, |conn, serial| download_serial(conn, serial, fetch))
+}
+
+// A serial identifies the upstream lookup. Different game IDs can legitimately
+// share it, while each keeps its own manual selection and region evidence.
+type SerialLookup = OnceLock<Result<bool, String>>;
+
+#[derive(Default)]
+pub(super) struct Batch {
+    lookups: Mutex<HashMap<String, Arc<SerialLookup>>>,
+}
+
+impl Batch {
+    pub(super) fn refresh(
+        &self,
+        lib: &Library,
+        id: i64,
+        mode: Mode,
+        cancel: &AtomicBool,
+    ) -> Result<RefreshOutcome, String> {
+        self.refresh_with(lib, id, mode, cancel, wikidata::fetch)
+    }
+
+    fn refresh_with(
+        &self,
+        lib: &Library,
+        id: i64,
+        mode: Mode,
+        cancel: &AtomicBool,
+        fetch: impl FnOnce(&str) -> Result<Vec<Release>, String>,
+    ) -> Result<RefreshOutcome, String> {
+        apply_lookup(lib, id, |conn, serial| {
+            let lookup = self
+                .lookups
+                .lock()
+                .map_err(|e| e.to_string())?
+                .entry(serial.to_owned())
+                .or_default()
+                .clone();
+            let found = lookup.get_or_init(|| {
+                if mode == Mode::Incremental
+                    && conn
+                        .prepare_cached("SELECT 1 FROM fetched_releases WHERE serial=?")
+                        .and_then(|mut q| q.exists([serial]))
+                        .map_err(|e| e.to_string())?
+                {
+                    return Ok(true);
+                }
+                download_serial(conn, serial, |s| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("Cancelled".into());
+                    }
+                    let releases = fetch(s)?;
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("Cancelled".into());
+                    }
+                    Ok(releases)
+                })
+            });
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Cancelled".into());
+            }
+            found.clone()
+        })
+    }
+}
+
+fn download_serial(
+    conn: &mut Connection,
+    serial: &str,
+    fetch: impl FnOnce(&str) -> Result<Vec<Release>, String>,
+) -> Result<bool, String> {
     let revision: i64 = conn
         .query_row(
             "INSERT INTO metadata_requests(serial,revision) VALUES(?,1)
          ON CONFLICT(serial) DO UPDATE SET revision=revision+1 RETURNING revision",
-            [&serial],
+            [serial],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    let releases = fetch(&serial)?;
+    let releases = fetch(serial)?;
     if releases.is_empty() {
-        return Ok(RefreshOutcome::NotFound);
+        return Ok(false);
     }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -331,18 +400,38 @@ fn refresh_with(
     let current: i64 = tx
         .query_row(
             "SELECT revision FROM metadata_requests WHERE serial=?",
-            [&serial],
+            [serial],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
     if current != revision {
         return Err("A newer metadata request superseded this one".into());
     }
-    cache_releases(&tx, &serial, &releases).map_err(|e| e.to_string())?;
+    cache_releases(&tx, serial, &releases).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+fn apply_lookup(
+    lib: &Library,
+    id: i64,
+    lookup: impl FnOnce(&mut Connection, &str) -> Result<bool, String>,
+) -> Result<RefreshOutcome, String> {
+    let mut conn = lib.connect()?;
+    let Some(serial) = evidence(&conn, id).map_err(|e| e.to_string())?.serial else {
+        return Ok(RefreshOutcome::NoSerial);
+    };
+    if !lookup(&mut conn, &serial)? {
+        return Ok(RefreshOutcome::NotFound);
+    }
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    // Another request may already have committed a newer version of these releases.
+    let releases = cached_for(&tx, &serial).map_err(|e| e.to_string())?;
     // The user can correct the selected edition while the request is in flight.
     let evidence = evidence(&tx, id).map_err(|e| e.to_string())?;
     if evidence.serial.as_deref() != Some(&serial) {
-        tx.commit().map_err(|e| e.to_string())?;
         return Err("The selected edition changed during the metadata request".into());
     }
     let release = if let Some(key) = &evidence.selected {

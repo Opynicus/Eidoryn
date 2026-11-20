@@ -53,6 +53,7 @@ impl ScanReport {
     }
 }
 struct Scan<'a, F> {
+    library: &'a Library,
     db: Connection,
     cancel: &'a AtomicBool,
     progress: F,
@@ -93,7 +94,7 @@ impl<F: FnMut(&ScanProgress)> Scan<'_, F> {
                     }
                 }
             }
-            match Library::index(&mut self.db, path, mode, None) {
+            match self.library.index(&mut self.db, path, mode, None) {
                 Ok(result) => {
                     match result.change {
                         Change::Added => self.report.added += 1,
@@ -143,6 +144,7 @@ impl Library {
         progress: impl FnMut(&ScanProgress),
     ) -> Result<ScanReport, String> {
         let mut scan = Scan {
+            library: self,
             db: self.connect()?,
             cancel,
             progress,
@@ -176,6 +178,7 @@ impl Library {
         let root = path.canonicalize().or_else(|_| std::path::absolute(path))?;
         let key = path_key(&root);
         let mut scan = Scan {
+            library: self,
             db: self.connection()?,
             cancel,
             progress,

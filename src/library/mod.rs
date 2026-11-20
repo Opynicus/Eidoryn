@@ -1,14 +1,17 @@
 //! Desktop library index. Disc locations and statistics have independent identities
 //! so renaming a file or correcting a release never changes a save-state key.
 pub mod covers;
+mod http_retry;
 pub mod metadata;
 mod scan;
+pub mod scrape;
 mod store;
 
 use rusqlite::{Connection, TransactionBehavior};
 pub use scan::{ScanProgress, ScanReport, ScanRoot, TrackChoice};
 use std::{
     path::{Path, PathBuf},
+    sync::mpsc,
     time::Duration,
 };
 
@@ -17,6 +20,7 @@ type IndexResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 #[derive(Debug, Clone)]
 pub struct Library {
     path: PathBuf,
+    additions: Option<mpsc::Sender<i64>>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,12 +54,20 @@ impl Library {
         }
         let library = Self {
             path: path.to_owned(),
+            additions: None,
         };
         library
             .migrate()
             .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(library)
     }
+    /// Receive newly indexed game IDs after commit, including imports made by subsequent clones.
+    pub fn watch_additions(&mut self) -> mpsc::Receiver<i64> {
+        let (sender, receiver) = mpsc::channel();
+        self.additions = Some(sender);
+        receiver
+    }
+
     pub fn default_path() -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         let root = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);

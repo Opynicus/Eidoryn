@@ -273,3 +273,63 @@ fn v1_upgrade_preserves_user_edits_and_session_rows() {
         2
     );
 }
+
+#[test]
+fn shared_serial_is_fetched_once_and_applied_to_each_game_independently() {
+    use std::{sync::Barrier, sync::atomic::AtomicUsize, thread};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    let serial = "SCUS-94900";
+    fixture(&lib, 1, Some(serial));
+    fixture(&lib, 2, Some(serial));
+    set_override(&lib, 2, Field::Title, Some("My copy")).unwrap();
+    let scope = Batch::default();
+    let start = Barrier::new(2);
+    let count = AtomicUsize::new(0);
+    let cancel = AtomicBool::new(false);
+    thread::scope(|threads| {
+        for id in [1, 2] {
+            let (start, scope, cancel, lib, count) = (&start, &scope, &cancel, &lib, &count);
+            threads.spawn(move || {
+                start.wait();
+                assert_eq!(
+                    scope
+                        .refresh_with(lib, id, Mode::Full, cancel, |key| {
+                            count.fetch_add(1, Ordering::Relaxed);
+                            assert_eq!(key, serial);
+                            Ok(vec![downloaded("Q100", "Shared lookup")])
+                        })
+                        .unwrap(),
+                    RefreshOutcome::Updated
+                );
+            });
+        }
+    });
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    let rows = list(&lib).unwrap();
+    assert_eq!(rows[&1].title.as_deref(), Some("Shared lookup"));
+    assert_eq!(rows[&2].title.as_deref(), Some("My copy"));
+    let cached = Batch::default();
+    assert_eq!(
+        cached
+            .refresh_with(&lib, 1, Mode::Incremental, &cancel, |_| panic!(
+                "incremental cache miss"
+            ))
+            .unwrap(),
+        RefreshOutcome::Updated
+    );
+    assert_eq!(
+        Batch::default()
+            .refresh_with(&lib, 1, Mode::Full, &cancel, |_| Ok(vec![downloaded(
+                "Q100",
+                "Refreshed title"
+            )]))
+            .unwrap(),
+        RefreshOutcome::Updated
+    );
+    assert_eq!(
+        list(&lib).unwrap()[&1].title.as_deref(),
+        Some("Refreshed title")
+    );
+}

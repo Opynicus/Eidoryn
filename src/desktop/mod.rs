@@ -124,7 +124,8 @@ pub fn run_with_probe(
     if let Some(warning) = snapshot.presentation_warning.take() {
         append_notice(&mut startup.notice, warning);
     }
-    if let Some(library) = &library {
+    let library = library::Workspace::new(library);
+    if let Some(library) = &library.store {
         runner.send(Command::TrackLibrary {
             library: library.clone(),
             initial_disc: options.initial_disc.clone(),
@@ -156,7 +157,7 @@ fn open_window(
     startup: settings::Startup,
     audio: AudioControls,
     probe: Option<probe::Probe>,
-    library: Option<eidoryn_psx::library::Library>,
+    library: library::Workspace,
 ) -> Result<(), String> {
     let startup_error = Rc::new(RefCell::new(None));
     let error_slot = Rc::clone(&startup_error);
@@ -208,7 +209,6 @@ fn open_window(
                             .is_err()
                         });
                         Desktop::start_snapshot_updates(cx);
-                        let library = library::Workspace::new(library);
                         if let Some(store) = library.store.clone() {
                             let recent = startup.preferences.recent_discs.clone();
                             cx.spawn(async move |this, cx| {
@@ -454,6 +454,7 @@ impl Desktop {
     }
 
     fn receive_snapshot(&mut self, cx: &mut gpui::Context<Self>) {
+        self.tick_library_scrape(cx);
         self.refresh_playing_library(cx);
         if let Some(command) = self.probe.as_mut().and_then(probe::Probe::input) {
             self.command(command, cx);

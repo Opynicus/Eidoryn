@@ -1,5 +1,6 @@
 //! Desktop library browsing. File reads, media inspection and database writes run off the UI thread.
 mod detail;
+mod scraping;
 mod tasks;
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
@@ -166,7 +167,8 @@ pub(super) struct Workspace {
     pending_directory: Option<PathBuf>,
     recursive: bool,
     scan: Option<Arc<AtomicBool>>,
-    cover: Option<Arc<AtomicBool>>,
+    cover: Option<tasks::CoverTask>,
+    scraping: scraping::Scraping,
     auto_attempted: HashSet<(i64, String)>,
     report: tasks::Report,
     direct: Option<tasks::DirectChoice>,
@@ -180,8 +182,9 @@ pub(super) struct Workspace {
 }
 
 impl Workspace {
-    pub(super) fn new(store: Option<Library>) -> Self {
+    pub(super) fn new(mut store: Option<Library>) -> Self {
         Self {
+            scraping: scraping::Scraping::new(store.as_mut()),
             store,
             entries: vec![],
             roots: vec![],
@@ -294,7 +297,7 @@ impl Desktop {
 
     pub(super) fn enter_library(&mut self, cx: &mut Context<Self>) {
         // A new visit can retry elapsed download backoffs or an explicitly canceled batch.
-        if self.library.cover.is_none() {
+        if self.library.cover.is_none() && !self.library.scraping.busy() {
             self.library.auto_attempted.clear();
         }
         self.reload_library(cx);
@@ -334,6 +337,37 @@ impl Desktop {
         input
     }
 
+    fn library_launch_controls(
+        &self,
+        button_id: &'static str,
+        game_id: i64,
+        cx: &Context<Self>,
+    ) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                self.library_button(button_id, Text::LibraryStart, true, cx, move |v, _, cx| {
+                    v.launch_library(game_id, cx);
+                }),
+            )
+            .when_some(
+                self.library.pending_bios.clone(),
+                |row, (path, fast_boot)| {
+                    row.child(self.library_button(
+                        "lib-bios-continue",
+                        Text::LibraryBiosContinue,
+                        true,
+                        cx,
+                        move |v, _, cx| {
+                            v.library_picker(tasks::Picker::Bios(path.clone(), fast_boot), cx);
+                        },
+                    ))
+                },
+            )
+    }
+
     pub(super) fn library_page(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.themes.active().palette;
         let mut page = div()
@@ -363,28 +397,18 @@ impl Desktop {
             .child(self.library_scan_status(cx))
             .child(self.library_sort_controls(cx));
         if let Some(id) = self.library.selected {
-            page = page.child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(self.library_button(
-                        "lib-start",
-                        Text::LibraryStart,
-                        true,
-                        cx,
-                        move |v, _, cx| v.launch_library(id, cx),
-                    ))
-                    .child(self.library_button(
-                        "lib-details",
-                        Text::LibraryDetails,
-                        false,
-                        cx,
-                        |v, _, cx| {
-                            v.library.details = true;
-                            cx.notify();
-                        },
-                    )),
-            );
+            page = page.child(self.library_launch_controls("lib-start", id, cx).child(
+                self.library_button(
+                    "lib-details",
+                    Text::LibraryDetails,
+                    false,
+                    cx,
+                    |v, _, cx| {
+                        v.library.details = true;
+                        cx.notify();
+                    },
+                ),
+            ));
         } else if !self.library.order.is_empty() {
             // Keep cards under the pointer between the first and second clicks.
             page = page.child(
@@ -437,6 +461,22 @@ impl Desktop {
                 )
                 .debug_selector(|| "library-add-folder".into()),
             )
+            .when(!self.library.entries.is_empty(), |s| {
+                s.child(
+                    self.library_button(
+                        "lib-refresh-all",
+                        Text::LibraryRefreshAll,
+                        false,
+                        cx,
+                        |v, _, cx| v.refresh_library_data(cx),
+                    )
+                    .opacity(if self.library.scraping.full_requested() {
+                        0.5
+                    } else {
+                        1.0
+                    }),
+                )
+            })
             .when(!self.library.roots.is_empty(), |s| {
                 s.child(self.library_button(
                     "lib-rescan",

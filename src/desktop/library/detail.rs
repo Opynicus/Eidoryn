@@ -240,15 +240,24 @@ impl Desktop {
                                 cx,
                                 move |v, _, cx| v.select_release(id, key.clone(), cx),
                             ))
-                            .child(self.library_button(
-                                ("lib-edition-cover", i),
-                                Text::LibraryEditionCover,
-                                false,
-                                cx,
-                                move |v, _, cx| {
-                                    v.fetch_cover_editions(vec![id], Some(release.clone()), cx);
-                                },
-                            ))
+                            .child(
+                                self.library_button(
+                                    ("lib-edition-cover", i),
+                                    Text::LibraryEditionCover,
+                                    false,
+                                    cx,
+                                    move |v, _, cx| {
+                                        v.fetch_cover_editions(vec![id], Some(release.clone()), cx);
+                                    },
+                                )
+                                .opacity(
+                                    if self.library.scraping.busy() {
+                                        0.5
+                                    } else {
+                                        1.0
+                                    },
+                                ),
+                            )
                     }));
             }
             Edit::Group {
@@ -332,28 +341,7 @@ impl Desktop {
                     .font(self.fonts.semibold())
                     .child(entry.title.clone()),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(self.library_button(
-                        "lib-detail-start",
-                        Text::LibraryStart,
-                        true,
-                        cx,
-                        move |v, _, cx| v.launch_library(id, cx),
-                    ))
-                    .when_some(self.library.pending_bios.clone(), |s, (path, fast)| {
-                        s.child(self.library_button(
-                            "lib-bios-continue",
-                            Text::LibraryBiosContinue,
-                            true,
-                            cx,
-                            move |v, _, cx| v.library_picker(Picker::Bios(path.clone(), fast), cx),
-                        ))
-                    }),
-            );
+            .child(self.library_launch_controls("lib-detail-start", id, cx));
         if self.library.editor.is_some() {
             body = body.child(self.library_editor(cx));
         }
@@ -363,6 +351,9 @@ impl Desktop {
             .child(self.cover_card(entry, cx));
         if self.library.cover.is_some() {
             body = body.child(self.cover_progress(cx));
+        }
+        if self.library.scraping.busy() {
+            body = body.child(self.scrape_status(cx));
         }
         page.child(body.child(self.history_controls(id, cx)))
     }
@@ -577,13 +568,20 @@ impl Desktop {
                         cx,
                         move |v, _, cx| v.library_picker(Picker::Cover(id), cx),
                     ))
-                    .child(self.library_button(
-                        "lib-get-cover",
-                        Text::LibraryGetCover,
-                        false,
-                        cx,
-                        move |v, _, cx| v.fetch_covers(vec![id], cx),
-                    ))
+                    .child(
+                        self.library_button(
+                            "lib-get-cover",
+                            Text::LibraryGetCover,
+                            false,
+                            cx,
+                            move |v, _, cx| v.fetch_covers(vec![id], cx),
+                        )
+                        .opacity(if self.library.scraping.busy() {
+                            0.5
+                        } else {
+                            1.0
+                        }),
+                    )
                     .child(self.library_button(
                         "lib-restore-cover",
                         Text::LibraryResetCover,
@@ -684,8 +682,9 @@ impl Desktop {
     }
 
     fn cover_preferences_changed(&mut self, cx: &mut Context<Self>) {
-        if let Some(cancel) = &self.library.cover {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(task) = &self.library.cover {
+            task.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.library.auto_attempted.clear();
         self.save_preferences();
@@ -763,6 +762,18 @@ impl Desktop {
             Provider::Igdb => block.child(label(&p, self.tr(Text::LibraryIgdbCredentials))),
             Provider::Libretro => block,
         };
+        block = block.child(self.library_button(
+            "lib-scrape-new",
+            Text::LibraryScrapeNewGames,
+            self.preferences.library.scrape_new_games,
+            cx,
+            |v, _, cx| {
+                v.preferences.library.scrape_new_games = !v.preferences.library.scrape_new_games;
+                v.poll_library_scrape(cx);
+                v.save_preferences();
+                cx.notify();
+            },
+        ));
         block = block.child(self.library_button(
             "lib-auto",
             Text::LibraryAutoCovers,

@@ -31,6 +31,7 @@ pub struct RecentDisc {
 pub struct LibraryPreferences {
     pub list: bool,
     pub auto_covers: bool,
+    pub scrape_new_games: bool,
     pub cover_provider: Provider,
     pub cover_template: String,
 }
@@ -40,6 +41,7 @@ pub struct LibraryPreferences {
 struct SavedLibraryPreferences {
     list: bool,
     auto_covers: bool,
+    scrape_new_games: Option<bool>,
     cover_provider: Option<Provider>,
     cover_template: Option<String>,
 }
@@ -60,6 +62,7 @@ impl From<SavedLibraryPreferences> for LibraryPreferences {
         Self {
             list: saved.list,
             auto_covers: saved.auto_covers,
+            scrape_new_games: saved.scrape_new_games.unwrap_or(true),
             cover_provider: provider,
             cover_template: template,
         }
@@ -318,6 +321,23 @@ mod tests {
             serde_json::from_value::<LibraryPreferences>(saved).unwrap(),
             selected
         );
+    }
+
+    #[test]
+    fn import_scraping_defaults_on_and_preserves_the_offline_preference() {
+        assert!(Preferences::default().library.scrape_new_games);
+        for auto_covers in [false, true] {
+            let legacy = serde_json::json!({"library": {"auto_covers": auto_covers}});
+            let mut preferences: Preferences = serde_json::from_value(legacy).unwrap();
+            assert!(preferences.library.scrape_new_games);
+            assert_eq!(preferences.library.auto_covers, auto_covers);
+
+            preferences.library.scrape_new_games = false;
+            let saved = serde_json::to_string(&preferences).unwrap();
+            let restored: Preferences = serde_json::from_str(&saved).unwrap();
+            assert!(!restored.library.scrape_new_games);
+            assert_eq!(restored.library.auto_covers, auto_covers);
+        }
     }
 
     #[test]
