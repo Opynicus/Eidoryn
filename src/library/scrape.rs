@@ -17,7 +17,7 @@ pub use super::jobs::{
 };
 use super::{
     Library, covers,
-    jobs::{self, Failure, Stage},
+    jobs::{self, Failure, JobKind, Stage},
     metadata,
 };
 
@@ -179,8 +179,8 @@ fn run_batch(
             .map_err(|e| e.to_string())?;
         let slots = [options.workers, options.cover_workers]
             .map(|n| usize::from(n.get()).min(pending.len()));
-        let (meta_tx, meta_rx) = mpsc::sync_channel(slots[0]);
-        let (art_tx, art_rx) = mpsc::sync_channel(slots[1]);
+        let (meta_tx, meta_rx) = mpsc::sync_channel(slots[Stage::Metadata as usize]);
+        let (art_tx, art_rx) = mpsc::sync_channel(slots[Stage::Cover as usize]);
         let receivers = [Mutex::new(meta_rx), Mutex::new(art_rx)];
         let (output, results) = mpsc::sync_channel(slots.iter().sum());
         let metadata = metadata::Batch::default();
@@ -239,8 +239,8 @@ fn work(
     if cancel.load(Ordering::Relaxed) {
         return Work::Cancelled;
     }
-    match claim.stage {
-        Stage::Metadata => match metadata.prepare(lib, claim.game, claim.mode, cancel) {
+    match claim.kind {
+        JobKind::Metadata => match metadata.prepare(lib, claim.game, claim.mode, cancel) {
             Ok(prepared) => Work::Metadata(prepared),
             Err(e) => Work::Failed(Failure {
                 code: e.code(),
@@ -249,14 +249,8 @@ fn work(
                 deadline: e.retry_after(),
             }),
         },
-        Stage::Cover => match covers::scrape_claim(
-            lib,
-            claim.game,
-            claim.provider,
-            template,
-            claim.mode,
-            cancel,
-            claim,
+        JobKind::Cover(provider) => match covers::scrape_claim(
+            lib, claim.game, provider, template, claim.mode, cancel, claim,
         ) {
             Ok(state) if state == "retry" || state == "failed" => {
                 Work::Failed(Failure::cover(&state))
@@ -300,7 +294,8 @@ impl<F: FnMut(Event)> BatchWriter<'_, F> {
                 jobs::renew(&self.db, &self.owner).map_err(|e| e.to_string())?;
                 heartbeat = Instant::now();
             }
-            for (i, stage) in [Stage::Metadata, Stage::Cover].into_iter().enumerate() {
+            for stage in [Stage::Metadata, Stage::Cover] {
+                let i = stage as usize;
                 let claims = jobs::claim(&mut self.db, &self.owner, stage, slots[i] - active[i])
                     .map_err(|e| e.to_string())?;
                 if let Some(first) = claims.first() {
@@ -374,7 +369,7 @@ impl<F: FnMut(Event)> BatchWriter<'_, F> {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         for (claim, result) in batch {
-            active[usize::from(claim.stage == Stage::Cover)] -= 1;
+            active[claim.kind.stage() as usize] -= 1;
             changed.insert(claim.game);
             tx.execute_batch("SAVEPOINT publish_job")
                 .map_err(|e| e.to_string())?;

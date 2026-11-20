@@ -81,7 +81,7 @@ impl From<&Mdec> for MdecV1 {
             chroma: value.chroma,
             block: value.block,
             output_block: value.output_block,
-            output_depth: value.output_depth,
+            output_depth: value.output_depth as u32,
             output_position: value.output_position,
             commands: value.commands,
             blocks_decoded: value.blocks_decoded,
@@ -110,7 +110,7 @@ impl TryFrom<MdecV1> for Mdec {
             chroma: value.chroma,
             block: value.block,
             output_block: value.output_block,
-            output_depth: value.output_depth,
+            output_depth: value.output_depth.try_into()?,
             output_position: value.output_position,
             commands: value.commands,
             blocks_decoded: value.blocks_decoded,
@@ -125,6 +125,26 @@ crate::state::v1::impl_serde_v1!(Mdec, MdecV1);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mdec::OutputDepth;
+
+    #[test]
+    fn v1_preserves_output_depth_codes() {
+        for (code, depth) in [
+            (0, OutputDepth::Mono4),
+            (1, OutputDepth::Mono8),
+            (2, OutputDepth::Rgb24),
+            (3, OutputDepth::Rgb15),
+        ] {
+            let mut state = MdecV1::from(&Mdec::default());
+            state.output_depth = code;
+            let restored = Mdec::try_from(state).unwrap();
+            assert_eq!(restored.output_depth, depth);
+            assert_eq!(MdecV1::from(&restored).output_depth, code);
+        }
+        let mut state = MdecV1::from(&Mdec::default());
+        state.output_depth = 4;
+        assert!(Mdec::try_from(state).is_err());
+    }
 
     #[test]
     fn direct_deserialization_bounds_the_entire_table_transfer() {

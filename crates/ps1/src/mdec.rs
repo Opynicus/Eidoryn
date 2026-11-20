@@ -16,6 +16,49 @@ enum Operation {
     Decode,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum OutputDepth {
+    Mono4 = 0,
+    Mono8 = 1,
+    Rgb24 = 2,
+    Rgb15 = 3,
+}
+
+impl TryFrom<u32> for OutputDepth {
+    type Error = &'static str;
+
+    fn try_from(code: u32) -> Result<Self, Self::Error> {
+        match code {
+            0 => Ok(Self::Mono4),
+            1 => Ok(Self::Mono8),
+            2 => Ok(Self::Rgb24),
+            3 => Ok(Self::Rgb15),
+            _ => Err("Invalid saved MDEC output depth"),
+        }
+    }
+}
+
+impl OutputDepth {
+    fn from_command(command: u32) -> Self {
+        Self::try_from((command >> 27) & 3).expect("two-bit MDEC output depth")
+    }
+
+    fn is_color(self) -> bool {
+        matches!(self, Self::Rgb24 | Self::Rgb15)
+    }
+
+    /// DMA words occupied by one row of eight decoded pixels.
+    fn words_per_row(self) -> usize {
+        match self {
+            Self::Mono4 => 1,
+            Self::Mono8 => 2,
+            Self::Rgb24 => 6,
+            Self::Rgb15 => 4,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Mdec {
     operation: Operation,
@@ -34,7 +77,7 @@ pub struct Mdec {
     chroma: [[i32; 64]; 2],
     block: usize,
     output_block: usize,
-    output_depth: u32,
+    output_depth: OutputDepth,
     output_position: usize,
     pub commands: u64,
     pub blocks_decoded: u64,
@@ -59,7 +102,7 @@ impl Default for Mdec {
             chroma: [[0; 64]; 2],
             block: 4,
             output_block: 4,
-            output_depth: 0,
+            output_depth: OutputDepth::Mono4,
             output_position: 0,
             commands: 0,
             blocks_decoded: 0,
@@ -87,9 +130,7 @@ impl Mdec {
         }
         // A finished command can still have unread output. Its depth and
         // cursor belong to the producing block, independent of the new command.
-        let Some(&output_words) = [8, 16, 48, 32].get(self.output_depth as usize) else {
-            return Err("Invalid saved MDEC output depth".into());
-        };
+        let output_words = self.output_depth.words_per_row() * 8;
         if self.block > 5
             || self.output_block > 5
             || self.coefficient_index.is_some_and(|index| index >= 64)
@@ -211,6 +252,7 @@ impl Mdec {
 
     fn pump(&mut self) {
         if self.operation == Operation::Decode {
+            let depth = OutputDepth::from_command(self.command);
             while self.output.is_empty() {
                 let Some(code) = self.input.pop_front() else {
                     break;
@@ -228,7 +270,7 @@ impl Mdec {
                     0
                 };
                 if index < 64 {
-                    let chroma = self.command & (1 << 28) != 0 && self.block >= 4;
+                    let chroma = depth.is_color() && self.block >= 4;
                     let quant = i32::from(self.quant[usize::from(chroma)][index]);
                     let coefficient = if self.quant_scale == 0 {
                         value * 2
@@ -245,7 +287,7 @@ impl Mdec {
                     self.coefficient_index = Some(index);
                 }
                 if index >= 63 {
-                    self.finish_block();
+                    self.finish_block(depth);
                 }
             }
         }
@@ -254,12 +296,11 @@ impl Mdec {
         }
     }
 
-    fn finish_block(&mut self) {
+    fn finish_block(&mut self, depth: OutputDepth) {
         self.coefficient_index = None;
         self.blocks_decoded += 1;
         let values = idct(self.coefficients, &self.scale);
-        let depth = (self.command >> 27) & 3;
-        if depth >= 2 && self.block >= 4 {
+        if depth.is_color() && self.block >= 4 {
             self.chroma[self.block - 4] = values;
             self.block = (self.block + 1) % 6;
             return;
@@ -273,38 +314,41 @@ impl Mdec {
         // One 8x8 block is at most 192 RGB24 bytes. Packing on the stack
         // avoids a heap allocation for every decoded output block.
         let mut bytes = [0; 192];
-        let length = [32, 64, 192, 128][depth as usize];
+        let length = depth.words_per_row() * 8 * size_of::<u32>();
         for (n, luminance) in values.into_iter().enumerate() {
-            if depth < 2 {
-                let luminance = (luminance << 23) >> 23; // Mono output wraps to signed 9 bits.
-                let value = sample(luminance);
-                if depth == 1 {
-                    bytes[n] = value;
-                } else if n & 1 == 0 {
-                    bytes[n / 2] = value >> 4;
-                } else {
-                    bytes[n / 2] |= value & 0xf0;
+            match depth {
+                OutputDepth::Mono4 | OutputDepth::Mono8 => {
+                    let luminance = (luminance << 23) >> 23; // Mono output wraps to signed 9 bits.
+                    let value = sample(luminance);
+                    if depth == OutputDepth::Mono8 {
+                        bytes[n] = value;
+                    } else if n & 1 == 0 {
+                        bytes[n / 2] = value >> 4;
+                    } else {
+                        bytes[n / 2] |= value & 0xf0;
+                    }
                 }
-            } else {
-                let x = n % 8 + (self.block % 2) * 8;
-                let y = n / 8 + (self.block / 2) * 8;
-                let chroma_index = x / 2 + (y / 2) * 8;
-                let red = self.chroma[0][chroma_index];
-                let blue = self.chroma[1][chroma_index];
-                let rgb = [
-                    sample(luminance + ((359 * red + 128) >> 8)),
-                    sample(luminance + ((-183 * red - 88 * blue + 128) >> 8)),
-                    sample(luminance + ((454 * blue + 128) >> 8)),
-                ];
-                if depth == 2 {
-                    bytes[n * 3..n * 3 + 3].copy_from_slice(&rgb);
-                } else {
-                    let rgb = rgb.map(|v| ((u16::from(v) + 4) >> 3).min(31));
-                    let pixel = rgb[0]
-                        | (rgb[1] << 5)
-                        | (rgb[2] << 10)
-                        | (((self.command >> 25) as u16 & 1) << 15);
-                    bytes[n * 2..n * 2 + 2].copy_from_slice(&pixel.to_le_bytes());
+                OutputDepth::Rgb24 | OutputDepth::Rgb15 => {
+                    let x = n % 8 + (self.block % 2) * 8;
+                    let y = n / 8 + (self.block / 2) * 8;
+                    let chroma_index = x / 2 + (y / 2) * 8;
+                    let red = self.chroma[0][chroma_index];
+                    let blue = self.chroma[1][chroma_index];
+                    let rgb = [
+                        sample(luminance + ((359 * red + 128) >> 8)),
+                        sample(luminance + ((-183 * red - 88 * blue + 128) >> 8)),
+                        sample(luminance + ((454 * blue + 128) >> 8)),
+                    ];
+                    if depth == OutputDepth::Rgb24 {
+                        bytes[n * 3..n * 3 + 3].copy_from_slice(&rgb);
+                    } else {
+                        let rgb = rgb.map(|v| ((u16::from(v) + 4) >> 3).min(31));
+                        let pixel = rgb[0]
+                            | (rgb[1] << 5)
+                            | (rgb[2] << 10)
+                            | (((self.command >> 25) as u16 & 1) << 15);
+                        bytes[n * 2..n * 2 + 2].copy_from_slice(&pixel.to_le_bytes());
+                    }
                 }
             }
         }
@@ -315,7 +359,7 @@ impl Mdec {
                 .iter()
                 .map(|b| u32::from_le_bytes(*b)),
         );
-        if depth >= 2 {
+        if depth.is_color() {
             self.block += 1;
         }
     }
@@ -329,8 +373,8 @@ impl Mdec {
 
     /// DMA1 scatters the four 8x8 color blocks into one contiguous 16x16 bitmap.
     pub fn read_dma(&mut self) -> (u32, i32) {
-        let offset = if self.output_depth >= 2 {
-            let row_words = if self.output_depth == 2 { 6 } else { 4 };
+        let offset = if self.output_depth.is_color() {
+            let row_words = self.output_depth.words_per_row();
             let sequential = self.output_block * row_words * 8 + self.output_position;
             let row = self.output_block / 2 * 8 + self.output_position / row_words;
             let column = self.output_block % 2 * row_words + self.output_position % row_words;

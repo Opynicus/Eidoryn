@@ -36,6 +36,13 @@ const TURBO_CHOICES: [(u8, &str, &str); TURBO_RATES.len()] = [
     (20, "turbo-rate-20", "20 Hz"),
 ];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingAction {
+    Apply,
+    Reset,
+    Cancel,
+}
+
 impl Desktop {
     pub(super) fn capture_binding(
         &mut self,
@@ -188,26 +195,36 @@ impl Desktop {
         let p = &self.themes.active().palette;
         div().flex().flex_wrap().gap_2().children(
             [
-                ("bindings-apply", Text::ApplyBindings),
-                ("bindings-reset", Text::ResetBindings),
-                ("bindings-cancel", Text::CancelBindings),
+                (BindingAction::Apply, "bindings-apply", Text::ApplyBindings),
+                (BindingAction::Reset, "bindings-reset", Text::ResetBindings),
+                (
+                    BindingAction::Cancel,
+                    "bindings-cancel",
+                    Text::CancelBindings,
+                ),
             ]
             .into_iter()
-            .map(|(id, text)| {
-                button(&self.fonts, p, id, self.tr(text), id == "bindings-apply")
-                    .debug_selector(move || id.into())
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.rebinding = None;
-                        view.notice = None;
-                        match id {
-                            "bindings-apply" => view.apply_bindings(cx),
-                            "bindings-reset" => {
-                                view.keybindings_draft = Some(KeyBindings::default());
-                            }
-                            _ => view.keybindings_draft = None,
+            .map(|(action, id, text)| {
+                button(
+                    &self.fonts,
+                    p,
+                    id,
+                    self.tr(text),
+                    action == BindingAction::Apply,
+                )
+                .debug_selector(move || id.into())
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.rebinding = None;
+                    view.notice = None;
+                    match action {
+                        BindingAction::Apply => view.apply_bindings(cx),
+                        BindingAction::Reset => {
+                            view.keybindings_draft = Some(KeyBindings::default());
                         }
-                        cx.notify();
-                    }))
+                        BindingAction::Cancel => view.keybindings_draft = None,
+                    }
+                    cx.notify();
+                }))
             }),
         )
     }

@@ -158,10 +158,37 @@ impl Catalog {
     }
 }
 
-// The source's region is a video territory. Where Japanese and Asian products
-// share NTSC-J, only explicit market evidence distinguishes a specific release.
+/// The catalog groups several release markets under one video territory.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VideoTerritory {
+    NtscU,
+    NtscJ,
+    Pal,
+}
+
+impl VideoTerritory {
+    fn from_catalog(code: &str) -> Option<Self> {
+        match code {
+            "NTSC-U" => Some(Self::NtscU),
+            "NTSC-J" => Some(Self::NtscJ),
+            "PAL" => Some(Self::Pal),
+            _ => None,
+        }
+    }
+
+    fn for_market(market: &str) -> Option<Self> {
+        match market {
+            "USA" | "Canada" => Some(Self::NtscU),
+            "Japan" | "Asia" | "Korea" | "Taiwan" | "China" => Some(Self::NtscJ),
+            "Australia" | "Israel" => Some(Self::Pal),
+            country if crate::library::european_market(country) => Some(Self::Pal),
+            _ => None,
+        }
+    }
+}
+
 fn release_region<'a>(serial: &str, record: &'a Value) -> Option<&'a str> {
-    let video = record.get("region")?.as_str()?;
+    let territory = VideoTerritory::from_catalog(record.get("region")?.as_str()?)?;
     let name = record
         .get("release_name")
         .and_then(Value::as_str)
@@ -173,34 +200,27 @@ fn release_region<'a>(serial: &str, record: &'a Value) -> Option<&'a str> {
         .skip(1)
         .filter_map(|s| s.split_once(')').map(|(tag, _)| tag))
     {
-        let mut markets = group.split(',').map(str::trim);
-        if markets.clone().all(|market| market_video(market).is_some()) {
-            return markets
-                .any(|market| market_video(market) == Some(video))
+        let mut territories = group
+            .split(',')
+            .map(|market| VideoTerritory::for_market(market.trim()));
+        if territories.clone().all(|candidate| candidate.is_some()) {
+            return territories
+                .any(|candidate| candidate == Some(territory))
                 .then_some(group);
         }
     }
-    match video {
-        "NTSC-U" => Some("USA"),
-        "PAL" => Some("Europe"),
-        "NTSC-J"
-            if !serial.starts_with("SCPS-45")
-                && !serial.starts_with("SCAJ-")
-                && !serial.starts_with("SLKA-") =>
+    match territory {
+        VideoTerritory::NtscU => Some("USA"),
+        VideoTerritory::Pal => Some("Europe"),
+        // These NTSC-J serials also cover Asian markets outside Japan.
+        VideoTerritory::NtscJ
+            if serial.starts_with("SCPS-45")
+                || serial.starts_with("SCAJ-")
+                || serial.starts_with("SLKA-") =>
         {
-            Some("Japan")
+            None
         }
-        _ => None,
-    }
-}
-
-fn market_video(market: &str) -> Option<&'static str> {
-    match market {
-        "USA" | "Canada" => Some("NTSC-U"),
-        "Japan" | "Asia" | "Korea" | "Taiwan" | "China" => Some("NTSC-J"),
-        "Australia" | "Israel" => Some("PAL"),
-        country if crate::library::european_market(country) => Some("PAL"),
-        _ => None,
+        VideoTerritory::NtscJ => Some("Japan"),
     }
 }
 
@@ -342,6 +362,7 @@ mod tests {
             "SCPS-45002": {"serial":"SCPS-45002","region":"NTSC-J","title":"Asian release","release_name":"Example (Asia)"},
             "SLPS-10001": {"serial":"SLPS-10001","region":"NTSC-U","title":"Incorrect region","release_name":"Example (Japan)"},
             "SLPS-10002": {"region":"NTSC-J","title":"Missing serial"},
+            "SLPS-10003": {"serial":"SLPS-10003","region":"Unknown","title":"Unknown territory","release_name":"Example (Japan)"},
         })).unwrap()
     }
 
@@ -370,7 +391,13 @@ mod tests {
             catalog.lookup("SCPS-45002").unwrap().releases[0].region,
             "Asia"
         );
-        for serial in ["SLPS-99999", "SLPS-10001", "SLPS-10002", "SCPS-45001"] {
+        for serial in [
+            "SLPS-99999",
+            "SLPS-10001",
+            "SLPS-10002",
+            "SLPS-10003",
+            "SCPS-45001",
+        ] {
             assert!(catalog.lookup(serial).unwrap().releases.is_empty());
         }
         for invalid in [

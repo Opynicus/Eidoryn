@@ -15,6 +15,24 @@ fn library() -> (tempfile::TempDir, Library) {
 }
 
 #[test]
+fn queued_job_kinds_keep_their_persisted_stage_and_provider() {
+    for (stage, provider, kind) in [
+        (Stage::Metadata, "wikidata", JobKind::Metadata),
+        (Stage::Cover, "libretro", JobKind::Cover(Provider::Libretro)),
+        (
+            Stage::Cover,
+            "screenscraper",
+            JobKind::Cover(Provider::ScreenScraper),
+        ),
+        (Stage::Cover, "igdb", JobKind::Cover(Provider::Igdb)),
+        (Stage::Cover, "custom", JobKind::Cover(Provider::Custom)),
+    ] {
+        assert_eq!(kind.stored_names(), (stage.name(), provider));
+        assert_eq!(JobKind::from_stored(stage, provider).unwrap(), kind);
+    }
+}
+
+#[test]
 fn task_history_survives_reopen_and_keeps_only_recent_visible_stages() {
     let (dir, lib) = library();
     let db = lib.connect().unwrap();
@@ -83,6 +101,7 @@ fn expired_lease_is_reclaimed_and_stale_results_cannot_commit() {
         .unwrap()
         .pop()
         .unwrap();
+    assert_eq!(current.kind, JobKind::Metadata);
     assert!(!old.finish(&first, "updated").unwrap());
     assert!(current.finish(&second, "updated").unwrap());
     let cover = claim(&mut second, "next", Stage::Cover, 1)
@@ -502,7 +521,7 @@ fn switching_cover_source_supersedes_its_active_lease_and_dismisses_old_diagnost
             .unwrap()
             .pop()
             .unwrap();
-        assert_eq!(cover.provider, Provider::Libretro);
+        assert_eq!(cover.kind, JobKind::Cover(Provider::Libretro));
         cover.finish_cover(&newer).unwrap();
         assert_eq!(failed_games(&lib).unwrap(), [] as [i64; 0]);
         assert_eq!(recent_failures(&lib).unwrap(), []);

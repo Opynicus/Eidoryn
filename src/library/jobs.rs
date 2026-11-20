@@ -7,15 +7,6 @@ pub(super) const LEASE_SECONDS: i64 = 120;
 const UPGRADE: &str = include_str!("jobs/upgrade.sql");
 const ENQUEUE: &str = include_str!("jobs/enqueue.sql");
 
-pub(super) fn provider_name(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Libretro => "libretro",
-        Provider::ScreenScraper => "screenscraper",
-        Provider::Igdb => "igdb",
-        Provider::Custom => "custom",
-    }
-}
-
 fn mode_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Full => "full",
@@ -30,21 +21,23 @@ pub(super) fn enqueue(
     provider: Provider,
     mode: Mode,
 ) -> rusqlite::Result<()> {
+    let (cover_stage, cover_provider) = JobKind::Cover(provider).stored_names();
     if mode == Mode::Full {
         tx.prepare_cached(UPGRADE)?
-            .execute(params![id, provider_name(provider)])?;
+            .execute(params![id, cover_provider])?;
     }
     let mode = mode_name(mode);
     let mut insert = tx.prepare_cached(ENQUEUE)?;
+    let (metadata_stage, metadata_provider) = JobKind::Metadata.stored_names();
     let metadata: Option<i64> = insert
         .query_row(
-            params![id, "wikidata", "metadata", mode, None::<i64>],
+            params![id, metadata_provider, metadata_stage, mode, None::<i64>],
             |r| r.get(0),
         )
         .optional()?;
     if let Some(dependency) = metadata {
         insert.query_row(
-            params![id, provider_name(provider), "cover", mode, dependency],
+            params![id, cover_provider, cover_stage, mode, dependency],
             |_| Ok(()),
         )?;
     }
@@ -59,6 +52,8 @@ pub fn enqueue_games(
     provider: Provider,
 ) -> Result<(), String> {
     let pool = lib.pool()?;
+    let (cover_stage, cover_provider) = JobKind::Cover(provider).stored_names();
+    let (metadata_stage, metadata_provider) = JobKind::Metadata.stored_names();
     runtime()?
         .block_on(async {
             for chunk in ids.chunks(64) {
@@ -70,7 +65,7 @@ pub fn enqueue_games(
                     if mode == Mode::Full {
                         sqlx::query(UPGRADE)
                             .bind(id)
-                            .bind(provider_name(provider))
+                            .bind(cover_provider)
                             .execute(&mut *tx)
                             .await?;
                     }
@@ -78,20 +73,19 @@ pub fn enqueue_games(
                     let metadata = sqlx::query_file_scalar!(
                         "src/library/jobs/enqueue.sql",
                         id,
-                        "wikidata",
-                        "metadata",
+                        metadata_provider,
+                        metadata_stage,
                         mode,
                         None::<i64>
                     )
                     .fetch_optional(&mut *tx)
                     .await?;
                     if let Some(dependency) = metadata {
-                        let provider = provider_name(provider);
                         sqlx::query_file_scalar!(
                             "src/library/jobs/enqueue.sql",
                             id,
-                            provider,
-                            "cover",
+                            cover_provider,
+                            cover_stage,
                             mode,
                             dependency
                         )
@@ -154,8 +148,8 @@ pub fn failed_games(lib: &Library) -> Result<Vec<i64>, String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stage {
-    Metadata,
-    Cover,
+    Metadata = 0,
+    Cover = 1,
 }
 impl Stage {
     fn name(self) -> &'static str {
@@ -166,14 +160,52 @@ impl Stage {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum JobKind {
+    Metadata,
+    Cover(Provider),
+}
+
+impl JobKind {
+    fn stored_names(self) -> (&'static str, &'static str) {
+        let provider = match self {
+            Self::Metadata => "wikidata",
+            Self::Cover(Provider::Libretro) => "libretro",
+            Self::Cover(Provider::ScreenScraper) => "screenscraper",
+            Self::Cover(Provider::Igdb) => "igdb",
+            Self::Cover(Provider::Custom) => "custom",
+        };
+        (self.stage().name(), provider)
+    }
+
+    fn from_stored(stage: Stage, provider: &str) -> rusqlite::Result<Self> {
+        [
+            Self::Metadata,
+            Self::Cover(Provider::Libretro),
+            Self::Cover(Provider::ScreenScraper),
+            Self::Cover(Provider::Igdb),
+            Self::Cover(Provider::Custom),
+        ]
+        .into_iter()
+        .find(|kind| kind.stored_names() == (stage.name(), provider))
+        .ok_or(rusqlite::Error::InvalidQuery)
+    }
+
+    pub(super) fn stage(self) -> Stage {
+        match self {
+            Self::Metadata => Stage::Metadata,
+            Self::Cover(_) => Stage::Cover,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct CoverClaim {
     pub(super) id: i64,
     pub(super) game: i64,
     pub(super) owner: String,
     pub(super) mode: Mode,
-    pub(super) provider: Provider,
-    pub(super) stage: Stage,
+    pub(super) kind: JobKind,
     pub(super) attempt: i64,
     pub(super) limit: i64,
 }
@@ -251,14 +283,7 @@ pub(super) fn claim(
         .query_map(
             params![owner, LEASE_SECONDS, stage.name(), count as i64],
             |r| {
-                let p: String = r.get(3)?;
-                let provider = match p.as_str() {
-                    "wikidata" | "libretro" => Provider::Libretro,
-                    "screenscraper" => Provider::ScreenScraper,
-                    "igdb" => Provider::Igdb,
-                    "custom" => Provider::Custom,
-                    _ => return Err(rusqlite::Error::InvalidQuery),
-                };
+                let kind = JobKind::from_stored(stage, r.get_ref(3)?.as_str()?)?;
                 Ok(CoverClaim {
                     id: r.get(0)?,
                     game: r.get(1)?,
@@ -267,8 +292,7 @@ pub(super) fn claim(
                     } else {
                         Mode::Incremental
                     },
-                    provider,
-                    stage,
+                    kind,
                     owner: owner.into(),
                     attempt: r.get(4)?,
                     limit: r.get(5)?,
@@ -400,8 +424,10 @@ pub(super) fn fail(
     let salt = uuid::Uuid::new_v4().as_u128() as u64;
     let jitter = (salt % (base as u64 + 1)) as i64;
     let mut due = (now + base + jitter).max(failure.deadline.unwrap_or(0));
-    if failure.code == "limited" && claim.stage == Stage::Cover {
-        let host = match claim.provider {
+    if failure.code == "limited"
+        && let JobKind::Cover(provider) = claim.kind
+    {
+        let host = match provider {
             Provider::Igdb => Some("api.igdb.com"),
             Provider::ScreenScraper => Some("api.screenscraper.fr"),
             Provider::Libretro => Some("raw.githubusercontent.com"),
@@ -440,7 +466,7 @@ pub(super) fn fail(
             claim.attempt
         ],
     )?;
-    if changed == 1 && retry && claim.stage == Stage::Metadata && claim.mode == Mode::Full {
+    if changed == 1 && retry && claim.kind == JobKind::Metadata && claim.mode == Mode::Full {
         release_serial_covers(tx, claim.id)?;
     }
     Ok(())
