@@ -1,15 +1,12 @@
 //! Resolve a PS1 serial to its regional front cover using the ScreenScraper v2 API.
 use super::Lookup;
-use reqwest::{
-    StatusCode, Url,
-    blocking::{Client, Response},
-    header::CONTENT_TYPE,
-};
+use crate::library::transport;
+use reqwest::{Client, StatusCode, Url, header::CONTENT_TYPE};
 use serde_json::Value;
-use std::{env, io::Read};
+use std::{env, sync::atomic::AtomicBool};
 
 const ENDPOINT: &str = "https://api.screenscraper.fr/api2/jeuInfos.php";
-const MAX_RESPONSE: u64 = 1024 * 1024;
+const MAX_RESPONSE: usize = 1024 * 1024;
 
 fn setting(name: &str) -> Option<String> {
     env::var(format!("EIDORYN_SCREENSCRAPER_{name}"))
@@ -90,7 +87,12 @@ fn parse(bytes: &[u8], serial: &str, region: &str) -> Result<Lookup, String> {
     }
 }
 
-pub(super) fn resolve(client: &Client, serial: &str, region: &str) -> Result<Lookup, String> {
+pub(super) fn resolve(
+    client: &Client,
+    serial: &str,
+    region: &str,
+    cancel: &AtomicBool,
+) -> Result<Lookup, String> {
     let Some(code) = region_code(region) else {
         return Ok(Lookup::Missing);
     };
@@ -122,39 +124,28 @@ pub(super) fn resolve(client: &Client, serial: &str, region: &str) -> Result<Loo
         (None, None) => {}
         _ => return Err("Set both ScreenScraper user and password to use a player account".into()),
     }
-    let response = request
-        .send()
-        .map_err(|error| error.without_url().to_string())?;
-    match response.status() {
-        StatusCode::NOT_FOUND | StatusCode::GONE | StatusCode::TOO_MANY_REQUESTS => {
-            return Ok(Lookup::Http(response));
-        }
-        status if !status.is_success() => {
-            return Err(format!("ScreenScraper returned HTTP {}", status.as_u16()));
-        }
-        _ => {}
+    let response = transport::request(request, MAX_RESPONSE, cancel).map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Ok(Lookup::Http(response));
     }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_RESPONSE + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Could not read ScreenScraper response")?;
-    if bytes.len() as u64 > MAX_RESPONSE {
-        return Err("ScreenScraper response exceeds the size limit".into());
-    }
+    let bytes = response.into_body();
     parse(&bytes, serial, code)
 }
 
 /// ScreenScraper documents a successful text response containing NOMEDIA for absent art.
-pub(super) fn fetch_image(client: &Client, url: Url) -> Result<Option<Response>, String> {
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|error| error.without_url().to_string())?;
+pub(super) fn fetch_image(
+    client: &Client,
+    url: Url,
+    cancel: &AtomicBool,
+) -> Result<Option<http::Response<Vec<u8>>>, String> {
+    let response =
+        transport::cover(client.get(url), super::MAX_BYTES, cancel).map_err(|e| e.to_string())?;
     image_response(response)
 }
 
-fn image_response(response: Response) -> Result<Option<Response>, String> {
+fn image_response(
+    response: http::Response<Vec<u8>>,
+) -> Result<Option<http::Response<Vec<u8>>>, String> {
     let plain_text = response
         .headers()
         .get(CONTENT_TYPE)
@@ -164,11 +155,7 @@ fn image_response(response: Response) -> Result<Option<Response>, String> {
     if response.status() != StatusCode::OK || !plain_text {
         return Ok(Some(response));
     }
-    let mut text = Vec::new();
-    response
-        .take(65)
-        .read_to_end(&mut text)
-        .map_err(|_| "Could not read ScreenScraper media status")?;
+    let text = response.body();
     if text.len() <= 64 && text.trim_ascii() == b"NOMEDIA" {
         Ok(None)
     } else {
@@ -232,7 +219,6 @@ mod tests {
                 .header("content-type", mime)
                 .body(bytes.to_vec())
                 .unwrap()
-                .into()
         };
         let text = "text/plain; charset=utf-8";
         assert!(
@@ -247,11 +233,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
-        let mut good = image_response(response(200, "image/png", b"data"))
+        let good = image_response(response(200, "image/png", b"data"))
             .unwrap()
             .unwrap();
-        let mut bytes = Vec::new();
-        good.read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"data");
+        assert_eq!(good.body(), b"data");
     }
 }

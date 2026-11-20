@@ -1,15 +1,22 @@
+use super::refresh::{cache_releases, commit_one, refresh_with};
 use super::*;
+use crate::library::scrape::Mode;
+use std::sync::atomic::Ordering;
 
 const TEST_SERIAL: &str = "SCUS-94900";
 
-fn response(releases: Vec<Release>) -> wikidata::Download {
+fn response(releases: Vec<Release>) -> SourceResponse {
     let bindings: Vec<_> = releases.iter().map(|r| serde_json::json!({
         "game": {"value": format!("http://www.wikidata.org/entity/{}", r.id.split('/').next().unwrap())},
         "title": {"value": r.title},
     })).collect();
     let raw =
         serde_json::to_vec_pretty(&serde_json::json!({"results":{"bindings":bindings}})).unwrap();
-    wikidata::Download { releases, raw }
+    SourceResponse {
+        source: wikidata::Wikidata::SOURCE,
+        releases,
+        raw,
+    }
 }
 
 #[test]
@@ -218,7 +225,7 @@ fn conflicts_are_persistent_and_a_newer_manual_match_wins() {
     };
     let mut db = lib.connect().unwrap();
     let tx = db.transaction().unwrap();
-    cache_releases(&tx, "SCPS-10031", &[japanese]).unwrap();
+    cache_releases(&tx, "SCPS-10031", &[japanese], LIVE).unwrap();
     tx.commit().unwrap();
     let later = refresh_with(&lib, 1, |_| {
         select(&lib, 1, "Q20/SCPS-10031")?;
@@ -275,7 +282,7 @@ fn v1_upgrade_preserves_user_edits_and_session_rows() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        3
+        5
     );
 }
 
@@ -412,4 +419,182 @@ fn old_local_matches_keep_provenance_and_overrides_until_fetched() {
     let rows = list(&lib).unwrap();
     assert_eq!(rows[&1].title.as_deref(), Some("Personal title"));
     assert_eq!(rows[&1].source.as_deref(), Some(LIVE));
+}
+
+#[test]
+fn prepared_results_and_source_provenance_roll_back_with_the_job() {
+    let temp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&temp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let cancel = AtomicBool::new(false);
+    let batch = Batch::default();
+    let prepare = || {
+        batch
+            .prepare_with(&lib, 1, Mode::Full, &cancel, |_| {
+                Ok(response(vec![downloaded("Q202", "Example:   ADVENTURE!")]))
+            })
+            .unwrap()
+    };
+    let mut db = lib.connect().unwrap();
+    let initial = prepare();
+    let tx = db.transaction().unwrap();
+    assert_eq!(initial.commit(&tx, 1).unwrap(), RefreshOutcome::Updated);
+    let source: String = tx
+        .query_row(
+            "SELECT external_id FROM metadata_sources WHERE game_id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(source, "Q202/SCUS-94900");
+    tx.rollback().unwrap();
+    assert!(list(&lib).unwrap()[&1].source.is_none());
+    assert!(
+        !db.prepare("SELECT 1 FROM metadata_responses")
+            .unwrap()
+            .exists([])
+            .unwrap()
+    );
+    assert!(!has_title_candidate(&db, "example adventure").unwrap());
+
+    // The failed writer dropped its body. A later job must refetch rather than
+    // mark an empty cache successful.
+    let retried = prepare();
+    commit_one(&lib, 1, retried).unwrap();
+    assert!(has_title_candidate(&db, &title_hint("  Example–Adventure (Disc 2) [copy]")).unwrap());
+    assert_eq!(candidates(&lib, 1, "EXAMPLE ADVENTURE").unwrap().len(), 1);
+    assert_eq!(
+        title_hint("A (Different) Title [backup] (Japan)"),
+        "a different title"
+    );
+    select(&lib, 1, "Q202/SCUS-94900").unwrap();
+    fixture(&lib, 2, None);
+    assert_eq!(candidates(&lib, 2, "Example adventurre").unwrap().len(), 1);
+    assert!(list(&lib).unwrap()[&2].release_id.is_none());
+    assert!(
+        candidates(&lib, 2, "Entirely Different Title")
+            .unwrap()
+            .is_empty()
+    );
+    let priority: i64 = db
+        .query_row(
+            "SELECT priority FROM metadata_sources WHERE game_id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(priority, 2);
+}
+
+#[test]
+fn same_batch_retries_transient_source_failures() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let batch = Batch::default();
+    let cancel = AtomicBool::new(false);
+    let offline = batch.prepare_with(&lib, 1, Mode::Full, &cancel, |_| {
+        Err(ProviderError::Transport)
+    });
+    assert!(matches!(offline, Err(ProviderError::Transport)));
+    let retry = batch
+        .prepare_with(&lib, 1, Mode::Full, &cancel, |_| {
+            Ok(response(vec![downloaded("Q3", "New result")]))
+        })
+        .unwrap();
+    assert_eq!(commit_one(&lib, 1, retry).unwrap(), RefreshOutcome::Updated);
+}
+
+#[test]
+fn refreshing_one_copy_preserves_another_editions_exact_source_bytes_until_reselected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("index.db");
+    let lib = Library::open(&path).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let old = downloaded("Q1", "Earlier edition");
+    let first = response(vec![old.clone()]);
+    let first_raw = first.raw.clone();
+    refresh_with(&lib, 1, |_| Ok(first)).unwrap();
+    fixture(&lib, 2, Some(TEST_SERIAL));
+    select(&lib, 2, &old.id).unwrap();
+    lib.connect()
+        .unwrap()
+        .execute(
+            "UPDATE metadata_responses SET fetched_at=11 WHERE serial=?",
+            [TEST_SERIAL],
+        )
+        .unwrap();
+    let new = downloaded("Q2", "Current edition");
+    let second = response(vec![new.clone()]);
+    let second_raw = second.raw.clone();
+    refresh_with(&lib, 1, |_| Ok(second)).unwrap();
+    drop(lib);
+
+    let lib = Library::open(&path).unwrap();
+    let db = lib.connect().unwrap();
+    let evidence_for = |id| {
+        db.query_row(
+            "SELECT external_id,raw_payload,fetched_at FROM metadata_sources WHERE game_id=?",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(evidence_for(2), (old.id, first_raw, 11));
+    let (_, current_raw, stamp) = evidence_for(1);
+    assert_eq!(current_raw, second_raw);
+    assert!(stamp > 11);
+    select(&lib, 2, &new.id).unwrap();
+    assert_eq!(evidence_for(2), (new.id, second_raw, stamp));
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM referenced_metadata_responses",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0, "Last historical reference released");
+}
+
+#[test]
+fn upgrade_links_only_identifiable_v3_responses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("index.db");
+    let db = Connection::open(&path).unwrap();
+    for sql in [
+        crate::library::SCHEMA,
+        SCHEMA,
+        include_str!("online.sql"),
+        include_str!("local_cache.sql"),
+        include_str!("../covers/libretro.sql"),
+    ] {
+        db.execute_batch(sql).unwrap();
+    }
+    db.execute_batch("PRAGMA user_version=3;
+        INSERT INTO games(id,fallback_title) VALUES(1,'A'),(2,'B');
+        INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date) VALUES('Q1/SCUS-94900','SCUS-94900','USA','Current','1996','','');
+        INSERT INTO metadata_responses(serial,payload,fetched_at) VALUES('SCUS-94900',x'AA',10);
+        INSERT INTO game_metadata(game_id,filename,release_id,release_serial,auto_title,auto_region,auto_date,refreshed,source)
+        VALUES (1,'A','Q1/SCUS-94900','SCUS-94900','Current','USA','1996',15,'Wikidata (online)'),
+               (2,'B','Q1/SCUS-94900','SCUS-94900','Older','USA','1995',7,'Wikidata (online)');").unwrap();
+    drop(db);
+    let lib = Library::open(&path).unwrap();
+    let db = lib.connect().unwrap();
+    let source = |id| {
+        db.query_row(
+            "SELECT raw_payload,fetched_at FROM metadata_sources WHERE game_id=?",
+            [id],
+            |r| Ok((r.get::<_, Option<Vec<u8>>>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(source(1), (Some(vec![0xAA]), 10));
+    assert_eq!(source(2), (None, 7));
+    assert_eq!(list(&lib).unwrap()[&2].title.as_deref(), Some("Older"));
 }

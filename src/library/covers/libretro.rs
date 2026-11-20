@@ -3,10 +3,11 @@
 use std::sync::{Mutex, atomic::AtomicBool};
 use std::time::SystemTime;
 
-use reqwest::{Url, blocking::Client};
+use crate::library::transport;
+use reqwest::{Client, Url};
 use rusqlite::{Connection, params};
 
-use super::{Library, Lookup, RETRY_SECONDS, check_cancel, read_bounded, seconds};
+use super::{Library, Lookup, MAX_BYTES, RETRY_SECONDS, check_cancel, seconds};
 
 const DAT: &str = "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/Sony%20-%20PlayStation.dat";
 pub(super) const BOXART: &str = "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/";
@@ -35,26 +36,32 @@ pub(super) fn resolve(
         .map_err(|e| e.to_string())?;
     check_cancel(cancel)?;
     if retry > now {
-        return cached_after_failure(
-            &db,
-            serial,
-            region,
-            "Libretro catalog temporarily unavailable".into(),
-        );
+        return match cached(&db, serial, region)? {
+            Lookup::Missing => {
+                let mut retry_response = http::Response::new(Vec::<u8>::new());
+                *retry_response.status_mut() = reqwest::StatusCode::SERVICE_UNAVAILABLE;
+                retry_response
+                    .headers_mut()
+                    .insert(reqwest::header::RETRY_AFTER, (retry - now).into());
+                Ok(Lookup::Http(retry_response))
+            }
+            hit => Ok(hit),
+        };
     }
     if last.is_none_or(|last| now.saturating_sub(last) >= REFRESH_SECONDS) {
         let refresh = (|| {
-            let response = client
-                .get(DAT)
-                .send()
-                .map_err(|e| format!("Libretro catalog: {}", e.without_url()))?;
-            if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let response = transport::request(client.get(DAT), MAX_BYTES, cancel)
+                .map_err(|e| e.to_string())?;
+            if crate::library::http_retry::should_defer(response.status(), response.headers()) {
                 return Ok(Some(response)); // The common download path persists Retry-After for the host.
             }
-            let response = response
-                .error_for_status()
-                .map_err(|e| format!("Libretro catalog: {}", e.without_url()))?;
-            let bytes = read_bounded(response, cancel)?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "Libretro catalog returned HTTP {}",
+                    response.status().as_u16()
+                ));
+            }
+            let bytes = response.into_body();
             let dat = std::str::from_utf8(&bytes).map_err(|_| "Invalid Libretro DAT encoding")?;
             replace_index(&mut db, dat, now, cancel)?;
             Ok(None)
@@ -249,12 +256,14 @@ mod tests {
             [i64::MAX],
         )
         .unwrap();
-        let client = super::super::http_client(reqwest::redirect::Policy::none()).unwrap();
+        let client = transport::api().unwrap();
         assert!(matches!(
-            resolve(&lib, &client, "TEST-12345", "Europe", &cancel).unwrap(),
+            resolve(&lib, client, "TEST-12345", "Europe", &cancel).unwrap(),
             Lookup::Image(_)
         ));
-        assert!(resolve(&lib, &client, "TEST-00000", "Europe", &cancel).is_err());
+        assert!(
+            matches!(resolve(&lib, client, "TEST-00000", "Europe", &cancel).unwrap(), Lookup::Http(response) if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE)
+        );
         replace_index(
             &mut db,
             &format!("{one}\n{}", one.replace("Demo", "Demo (Rev 1)")),

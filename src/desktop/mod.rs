@@ -101,7 +101,13 @@ pub fn run_with_probe(
     };
     let library = if probe.is_none() {
         match library::open() {
-            Ok(library) => Some(library),
+            Ok(mut library) => {
+                let prefs = &startup.preferences.library;
+                library.configure_import_scraping(
+                    prefs.scrape_new_games.then_some(prefs.cover_provider),
+                );
+                Some(library)
+            }
             Err(error) => {
                 append_notice(&mut startup.notice, error);
                 None
@@ -210,23 +216,11 @@ fn open_window(
                         });
                         Desktop::start_snapshot_updates(cx);
                         if let Some(store) = library.store.clone() {
-                            let recent = startup.preferences.recent_discs.clone();
-                            cx.spawn(async move |this, cx| {
-                                let result = cx
-                                    .background_executor()
-                                    .spawn(async move { store.migrate_recents(&recent) })
-                                    .await;
-                                let _ = this.update(cx, |view: &mut Desktop, cx| {
-                                    if let Err(error) = result {
-                                        append_notice(&mut view.notice, error);
-                                    }
-                                    if view.page == WorkspacePage::Library {
-                                        view.reload_library(cx);
-                                    }
-                                    cx.notify();
-                                });
-                            })
-                            .detach();
+                            Desktop::start_library(
+                                store,
+                                startup.preferences.recent_discs.clone(),
+                                cx,
+                            );
                         }
                         Desktop {
                             library,
@@ -342,6 +336,12 @@ struct Desktop {
     _subscriptions: Vec<gpui::Subscription>,
 }
 
+impl Drop for Desktop {
+    fn drop(&mut self) {
+        self.library.shutdown();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SettingsTab {
     #[default]
@@ -428,6 +428,43 @@ impl Presentation {
 }
 
 impl Desktop {
+    fn start_library(
+        store: eidoryn_psx::library::Library,
+        recent: Vec<eidoryn_psx::preferences::RecentDisc>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    store.wait_until_ready()?;
+                    let imported = store.migrate_recents(&recent);
+                    let cleaned = eidoryn_psx::library::covers::collect_orphans(&store);
+                    Ok::<_, String>(imported.and(cleaned.map(|_| ())).err())
+                })
+                .await;
+            let _ = this.update(cx, |view: &mut Desktop, cx| {
+                match result {
+                    Ok(warning) => {
+                        if let Some(warning) = warning {
+                            append_notice(&mut view.notice, warning);
+                        }
+                        view.poll_library_scrape(cx);
+                        if view.page == WorkspacePage::Library {
+                            view.reload_library(cx);
+                        }
+                    }
+                    Err(error) => {
+                        view.library.store = None;
+                        append_notice(&mut view.notice, error);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn start_snapshot_updates(cx: &mut gpui::Context<Self>) {
         cx.spawn(async |this, cx| {
             // Poll more often than one guest field. A relative 16 ms sleep plus

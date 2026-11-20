@@ -1,0 +1,7 @@
+-- A running incremental lookup may have already accepted a cache hit. A fresh
+-- request must also supersede outstanding artwork jobs for a previous source.
+UPDATE scrape_jobs SET status='cancelled',owner=NULL,lease_until=NULL,updated_at=unixepoch()
+WHERE game_id=?1 AND (
+    job_type='cover' AND provider<>?2 AND status IN ('pending','running','retry_wait')
+    OR mode='incremental' AND status='running' AND (job_type='metadata' OR provider=?2)
+)

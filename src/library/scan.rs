@@ -11,8 +11,21 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// The operation currently running on the scanner worker.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScanPhase {
+    #[default]
+    Discovering,
+    Indexing,
+    CheckingAvailability,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ScanReport {
+    pub phase: ScanPhase,
+    pub total: usize,
+    pub processed: usize,
+    pub current_file: Option<PathBuf>,
     pub added: usize,
     pub existing: usize,
     pub pending: usize,
@@ -64,6 +77,7 @@ impl<F: FnMut(&ScanProgress)> Scan<'_, F> {
         (self.progress)(&self.report);
     }
     fn files(&mut self, files: &BTreeSet<PathBuf>, mode: Mode) -> IndexResult<()> {
+        self.report.phase = ScanPhase::Indexing;
         let mut tracks = HashSet::new();
         for path in files
             .iter()
@@ -73,12 +87,23 @@ impl<F: FnMut(&ScanProgress)> Scan<'_, F> {
             if cancelled(self.cancel) {
                 break;
             }
-            if tracks.contains(path) {
+            self.report.current_file = Some(path.clone());
+            self.report.processed += 1;
+            if tracks.contains(path)
+                || mode == Mode::Directory
+                    && ext(path, "bin")
+                    && self
+                        .db
+                        .prepare_cached("SELECT 1 FROM cue_tracks WHERE path=?")?
+                        .exists([path_key(path)])?
+            {
+                self.notify();
                 continue;
             }
             if ext(path, "bin") {
                 let linked = Library::known_cues(&self.db, path)?;
                 if mode == Mode::Directory && !linked.is_empty() {
+                    self.notify();
                     continue;
                 }
                 if mode == Mode::Explicit {
@@ -104,7 +129,13 @@ impl<F: FnMut(&ScanProgress)> Scan<'_, F> {
                     self.report.pending += usize::from(result.pending);
                     for dep in result.dependencies {
                         let absolute = dep.canonicalize().unwrap_or(dep);
-                        tracks.insert(absolute);
+                        if mode == Mode::Directory {
+                            self.db
+                                .prepare_cached("INSERT OR IGNORE INTO cue_tracks VALUES(?)")?
+                                .execute([path_key(&absolute)])?;
+                        } else {
+                            tracks.insert(absolute);
+                        }
                     }
                 }
                 Err(error) => {
@@ -119,12 +150,238 @@ impl<F: FnMut(&ScanProgress)> Scan<'_, F> {
         }
         Ok(())
     }
+    /// Index complete images from this directory before walking any child. A BIN can be
+    /// named by a CUE in a different directory, so defer only those ambiguous paths.
+    fn scan_folder(
+        &mut self,
+        folder: &Path,
+        recursive: bool,
+        folders: &mut Vec<PathBuf>,
+        inaccessible: &mut Vec<PathBuf>,
+    ) -> IndexResult<()> {
+        self.report.phase = ScanPhase::Discovering;
+        self.report.current_file = Some(folder.to_owned());
+        self.notify();
+        if cancelled(self.cancel) {
+            return Ok(());
+        }
+        let entries = match fs::read_dir(folder) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.report.failure(folder, error);
+                inaccessible.push(folder.to_owned());
+                self.notify();
+                return Ok(());
+            }
+        };
+        let mut ready = BTreeSet::new();
+        for entry in entries {
+            if cancelled(self.cancel) {
+                return Ok(());
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    self.report.failure(folder, error);
+                    self.notify();
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(error) => {
+                    self.report.current_file = Some(path.clone());
+                    self.report.failure(&path, error);
+                    self.notify();
+                    continue;
+                }
+            };
+            if kind.is_dir() && recursive {
+                folders.push(path);
+            } else if DiscImage::supports_path(&path)
+                && (kind.is_file() || kind.is_symlink() && path.is_file())
+            {
+                let path = path.canonicalize().unwrap_or(path);
+                let deferred = ext(&path, "bin");
+                let added = self
+                    .db
+                    .prepare_cached("INSERT OR IGNORE INTO discovered VALUES(?,?)")?
+                    .execute(params![path_key(&path), deferred])?;
+                if added != 0 {
+                    self.report.total += 1;
+                    if self.report.total.is_multiple_of(64) {
+                        self.report.current_file = Some(folder.to_owned());
+                        self.notify();
+                    }
+                    if !deferred {
+                        ready.insert(path);
+                    }
+                }
+            }
+        }
+        self.files(&ready, Mode::Directory)
+    }
+
+    fn finish_bins(&mut self) -> IndexResult<()> {
+        let mut after = Vec::new();
+        while !cancelled(self.cancel) {
+            let page = self
+                .db
+                .prepare_cached(
+                    "SELECT path FROM discovered WHERE deferred=1 AND path>? ORDER BY path LIMIT 128",
+                )?
+                .query_map([&after], |r| r.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let Some(last) = page.last() else { break };
+            after.clone_from(last);
+            self.files(&page.into_iter().map(key_path).collect(), Mode::Directory)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile(
+        &mut self,
+        root: &Path,
+        recursive: bool,
+        inaccessible: &[PathBuf],
+    ) -> IndexResult<()> {
+        if cancelled(self.cancel) {
+            return Ok(());
+        }
+        self.report.phase = ScanPhase::CheckingAvailability;
+        self.report.current_file = Some(root.to_owned());
+        self.notify();
+        self.stage_unseen(root, recursive)?;
+        if cancelled(self.cancel) {
+            return Ok(());
+        }
+        // Reserve only undiscovered locations. An importer that sees one of these paths
+        // clears its token even if its last_seen_at timestamp is in the same second.
+        let token = uuid::Uuid::new_v4().to_string();
+        let reserved = self.db.execute(
+            "UPDATE locations SET availability_check=?1 FROM unseen u
+             WHERE locations.id=u.id AND locations.path=u.path AND current AND available",
+            [&token],
+        )?;
+        if reserved == 0 {
+            return self.finish_reconcile(root, inaccessible, &token);
+        }
+        let result = self
+            .check_unseen()
+            .and_then(|()| self.finish_reconcile(root, inaccessible, &token));
+        let cleanup = self.db.execute(
+            "UPDATE locations SET availability_check=NULL
+             WHERE id IN (SELECT id FROM unseen) AND availability_check=?",
+            [&token],
+        );
+        result?;
+        cleanup?;
+        Ok(())
+    }
+
+    fn stage_unseen(&self, root: &Path, recursive: bool) -> IndexResult<()> {
+        self.db.execute_batch(
+            "CREATE TEMP TABLE unseen(id INTEGER PRIMARY KEY, path BLOB NOT NULL,
+                 missing INTEGER NOT NULL DEFAULT 0)",
+        )?;
+        let mut after = 0;
+        let mut select = self.db.prepare_cached(
+            "SELECT id,path FROM locations l WHERE current AND available AND id>?
+             AND NOT EXISTS(SELECT 1 FROM discovered d WHERE d.path=l.path)
+             ORDER BY id LIMIT 128",
+        )?;
+        let mut insert = self
+            .db
+            .prepare_cached("INSERT INTO unseen(id,path) VALUES(?,?)")?;
+        while !cancelled(self.cancel) {
+            let rows = select
+                .query_map([after], |r| Ok((r.get::<_, i64>(0)?, key_path(r.get(1)?))))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let Some((last, _)) = rows.last() else { break };
+            after = *last;
+            for (id, path) in rows {
+                let covered = if recursive {
+                    path.starts_with(root)
+                } else {
+                    path.parent() == Some(root)
+                };
+                if covered {
+                    insert.execute(params![id, path_key(&path)])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_unseen(&mut self) -> IndexResult<()> {
+        let mut after = 0;
+        while !cancelled(self.cancel) {
+            let page = self
+                .db
+                .prepare_cached("SELECT id,path FROM unseen WHERE id>? ORDER BY id LIMIT 128")?
+                .query_map([after], |r| Ok((r.get::<_, i64>(0)?, key_path(r.get(1)?))))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let Some((last, _)) = page.last() else { break };
+            after = *last;
+            for (id, path) in page {
+                if cancelled(self.cancel) {
+                    return Ok(());
+                }
+                if !path.is_file() {
+                    self.db
+                        .prepare_cached("UPDATE unseen SET missing=1 WHERE id=?")?
+                        .execute([id])?;
+                }
+                self.report.current_file = Some(path);
+                self.notify();
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_reconcile(
+        &mut self,
+        root: &Path,
+        inaccessible: &[PathBuf],
+        token: &str,
+    ) -> IndexResult<()> {
+        if cancelled(self.cancel) {
+            return Ok(());
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE locations SET available=0,availability_check=NULL FROM unseen u
+             WHERE u.missing AND locations.id=u.id AND locations.path=u.path
+                 AND current AND available AND availability_check=?",
+            [token],
+        )?;
+        tx.execute(
+            "UPDATE roots SET available=?,added=?,existing=?,pending=?,failed=? WHERE path=?",
+            params![
+                !inaccessible.iter().any(|p| p == root),
+                self.report.added,
+                self.report.existing,
+                self.report.pending,
+                self.report.failed,
+                path_key(root)
+            ],
+        )?;
+        if cancelled(self.cancel) {
+            return Ok(());
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 impl Library {
     pub fn roots(&self) -> Result<Vec<ScanRoot>, String> {
-        (|| {
-            self.connection()?
+        (|| -> IndexResult<_> {
+            Ok(self
+                .connection()?
                 .prepare("SELECT path,recursive,available FROM roots ORDER BY path")?
                 .query_map([], |r| {
                     Ok(ScanRoot {
@@ -133,7 +390,7 @@ impl Library {
                         available: r.get(2)?,
                     })
                 })?
-                .collect::<rusqlite::Result<Vec<_>>>()
+                .collect::<rusqlite::Result<Vec<_>>>()?)
         })()
         .map_err(|e| e.to_string())
     }
@@ -153,7 +410,8 @@ impl Library {
         let files = paths
             .iter()
             .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
-            .collect();
+            .collect::<BTreeSet<_>>();
+        scan.report.total = files.len();
         scan.files(&files, Mode::Explicit)
             .map_err(|e| e.to_string())?;
         Ok(scan.report)
@@ -189,82 +447,19 @@ impl Library {
              ON CONFLICT(path) DO UPDATE SET recursive = excluded.recursive",
             params![key, recursive],
         )?;
+        scan.db.execute_batch("CREATE TEMP TABLE discovered(path BLOB PRIMARY KEY, deferred INTEGER NOT NULL) WITHOUT ROWID;
+            CREATE INDEX deferred_bins ON discovered(path) WHERE deferred=1;
+            CREATE TEMP TABLE cue_tracks(path BLOB PRIMARY KEY) WITHOUT ROWID;")?;
         let mut folders = vec![root.clone()];
-        let mut files = BTreeSet::new();
         let mut inaccessible = Vec::new();
         while let Some(folder) = folders.pop() {
             if cancelled(cancel) {
                 return Ok(scan.report);
             }
-            let iterator = match fs::read_dir(&folder) {
-                Ok(it) => it,
-                Err(error) => {
-                    scan.report.failure(&folder, error);
-                    inaccessible.push(folder);
-                    scan.notify();
-                    continue;
-                }
-            };
-            for entry in iterator {
-                if cancelled(cancel) {
-                    return Ok(scan.report);
-                }
-                let entry = match entry {
-                    Ok(v) => v,
-                    Err(e) => {
-                        scan.report.failure(&folder, e);
-                        continue;
-                    }
-                };
-                let path = entry.path();
-                let kind = match entry.file_type() {
-                    Ok(v) => v,
-                    Err(e) => {
-                        scan.report.failure(&path, e);
-                        continue;
-                    }
-                };
-                if kind.is_dir() && recursive {
-                    folders.push(path);
-                } else if DiscImage::supports_path(&path)
-                    && (kind.is_file() || kind.is_symlink() && path.is_file())
-                {
-                    files.insert(path.canonicalize().unwrap_or(path));
-                }
-            }
+            scan.scan_folder(&folder, recursive, &mut folders, &mut inaccessible)?;
         }
-        scan.files(&files, Mode::Directory)?;
-        if !cancelled(cancel) {
-            let online = !inaccessible.contains(&root);
-            // An offline root keeps its rows and histories. Only availability is reset.
-            let tx = scan.db.transaction()?;
-            let indexed = tx
-                .prepare("SELECT id,path FROM locations WHERE current AND available")?
-                .query_map([], |r| Ok((r.get::<_, i64>(0)?, key_path(r.get(1)?))))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (id, path) in indexed {
-                if (if recursive {
-                    path.starts_with(&root)
-                } else {
-                    path.parent() == Some(&root)
-                }) && (inaccessible.iter().any(|dir| path.starts_with(dir)) || !path.is_file())
-                {
-                    tx.execute("UPDATE locations SET available=0 WHERE id=?", [id])?;
-                }
-            }
-            tx.execute(
-                "UPDATE roots SET available=?,added=?,existing=?,pending=?,failed=? WHERE path=?",
-                params![
-                    online,
-                    scan.report.added,
-                    scan.report.existing,
-                    scan.report.pending,
-                    scan.report.failed,
-                    key
-                ],
-            )?;
-            tx.commit()?;
-        }
+        scan.finish_bins()?;
+        scan.reconcile(&root, recursive, &inaccessible)?;
         Ok(scan.report)
     }
     fn known_cues(db: &Connection, path: &Path) -> rusqlite::Result<Vec<PathBuf>> {

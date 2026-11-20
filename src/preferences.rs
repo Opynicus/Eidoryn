@@ -36,6 +36,7 @@ pub struct LibraryPreferences {
     pub auto_covers: bool,
     pub scrape_new_games: bool,
     pub scrape_workers: WorkerCount,
+    pub cover_workers: WorkerCount,
     pub cover_provider: Provider,
     pub cover_template: String,
 }
@@ -47,6 +48,7 @@ struct SavedLibraryPreferences {
     auto_covers: bool,
     scrape_new_games: Option<bool>,
     scrape_workers: WorkerCount,
+    cover_workers: Option<WorkerCount>,
     cover_provider: Option<Provider>,
     cover_template: Option<String>,
 }
@@ -69,6 +71,7 @@ impl From<SavedLibraryPreferences> for LibraryPreferences {
             auto_covers: saved.auto_covers,
             scrape_new_games: saved.scrape_new_games.unwrap_or(true),
             scrape_workers: saved.scrape_workers,
+            cover_workers: saved.cover_workers.unwrap_or_else(|| WorkerCount::from(3)),
             cover_provider: provider,
             cover_template: template,
         }
@@ -154,49 +157,7 @@ impl Preferences {
     /// Temporary read failures retain the user's choice.
     /// The caller persists the configuration if `bios_path` changed.
     pub fn validate_saved_bios(&mut self) -> Result<Option<PathBuf>, String> {
-        let Some(path) = self.bios_path.clone() else {
-            return Ok(None);
-        };
-        let check = || -> std::io::Result<PathBuf> {
-            let metadata = std::fs::metadata(&path)?;
-            if !metadata.is_file() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "not a regular file",
-                ));
-            }
-            if metadata.len() != BIOS_SIZE as u64 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "BIOS must be exactly 512 KiB",
-                ));
-            }
-            let mut bytes = Vec::new();
-            std::fs::File::open(&path)?
-                .take(BIOS_SIZE as u64 + 1)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() != BIOS_SIZE {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "BIOS must be exactly 512 KiB",
-                ));
-            }
-            path.canonicalize()
-        };
-        match check() {
-            Ok(path) => {
-                self.bios_path = Some(path.clone());
-                Ok(Some(path))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.bios_path = None;
-                Err(format!(
-                    "Saved BIOS {} is missing or is not a regular file; its default setting was removed. Select a BIOS again.",
-                    path.display()
-                ))
-            }
-            Err(error) => Err(format!("Cannot use saved BIOS {}: {error}", path.display())),
-        }
+        validate_bios_choice(&mut self.bios_path)
     }
 
     pub fn language(&self) -> Language {
@@ -296,6 +257,52 @@ pub fn config_path() -> Option<PathBuf> {
     root.map(|root| root.join("eidoryn/settings.json"))
 }
 
+/// Read and validate a firmware choice. Missing files clear the supplied choice.
+pub fn validate_bios_choice(choice: &mut Option<PathBuf>) -> Result<Option<PathBuf>, String> {
+    let Some(path) = choice.clone() else {
+        return Ok(None);
+    };
+    let check = || -> std::io::Result<PathBuf> {
+        let metadata = std::fs::metadata(&path)?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "not a regular file",
+            ));
+        }
+        if metadata.len() != BIOS_SIZE as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "BIOS must be exactly 512 KiB",
+            ));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)?
+            .take(BIOS_SIZE as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() != BIOS_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "BIOS must be exactly 512 KiB",
+            ));
+        }
+        path.canonicalize()
+    };
+    match check() {
+        Ok(path) => {
+            *choice = Some(path.clone());
+            Ok(Some(path))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            *choice = None;
+            Err(format!(
+                "Saved BIOS {} is missing or is not a regular file; its default setting was removed. Select a BIOS again.",
+                path.display()
+            ))
+        }
+        Err(error) => Err(format!("Cannot use saved BIOS {}: {error}", path.display())),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,7 +343,7 @@ mod tests {
                 .unwrap()
                 .scrape_workers
                 .get(),
-            3
+            6
         );
         for (saved, count) in [(-1, 1), (0, 1), (1, 1), (8, 8), (20, 20), (300, 20)] {
             let json = serde_json::json!({"scrape_workers": saved, "list": true});

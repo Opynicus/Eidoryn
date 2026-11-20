@@ -1,20 +1,20 @@
 //! Query the source catalog by PS1 serial and preserve the reported date precision.
-use super::{Release, valid_date};
+use super::{
+    MetadataProvider, Provenance, ProviderError, Release, SourceResponse, transport, valid_date,
+};
 use crate::library::http_retry::RequestLimit;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Read,
     sync::atomic::AtomicBool,
     time::Duration,
 };
 
 const ENDPOINT: &str = "https://query.wikidata.org/sparql";
-const MAX_RESPONSE: u64 = 1024 * 1024;
+const MAX_RESPONSE: usize = 1024 * 1024;
 // The public Wikidata Query Service accepts five concurrent queries per IP.
 static REQUESTS: RequestLimit = RequestLimit::new(5, Duration::ZERO);
-const RATE_LIMITED: &str = "Wikidata rate limit reached. Retry later.";
 
 // The serial and all substitutions below come from checked identifiers and fixed tables.
 // Start with the indexed P2606 literal. Work-level platform alone is ambiguous for ports.
@@ -174,7 +174,9 @@ fn parse(bytes: &[u8], serial: &str, region: &str) -> Result<Vec<Release>, Strin
         let edition = editions.entry(qid.to_owned()).or_default();
         let english = row.title.value;
         edition.title = if region == "Japan" {
-            row.local.map_or_else(|| english.clone(), |l| l.value)
+            row.local
+                .filter(|l| !l.value.trim().is_empty())
+                .map_or_else(|| english.clone(), |l| l.value)
         } else {
             english.clone()
         };
@@ -217,60 +219,64 @@ fn parse(bytes: &[u8], serial: &str, region: &str) -> Result<Vec<Release>, Strin
     Ok(releases)
 }
 
-#[derive(Debug)]
-pub(super) struct Download {
-    pub(super) releases: Vec<Release>,
-    pub(super) raw: Vec<u8>,
+/// Wikidata returns normalized release details together with all exact-serial candidates.
+pub(super) struct Wikidata;
+
+impl MetadataProvider for Wikidata {
+    const SOURCE: Provenance = Provenance {
+        provider: super::LIVE,
+        payload_version: 1,
+    };
+
+    fn search(&self, serial: &str, cancel: &AtomicBool) -> Result<SourceResponse, ProviderError> {
+        let territory = territory(serial).map_err(ProviderError::Invalid)?;
+        let _permit = REQUESTS.acquire_typed(cancel)?;
+        let response = query_source(transport::api()?, ENDPOINT, serial, &territory, cancel)?;
+        if crate::library::http_retry::should_defer(response.status(), response.headers()) {
+            REQUESTS.defer(response.headers());
+        }
+        decode_response(response, serial, &territory)
+    }
 }
 
-pub(super) fn fetch(serial: &str) -> Result<Download, String> {
-    fetch_cancellable(serial, &AtomicBool::new(false))
+fn query_source(
+    client: &Client,
+    endpoint: &str,
+    serial: &str,
+    territory: &Territory,
+    cancel: &AtomicBool,
+) -> Result<http::Response<Vec<u8>>, ProviderError> {
+    let request = client
+        .get(endpoint)
+        .query(&[
+            ("query", query(serial, territory).as_str()),
+            ("format", "json"),
+        ])
+        .header("Accept", "application/sparql-results+json");
+    transport::request(request, MAX_RESPONSE, cancel)
 }
 
-pub(super) fn fetch_cancellable(serial: &str, cancel: &AtomicBool) -> Result<Download, String> {
-    let territory = territory(serial)?;
-    let _permit = REQUESTS.acquire(cancel)?;
-    let response = Client::builder()
-        .https_only(true)
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(25))
-        .user_agent(concat!(
-            "Eidoryn/",
-            env!("CARGO_PKG_VERSION"),
-            " (https://github.com/Opynicus/Eidoryn)"
-        ))
-        .build()
-        .and_then(|client| {
-            client
-                .get(ENDPOINT)
-                .query(&[
-                    ("query", query(serial, &territory).as_str()),
-                    ("format", "json"),
-                ])
-                .header("Accept", "application/sparql-results+json")
-                .send()
-        })
-        .map_err(|e| format!("Wikidata request failed: {}", e.without_url()))?;
-    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        REQUESTS.defer(&response);
-        return Err(RATE_LIMITED.into());
+fn decode_response(
+    response: http::Response<Vec<u8>>,
+    serial: &str,
+    territory: &Territory,
+) -> Result<SourceResponse, ProviderError> {
+    if !response.status().is_success() {
+        return Err(ProviderError::http(response.status(), response.headers()));
     }
-    let response = response
-        .error_for_status()
-        .map_err(|e| format!("Wikidata request failed: {}", e.without_url()))?;
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_RESPONSE + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("Wikidata download failed: {e}"))?;
-    if bytes.len() as u64 > MAX_RESPONSE {
-        return Err("Wikidata response exceeded 1 MiB".into());
-    }
-    let releases = parse(&bytes, serial, territory.region)?;
-    Ok(Download {
+    let raw = response.into_body();
+    let releases = parse(&raw, serial, territory.region).map_err(ProviderError::Invalid)?;
+    Ok(SourceResponse {
+        source: Wikidata::SOURCE,
         releases,
-        raw: bytes,
+        raw,
     })
+}
+
+pub(super) fn fetch(serial: &str) -> Result<SourceResponse, String> {
+    Wikidata
+        .search(serial, &AtomicBool::new(false))
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -330,7 +336,7 @@ mod tests {
     #[test]
     #[ignore = "requires the public Wikidata Query Service"]
     fn live_wikidata_serial_metadata() {
-        let Download { releases, raw } = fetch("SCUS-94900").unwrap();
+        let SourceResponse { releases, raw, .. } = fetch("SCUS-94900").unwrap();
         let response: Response = serde_json::from_slice(&raw).unwrap();
         assert!(
             response
@@ -345,5 +351,143 @@ mod tests {
             .unwrap();
         assert_eq!(crash.title, "Crash Bandicoot");
         assert_eq!(crash.date, "1996-09-09");
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        sync::atomic::Ordering,
+        thread,
+    };
+
+    fn serve(
+        status: u16,
+        headers: &str,
+        body: &str,
+        delay: Duration,
+    ) -> Result<SourceResponse, ProviderError> {
+        let listen = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/sparql", listen.local_addr().unwrap());
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(if delay.is_zero() {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(150)
+            })
+            .build()
+            .unwrap();
+        let response = format!(
+            "HTTP/1.1 {status} test\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let (mut socket, _) = listen.accept().unwrap();
+                let mut input = BufReader::new(&socket);
+                let mut request = String::new();
+                input.read_line(&mut request).unwrap();
+                assert!(request.starts_with("GET /sparql?query="));
+                assert!(request.contains("SCUS-94900"));
+                loop {
+                    request.clear();
+                    if input.read_line(&mut request).unwrap() == 0 || request == "\r\n" {
+                        break;
+                    }
+                }
+                thread::sleep(delay);
+                let _ = socket.write_all(response.as_bytes());
+            });
+            let serial = "SCUS-94900";
+            let territory = territory(serial).unwrap();
+            let response = query_source(
+                &client,
+                &endpoint,
+                serial,
+                &territory,
+                &AtomicBool::new(false),
+            )?;
+            decode_response(response, serial, &territory)
+        })
+    }
+
+    // Some build sandboxes disable loopback sockets; this exercises the actual HTTP
+    // client and parser without any upstream data or credentials.
+    #[test]
+    #[ignore = "requires a local loopback socket"]
+    fn mock_wikidata_errors_and_cancellation() {
+        for (status, code, retry) in [
+            (404, "not_found", false),
+            (400, "http", false),
+            (429, "rate_limited", true),
+            (503, "upstream", true),
+        ] {
+            let error = serve(
+                status,
+                "Retry-After: 120\r\n",
+                "sensitive-service-body",
+                Duration::ZERO,
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), code);
+            assert_eq!(error.retryable(), retry);
+            assert!(!error.to_string().contains("sensitive"));
+            if status == 429 {
+                assert!(
+                    error.retry_after().unwrap()
+                        > crate::library::http_retry::seconds(std::time::SystemTime::now())
+                );
+            }
+        }
+        for invalid in ["not JSON", r#"{"results":{"bindings":[{}]}}"#] {
+            assert_eq!(
+                serve(200, "", invalid, Duration::ZERO).unwrap_err().code(),
+                "invalid_data"
+            );
+        }
+        assert!(
+            serve(200, "", r#"{"results":{"bindings":[]}}"#, Duration::ZERO)
+                .unwrap()
+                .releases
+                .is_empty()
+        );
+        assert_eq!(
+            serve(200, "", "", Duration::from_millis(350)).unwrap_err(),
+            ProviderError::Timeout
+        );
+
+        let listen = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listen.local_addr().unwrap());
+        let cancel = AtomicBool::new(false);
+        let client = Client::builder().no_proxy().build().unwrap();
+        thread::scope(|scope| {
+            let (closed, observed) = std::sync::mpsc::channel();
+            let flag = &cancel;
+            scope.spawn(move || {
+                let (mut stream, _) = listen.accept().unwrap();
+                let mut request = BufReader::new(&stream);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+                    .unwrap();
+                flag.store(true, Ordering::Relaxed);
+                observed.recv_timeout(Duration::from_secs(2)).unwrap();
+            });
+            assert_eq!(
+                transport::request(client.get(&url), 200, &cancel).unwrap_err(),
+                ProviderError::Cancelled
+            );
+            closed.send(()).unwrap();
+        });
     }
 }

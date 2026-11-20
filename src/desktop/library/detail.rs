@@ -98,7 +98,7 @@ impl Desktop {
                     Err(error) => MetadataLookup::Failed(error),
                 };
                 v.library.metadata_lookups.insert(id, status);
-                v.reload_library(cx);
+                v.update_library_games([id], cx);
                 cx.notify();
             });
         })
@@ -363,6 +363,7 @@ impl Desktop {
         let id = entry.game.id;
         let mut summary = card(&p).p_3().gap_2();
         for (key, value) in [
+            (Text::LibraryPlatform, Some(entry.game.platform.clone())),
             (Text::LibrarySerial, entry.game.serial.clone()),
             (Text::LibraryRegion, entry.region.clone()),
             (Text::LibraryDate, entry.date.clone()),
@@ -392,7 +393,21 @@ impl Desktop {
         {
             summary = summary.child(pair(&p, self.tr(Text::LibraryWorkDate), date.clone()));
         }
-        let edit_controls = div()
+        summary = summary.child(self.edition_controls(entry, cx));
+        match self.library.metadata_lookups.get(&id) {
+            Some(MetadataLookup::Finished(text)) => summary.child(label(&p, self.tr(*text))),
+            Some(MetadataLookup::Failed(error)) => summary.child(label(
+                &p,
+                format!("{} {error}", self.tr(Text::LibraryMetadataError)),
+            )),
+            _ => summary,
+        }
+    }
+
+    fn edition_controls(&self, entry: &Entry, cx: &Context<Self>) -> Div {
+        let p = self.themes.active().palette;
+        let id = entry.game.id;
+        div()
             .flex()
             .flex_wrap()
             .gap_2()
@@ -434,22 +449,29 @@ impl Desktop {
                     ))
                 },
             )
+            .when(entry.scrape_active, |s| {
+                s.child(self.library_button(
+                    "lib-cancel-job",
+                    Text::LibraryCancel,
+                    false,
+                    cx,
+                    move |v, _, cx| v.cancel_game_scrape(id, cx),
+                ))
+            })
+            .child(self.library_button(
+                "lib-retry-game",
+                Text::LibraryRetryGame,
+                false,
+                cx,
+                move |v, _, cx| v.retry_game(id, cx),
+            ))
             .child(self.library_button(
                 "lib-match",
                 Text::LibraryMatch,
                 false,
                 cx,
                 move |v, w, cx| v.edit_library(Edit::Match(id), String::new(), w, cx),
-            ));
-        summary = summary.child(edit_controls);
-        match self.library.metadata_lookups.get(&id) {
-            Some(MetadataLookup::Finished(text)) => summary.child(label(&p, self.tr(*text))),
-            Some(MetadataLookup::Failed(error)) => summary.child(label(
-                &p,
-                format!("{} {error}", self.tr(Text::LibraryMetadataError)),
-            )),
-            _ => summary,
-        }
+            ))
     }
 
     fn locations_card(&self, entry: &Entry, cx: &Context<Self>) -> Div {
@@ -681,19 +703,51 @@ impl Desktop {
         body
     }
 
+    fn toggle_import_scraping(&mut self, cx: &mut Context<Self>) {
+        self.preferences.library.scrape_new_games = !self.preferences.library.scrape_new_games;
+        self.configure_imports();
+        if !self.preferences.library.scrape_new_games {
+            self.library.scraping.stop_automatic();
+        }
+        self.poll_library_scrape(cx);
+        self.save_preferences();
+        cx.notify();
+    }
+    pub(super) fn configure_imports(&mut self) {
+        let prefs = &self.preferences.library;
+        if let Some(store) = &mut self.library.store {
+            store.configure_import_scraping(prefs.scrape_new_games.then_some(prefs.cover_provider));
+        }
+    }
+
     fn cover_preferences_changed(&mut self, cx: &mut Context<Self>) {
         if let Some(task) = &self.library.cover {
             task.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.library.auto_attempted.clear();
+        self.configure_imports();
         self.save_preferences();
         self.auto_covers(cx);
         cx.notify();
     }
 
-    fn scrape_concurrency_control(&self, cx: &Context<Self>) -> Div {
-        let current = self.preferences.library.scrape_workers;
+    fn scrape_concurrency_control(&self, covers: bool, cx: &Context<Self>) -> Div {
+        let (current, label_text, decrease, increase) = if covers {
+            (
+                self.preferences.library.cover_workers,
+                Text::LibraryCoverConcurrency,
+                "lib-cover-workers-down",
+                "lib-cover-workers-up",
+            )
+        } else {
+            (
+                self.preferences.library.scrape_workers,
+                Text::LibraryScrapeConcurrency,
+                "lib-workers-down",
+                "lib-workers-up",
+            )
+        };
         let p = &self.themes.active().palette;
         let step = |id: &'static str, sign: &'static str, delta: i64| {
             let next = WorkerCount::from(i64::from(current.get()) + delta);
@@ -704,7 +758,11 @@ impl Desktop {
                 })
                 .when(next != current, |b| {
                     b.on_click(cx.listener(move |view, _, _, cx| {
-                        view.preferences.library.scrape_workers = next;
+                        if covers {
+                            view.preferences.library.cover_workers = next;
+                        } else {
+                            view.preferences.library.scrape_workers = next;
+                        }
                         view.save_preferences();
                         cx.notify();
                     }))
@@ -714,10 +772,10 @@ impl Desktop {
             .flex()
             .items_center()
             .gap_2()
-            .child(self.tr(Text::LibraryScrapeConcurrency))
-            .child(step("lib-workers-down", "−", -1))
+            .child(self.tr(label_text))
+            .child(step(decrease, "−", -1))
             .child(label(p, current.get().to_string()))
-            .child(step("lib-workers-up", "+", 1))
+            .child(step(increase, "+", 1))
     }
 
     pub(super) fn cover_settings(&self, cx: &Context<Self>) -> Div {
@@ -790,17 +848,16 @@ impl Desktop {
             Provider::Igdb => block.child(label(&p, self.tr(Text::LibraryIgdbCredentials))),
             Provider::Libretro => block,
         };
-        block = block.child(self.scrape_concurrency_control(cx));
+        block = block
+            .child(self.scrape_concurrency_control(false, cx))
+            .child(self.scrape_concurrency_control(true, cx));
         block = block.child(self.library_button(
             "lib-scrape-new",
             Text::LibraryScrapeNewGames,
             self.preferences.library.scrape_new_games,
             cx,
             |v, _, cx| {
-                v.preferences.library.scrape_new_games = !v.preferences.library.scrape_new_games;
-                v.poll_library_scrape(cx);
-                v.save_preferences();
-                cx.notify();
+                v.toggle_import_scraping(cx);
             },
         ));
         block = block.child(self.library_button(

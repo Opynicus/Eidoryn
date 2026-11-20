@@ -1,18 +1,47 @@
 //! PlayStation release metadata in the user library and per-field user corrections.
+use super::transport;
+mod matching;
+mod refresh;
 mod wikidata;
+pub(crate) use super::transport::ProviderError;
+pub use matching::candidates;
+use matching::{has_title_candidate, index_names, matching_serial, title_hint};
+use refresh::download_serial;
+pub(super) use refresh::{Batch, Prepared};
+pub use refresh::{RefreshOutcome, refresh_online};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::AtomicBool;
 
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
-use super::{Library, scrape::Mode};
+use super::Library;
 
 pub(super) const SCHEMA: &str = include_str!("metadata/schema.sql");
 
 const LIVE: &str = "Wikidata (online)";
+
+#[derive(Clone, Copy, Debug)]
+struct Provenance {
+    provider: &'static str,
+    payload_version: u32,
+}
+
+#[derive(Debug)]
+struct SourceResponse {
+    source: Provenance,
+    releases: Vec<Release>,
+    raw: Vec<u8>,
+}
+
+/// Returns complete release candidates for a trusted disc identifier. A source can
+/// return several editions, which require an explicit choice.
+trait MetadataProvider {
+    const SOURCE: Provenance;
+
+    fn search(&self, serial: &str, cancel: &AtomicBool) -> Result<SourceResponse, ProviderError>;
+}
 
 #[derive(Clone, Debug)]
 pub struct Release {
@@ -39,6 +68,8 @@ pub struct Metadata {
     pub source: Option<String>,
     pub refreshed: Option<i64>,
     pub pending: bool,
+    /// The user can cancel a durable queued, running, or deferred job for this game.
+    pub scrape_active: bool,
     /// Sole work publication date, shown separately from an edition date.
     pub work_date: Option<String>,
 }
@@ -50,40 +81,10 @@ pub enum Field {
     Date,
 }
 
-fn matching_serial<'a>(
-    rows: &'a [Release],
-    serial: Option<&str>,
-    region: Option<&str>,
-) -> Option<&'a Release> {
-    let serial = serial?;
-    let mut exact = rows
-        .iter()
-        .filter(|r| r.serial == serial && region.is_none_or(|v| v == r.region));
-    let found = exact.next()?;
-    exact.next().is_none().then_some(found)
-}
-
-fn title_hint(title: &str) -> String {
-    title
-        .split(['(', '['])
-        .next()
-        .unwrap_or(title)
-        .trim()
-        .to_lowercase()
-}
-
 impl Release {
     fn names(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.title.as_str())
             .chain(self.aliases.split('|').filter(|name| !name.is_empty()))
-    }
-
-    fn suggested(&self, serial: Option<&str>, normalized_hint: &str) -> bool {
-        Some(self.serial.as_str()) == serial
-            || (!normalized_hint.is_empty()
-                && self
-                    .names()
-                    .any(|name| name.to_lowercase() == normalized_hint))
     }
 
     fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -152,27 +153,17 @@ fn match_evidence(
     Ok(())
 }
 
-fn has_title_candidate(conn: &Connection, hint: &str) -> rusqlite::Result<bool> {
-    if hint.is_empty() {
-        return Ok(false);
-    }
-    let mut stmt = conn.prepare_cached("SELECT title,aliases FROM fetched_releases")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let title = row.get_ref(0)?.as_str()?;
-        let aliases = row.get_ref(1)?.as_str()?;
-        if std::iter::once(title)
-            .chain(aliases.split('|'))
-            .any(|n| n.to_lowercase() == hint)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+pub(super) fn migrate_local_cache(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(include_str!("metadata/local_cache.sql"))
 }
 
-pub(super) fn migrate_local_cache(tx: &Transaction<'_>) -> rusqlite::Result<()> {
-    tx.execute_batch(include_str!("metadata/local_cache.sql"))?;
+pub(super) fn migrate_provenance(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(include_str!("metadata/provenance.sql"))?;
+    let mut existing =
+        tx.prepare("SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases")?;
+    for row in existing.query_map([], Release::from_row)? {
+        index_names(tx, &row?)?;
+    }
     // Unassigned name-only matches in older libraries could refer to an edition
     // the user never fetched or saved. Re-evaluate them against their own cache.
     let mut stmt = tx.prepare(
@@ -213,6 +204,7 @@ fn assign(
         "UPDATE game_metadata SET release_id=r.id, release_serial=r.serial,
             auto_title=r.title, auto_region=r.region, auto_date=NULLIF(r.date,''),
             aliases=r.aliases, source=r.source, refreshed=unixepoch(), confirmed=?3,
+            source_revision=(SELECT revision FROM metadata_responses WHERE serial=r.serial AND provider=r.source),
             work_date=NULLIF(r.work_date,''), pending=0
          FROM fetched_releases AS r WHERE game_metadata.game_id=?1 AND r.id=?2",
         params![id, release_id, confirmed],
@@ -265,228 +257,6 @@ pub fn refresh(lib: &Library, id: i64) -> Result<(), String> {
     tx.commit().map_err(|e| e.to_string())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RefreshOutcome {
-    Updated,
-    Candidates,
-    NotFound,
-    NoSerial,
-}
-
-/// Fetch current release information only after an explicit online request.
-pub fn refresh_online(lib: &Library, id: i64) -> Result<RefreshOutcome, String> {
-    refresh_with(lib, id, wikidata::fetch)
-}
-
-fn refresh_with(
-    lib: &Library,
-    id: i64,
-    fetch: impl FnOnce(&str) -> Result<wikidata::Download, String>,
-) -> Result<RefreshOutcome, String> {
-    apply_lookup(lib, id, |conn, serial| download_serial(conn, serial, fetch))
-}
-
-// A serial identifies the upstream lookup. Different game IDs can legitimately
-// share it, while each keeps its own manual selection and region evidence.
-type SerialLookup = OnceLock<Result<bool, String>>;
-
-#[derive(Default)]
-pub(super) struct Batch {
-    lookups: Mutex<HashMap<String, Arc<SerialLookup>>>,
-}
-
-impl Batch {
-    pub(super) fn refresh(
-        &self,
-        lib: &Library,
-        id: i64,
-        mode: Mode,
-        cancel: &AtomicBool,
-    ) -> Result<RefreshOutcome, String> {
-        self.refresh_with(lib, id, mode, cancel, |serial| {
-            wikidata::fetch_cancellable(serial, cancel)
-        })
-    }
-
-    fn refresh_with(
-        &self,
-        lib: &Library,
-        id: i64,
-        mode: Mode,
-        cancel: &AtomicBool,
-        fetch: impl FnOnce(&str) -> Result<wikidata::Download, String>,
-    ) -> Result<RefreshOutcome, String> {
-        apply_lookup(lib, id, |conn, serial| {
-            let lookup = self
-                .lookups
-                .lock()
-                .map_err(|e| e.to_string())?
-                .entry(serial.to_owned())
-                .or_default()
-                .clone();
-            let found = lookup.get_or_init(|| {
-                if mode == Mode::Incremental
-                    && conn
-                        .prepare_cached(
-                            "SELECT 1 FROM fetched_releases WHERE serial=?1 AND source=?2",
-                        )
-                        .and_then(|mut q| q.exists([serial, LIVE]))
-                        .map_err(|e| e.to_string())?
-                {
-                    return Ok(true);
-                }
-                download_serial(conn, serial, |s| {
-                    if cancel.load(Ordering::Relaxed) {
-                        return Err("Cancelled".into());
-                    }
-                    let releases = fetch(s)?;
-                    if cancel.load(Ordering::Relaxed) {
-                        return Err("Cancelled".into());
-                    }
-                    Ok(releases)
-                })
-            });
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".into());
-            }
-            found.clone()
-        })
-    }
-}
-
-fn download_serial(
-    conn: &mut Connection,
-    serial: &str,
-    fetch: impl FnOnce(&str) -> Result<wikidata::Download, String>,
-) -> Result<bool, String> {
-    let revision: i64 = conn
-        .query_row(
-            "INSERT INTO metadata_requests(serial,revision) VALUES(?,1)
-         ON CONFLICT(serial) DO UPDATE SET revision=revision+1 RETURNING revision",
-            [serial],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let download = fetch(serial)?;
-    if download.releases.is_empty() {
-        return Ok(false);
-    }
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    let current: i64 = tx
-        .query_row(
-            "SELECT revision FROM metadata_requests WHERE serial=?",
-            [serial],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if current != revision {
-        return Err("A newer metadata request superseded this one".into());
-    }
-    cache_releases(&tx, serial, &download.releases).map_err(|e| e.to_string())?;
-    tx.execute(
-        "INSERT INTO metadata_responses(serial,payload,fetched_at) VALUES(?1,?2,unixepoch())
-         ON CONFLICT(serial) DO UPDATE SET payload=excluded.payload,fetched_at=excluded.fetched_at",
-        params![serial, download.raw],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-fn apply_lookup(
-    lib: &Library,
-    id: i64,
-    lookup: impl FnOnce(&mut Connection, &str) -> Result<bool, String>,
-) -> Result<RefreshOutcome, String> {
-    let mut conn = lib.connect()?;
-    let Some(serial) = evidence(&conn, id).map_err(|e| e.to_string())?.serial else {
-        return Ok(RefreshOutcome::NoSerial);
-    };
-    if !lookup(&mut conn, &serial)? {
-        return Ok(RefreshOutcome::NotFound);
-    }
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    // Another request may already have committed a newer version of these releases.
-    let releases = cached_for(&tx, &serial).map_err(|e| e.to_string())?;
-    // The user can correct the selected edition while the request is in flight.
-    let evidence = evidence(&tx, id).map_err(|e| e.to_string())?;
-    if evidence.serial.as_deref() != Some(&serial) {
-        return Err("The selected edition changed during the metadata request".into());
-    }
-    let release = if let Some(key) = &evidence.selected {
-        releases.iter().find(|r| &r.id == key)
-    } else {
-        matching_serial(&releases, Some(&serial), evidence.region.as_deref())
-    };
-    let outcome = if let Some(release) = release {
-        assign(&tx, id, &release.id, evidence.selected.is_some()).map_err(|e| e.to_string())?;
-        RefreshOutcome::Updated
-    } else {
-        tx.execute("UPDATE game_metadata SET pending=1 WHERE game_id=?", [id])
-            .map_err(|e| e.to_string())?;
-        RefreshOutcome::Candidates
-    };
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(outcome)
-}
-
-fn cache_releases(
-    tx: &Transaction<'_>,
-    serial: &str,
-    releases: &[Release],
-) -> rusqlite::Result<()> {
-    tx.execute("DELETE FROM fetched_releases WHERE serial=?", [serial])?;
-    let mut insert = tx.prepare_cached(
-        "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date)
-                                        VALUES(?,?,?,?,?,?,?)",
-    )?;
-    for release in releases {
-        insert.execute(params![
-            release.id,
-            serial,
-            release.region,
-            release.title,
-            release.date,
-            release.aliases,
-            release.work_date
-        ])?;
-    }
-    Ok(())
-}
-
-pub fn candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, String> {
-    let conn = lib.connect()?;
-    let evidence = evidence(&conn, id).map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases ORDER BY id")
-        .map_err(|e| e.to_string())?;
-    let needle = query.trim().to_lowercase();
-    let hint = title_hint(&evidence.filename);
-    let mut candidates = Vec::new();
-    for row in stmt
-        .query_map([], Release::from_row)
-        .map_err(|e| e.to_string())?
-    {
-        let release = row.map_err(|e| e.to_string())?;
-        let matches = if needle.is_empty() {
-            release.suggested(evidence.serial.as_deref(), &hint)
-        } else {
-            release.serial.to_lowercase().contains(&needle)
-                || release
-                    .names()
-                    .any(|name| name.to_lowercase().contains(&needle))
-        };
-        if matches {
-            candidates.push(release);
-        }
-    }
-    Ok(candidates)
-}
-
 /// Search the local release cache, querying Wikidata for an uncached, complete disc serial.
 pub fn search_candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, String> {
     search_with(lib, id, query, wikidata::fetch)
@@ -496,7 +266,7 @@ fn search_with(
     lib: &Library,
     id: i64,
     query: &str,
-    fetch: impl FnOnce(&str) -> Result<wikidata::Download, String>,
+    fetch: impl FnOnce(&str) -> Result<SourceResponse, String>,
 ) -> Result<Vec<Release>, String> {
     let serial = query.trim().to_ascii_uppercase();
     if wikidata::is_supported_serial(&serial) {
@@ -581,16 +351,32 @@ pub fn set_override(
 }
 
 pub fn list(lib: &Library) -> Result<HashMap<i64, Metadata>, String> {
+    read_metadata(lib, None)
+}
+
+/// Read metadata and cover references for only the affected cards.
+pub fn list_by_id(lib: &Library, ids: &[i64]) -> Result<HashMap<i64, Metadata>, String> {
+    let keys = serde_json::to_string(ids).map_err(|error| error.to_string())?;
+    read_metadata(lib, Some(&keys))
+}
+
+fn read_metadata(lib: &Library, ids: Option<&str>) -> Result<HashMap<i64, Metadata>, String> {
     let conn = lib.connect()?;
-    let mut stmt=conn.prepare("SELECT m.game_id, COALESCE(user_title,auto_title), COALESCE(user_region,auto_region,disc_region), COALESCE(user_date,auto_date),
+    let filter = if ids.is_some() {
+        "WHERE m.game_id IN (SELECT value FROM json_each(?1))"
+    } else {
+        ""
+    };
+    let mut stmt=conn.prepare(&format!("SELECT m.game_id, COALESCE(user_title,auto_title), COALESCE(user_region,auto_region,disc_region), COALESCE(user_date,auto_date),
         release_id,COALESCE(release_serial,disc_serial),auto_title,aliases,COALESCE(u.thumb,c.thumb),COALESCE(u.source,c.source),
-        COALESCE(a.state,CASE WHEN c.thumb IS NOT NULL THEN 'ready' END),m.source,m.refreshed,m.pending,m.work_date
+        COALESCE(a.state,CASE WHEN c.thumb IS NOT NULL THEN 'ready' END),m.source,m.refreshed,m.pending,m.work_date,
+        EXISTS(SELECT 1 FROM scrape_jobs j WHERE j.game_id=m.game_id AND j.status IN ('pending','running','retry_wait'))
         FROM game_metadata m LEFT JOIN cover_assets u ON u.game_id=m.game_id AND u.kind='user'
         LEFT JOIN cover_assets c ON c.game_id=m.game_id AND c.kind='download' AND c.serial=COALESCE(release_serial,disc_serial)
         LEFT JOIN cover_attempts a ON a.game_id=m.game_id AND a.serial=COALESCE(release_serial,disc_serial)
         AND a.rowid=(SELECT rowid FROM cover_attempts WHERE game_id=m.game_id AND serial=COALESCE(m.release_serial,m.disc_serial)
-        ORDER BY updated DESC,rowid DESC LIMIT 1)").map_err(|e|e.to_string())?;
-    stmt.query_map([], |r| {
+        ORDER BY updated DESC,rowid DESC LIMIT 1) {filter}")).map_err(|e|e.to_string())?;
+    stmt.query_map(rusqlite::params_from_iter(ids), |r| {
         let mut aliases = Vec::new();
         if let Some(original) = r.get::<_, Option<String>>(6)? {
             aliases.push(original);
@@ -621,6 +407,7 @@ pub fn list(lib: &Library) -> Result<HashMap<i64, Metadata>, String> {
                 refreshed: r.get(12)?,
                 pending: r.get(13)?,
                 work_date: r.get(14)?,
+                scrape_active: r.get(15)?,
             },
         ))
     })

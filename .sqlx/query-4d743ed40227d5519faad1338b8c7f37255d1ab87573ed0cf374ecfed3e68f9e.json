@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT j.game_id AS \"game_id!: i64\", max(j.mode='full') AS \"full!: i64\"\nFROM scrape_jobs j JOIN games g ON g.id=j.game_id\nWHERE NOT g.hidden AND j.dependency IS NULL\n  AND (j.status IN ('pending','retry_wait') AND j.next_attempt_at<=unixepoch()\n       OR j.status='running' AND j.lease_until<=unixepoch())\nGROUP BY j.game_id\nORDER BY max(j.mode='full') DESC, min(j.id)\nLIMIT 512\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "game_id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "full!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "4d743ed40227d5519faad1338b8c7f37255d1ab87573ed0cf374ecfed3e68f9e"
+}

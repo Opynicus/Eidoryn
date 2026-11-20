@@ -21,6 +21,10 @@ desktop = [
     "dep:gpui",
     "dep:gpui_platform",
     "dep:httpdate",
+    "dep:http",
+    "dep:sha2",
+    "dep:sqlx",
+    "dep:tokio",
     "dep:image",
     "dep:reqwest",
     "dep:rusqlite",
@@ -49,9 +53,13 @@ eidoryn-host = { path = "crates/host", default-features = false }
 gpui = { git = "https://github.com/zed-industries/zed", branch = "main", version = "0.2.2", default-features = false, optional = true }
 gpui_platform = { git = "https://github.com/zed-industries/zed", branch = "main", version = "0.1.0", default-features = false, features = ["font-kit"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
-rusqlite = { version = "0.37", features = ["bundled"], optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+http = { version = "1", optional = true }
 httpdate = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"], optional = true }
 tempfile = { version = "3", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 chrono = { version = "0.4", optional = true }

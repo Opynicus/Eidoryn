@@ -1,23 +1,28 @@
 //! Opt-in cover retrieval and atomic local storage. The UI schedules this work off-thread.
 
-use std::fs::{self, File};
-use std::io::{Cursor, Read};
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
-use image::{ImageFormat, ImageReader};
+pub use assets::collect_orphans;
+use assets::{decode_thumbnail, remove_unreferenced, store};
+use image::ImageFormat;
 use reqwest::Url;
-use reqwest::blocking::Client;
 use rusqlite::{Connection, OptionalExtension, params};
-use uuid::Uuid;
+
+#[cfg(test)]
+use std::io::Cursor;
 
 use super::{
     Library,
     http_retry::{RETRY_SECONDS, RequestLimit, retry_deadline, seconds},
     scrape::Mode,
+    transport,
 };
 
+mod assets;
 mod igdb;
 mod libretro;
 mod screenscraper;
@@ -34,7 +39,7 @@ pub enum Provider {
 
 enum Lookup {
     Image(Url),
-    Http(reqwest::blocking::Response),
+    Http(http::Response<Vec<u8>>),
     Missing,
 }
 
@@ -77,19 +82,34 @@ fn read_bounded(mut reader: impl Read, cancel: &AtomicBool) -> Result<Vec<u8>, S
 enum Remote<'a> {
     Matching(&'a str),
     Refresh(&'a str),
-    Chosen { serial: &'a str, revision: i64 },
+    Job {
+        serial: &'a str,
+        full: bool,
+        claim: &'a super::scrape::CoverClaim,
+    },
+    Chosen {
+        serial: &'a str,
+        revision: i64,
+    },
 }
 
 impl<'a> Remote<'a> {
     fn serial(self) -> &'a str {
         match self {
-            Self::Matching(serial) | Self::Refresh(serial) | Self::Chosen { serial, .. } => serial,
+            Self::Matching(serial)
+            | Self::Refresh(serial)
+            | Self::Job { serial, .. }
+            | Self::Chosen { serial, .. } => serial,
         }
+    }
+
+    fn full(self) -> bool {
+        matches!(self, Self::Refresh(_) | Self::Job { full: true, .. })
     }
 
     fn kind(self) -> &'static str {
         match self {
-            Self::Matching(_) | Self::Refresh(_) => "download",
+            Self::Matching(_) | Self::Refresh(_) | Self::Job { .. } => "download",
             Self::Chosen { .. } => "user",
         }
     }
@@ -99,132 +119,6 @@ impl<'a> Remote<'a> {
 enum Source<'a> {
     User { name: &'a str, revision: i64 },
     Download { art: Remote<'a>, url: &'a str },
-}
-
-fn decode_thumbnail(bytes: &[u8]) -> Result<(&'static str, image::DynamicImage), String> {
-    let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
-    let ext = match format {
-        ImageFormat::Jpeg => "jpg",
-        ImageFormat::Png => "png",
-        _ => return Err("Choose a JPEG or PNG cover".into()),
-    };
-    let (w, h) = ImageReader::with_format(Cursor::new(bytes), format)
-        .into_dimensions()
-        .map_err(|e| e.to_string())?;
-    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
-        return Err("Cover exceeds the 16 megapixel limit".into());
-    }
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    reader.limits(limits);
-    let thumb = reader
-        .decode()
-        .map_err(|e| e.to_string())?
-        .thumbnail(THUMB_SIZE, THUMB_SIZE);
-    Ok((ext, thumb))
-}
-
-fn store(
-    lib: &Library,
-    id: i64,
-    source: Source<'_>,
-    bytes: &[u8],
-    cancel: &AtomicBool,
-) -> Result<bool, String> {
-    check_cancel(cancel)?;
-    let (ext, thumb) = decode_thumbnail(bytes)?;
-    let (kind, serial, attribution) = match source {
-        Source::User { name, .. } => ("user", None, name),
-        Source::Download { art, url } => (art.kind(), Some(art.serial()), url),
-    };
-    let folder = lib.base_dir().join("covers").join(kind);
-    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-    let tmp = tempfile::tempdir_in(&folder).map_err(|e| e.to_string())?;
-    let name = format!("original.{ext}");
-    fs::write(tmp.path().join(&name), bytes).map_err(|e| e.to_string())?;
-    thumb
-        .save_with_format(tmp.path().join("thumb.png"), ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
-    check_cancel(cancel)?;
-    // Immutable generation names let in-flight readers finish while a replacement is prepared.
-    let relative = format!("covers/{kind}/{}", Uuid::new_v4());
-    let generation = lib.base_dir().join(&relative);
-    let mut conn = lib.connect()?;
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    // Only the most recent explicit selection may replace the user asset.
-    // The write transaction keeps the check and the metadata swap indivisible.
-    if let Source::User { revision, .. }
-    | Source::Download {
-        art: Remote::Chosen { revision, .. },
-        ..
-    } = source
-        && !tx
-            .query_row(
-                "SELECT cover_revision=?2 FROM game_metadata WHERE game_id=?1",
-                params![id, revision],
-                |r| r.get::<_, bool>(0),
-            )
-            .map_err(|e| e.to_string())?
-    {
-        return Ok(false);
-    }
-    if let Source::Download {
-        art: Remote::Matching(serial) | Remote::Refresh(serial),
-        ..
-    } = source
-        && !tx
-            .query_row(
-                "SELECT COALESCE(release_serial,disc_serial) IS ?2
-             FROM game_metadata WHERE game_id=?1",
-                params![id, serial],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|e| e.to_string())?
-    {
-        return Ok(false);
-    }
-    let previous: Option<String> = tx
-        .query_row(
-            "SELECT original FROM cover_assets WHERE game_id=?1 AND kind=?2",
-            params![id, kind],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    tx.execute("INSERT INTO cover_assets(game_id,kind,serial,source,original,thumb) VALUES(?1,?2,?3,?4,?5,?6)
-        ON CONFLICT(game_id,kind) DO UPDATE SET serial=excluded.serial,source=excluded.source, original=excluded.original,thumb=excluded.thumb",
-        params![id,kind,serial,attribution,format!("{relative}/{name}"),format!("{relative}/thumb.png")]).map_err(|e|e.to_string())?;
-    if let Source::Download { art, url } = source {
-        record(&tx, id, art.serial(), url, "ready", 0).map_err(|e| e.to_string())?;
-    }
-    check_cancel(cancel)?;
-    fs::rename(tmp.path(), &generation).map_err(|e| e.to_string())?;
-    if let Err(e) = tx.commit() {
-        let _ = fs::remove_dir_all(&generation);
-        return Err(e.to_string());
-    }
-    if let Some(previous) = previous {
-        remove_generation(lib, kind, &previous);
-    }
-    Ok(true)
-}
-
-fn remove_generation(lib: &Library, kind: &str, original: &str) {
-    // Only remove a UUID directory we generated, even when a database was restored by hand.
-    let Some(parent) = Path::new(original).parent() else {
-        return;
-    };
-    if parent.parent() == Some(Path::new("covers").join(kind).as_path())
-        && parent
-            .file_name()
-            .and_then(|s| s.to_str())
-            .is_some_and(|v| Uuid::parse_str(v).is_ok())
-    {
-        let _ = fs::remove_dir_all(lib.base_dir().join(parent));
-    }
 }
 
 fn reserve_selection(conn: &Connection, id: i64) -> Result<i64, String> {
@@ -271,7 +165,7 @@ pub fn reset_local(lib: &Library, id: i64) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     if let Some(previous) = previous {
-        remove_generation(lib, "user", &previous);
+        remove_unreferenced(lib, &previous)?;
     }
     Ok(())
 }
@@ -306,7 +200,7 @@ fn restore_thumbnail(
         File::open(lib.base_dir().join(original)).map_err(|e| e.to_string())?,
         cancel,
     )?;
-    let (_, image) = decode_thumbnail(&bytes)?;
+    let image = decode_thumbnail(&bytes, cancel)?.thumb;
     let mut tmp = tempfile::NamedTempFile::new_in(thumb.parent().ok_or("Missing asset directory")?)
         .map_err(|e| e.to_string())?;
     image
@@ -358,7 +252,16 @@ pub fn fetch(
     template: &str,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    fetch_edition(lib, id, provider, template, None, Mode::Incremental, cancel)
+    fetch_edition(
+        lib,
+        id,
+        provider,
+        template,
+        None,
+        Mode::Incremental,
+        cancel,
+        None,
+    )
 }
 
 /// Assign art from a user-selected edition while retaining the game's metadata match.
@@ -378,20 +281,23 @@ pub fn fetch_release(
         Some(release),
         Mode::Incremental,
         cancel,
+        None,
     )
 }
 
-pub(super) fn scrape(
+pub(super) fn scrape_claim(
     lib: &Library,
     id: i64,
     provider: Provider,
     template: &str,
     mode: Mode,
     cancel: &AtomicBool,
+    claim: &super::scrape::CoverClaim,
 ) -> Result<String, String> {
-    fetch_edition(lib, id, provider, template, None, mode, cancel)
+    fetch_edition(lib, id, provider, template, None, mode, cancel, Some(claim))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fetch_edition(
     lib: &Library,
     id: i64,
@@ -400,9 +306,10 @@ fn fetch_edition(
     chosen: Option<&super::metadata::Release>,
     mode: Mode,
     cancel: &AtomicBool,
+    claim: Option<&super::scrape::CoverClaim>,
 ) -> Result<String, String> {
     check_cancel(cancel)?;
-    let conn = lib.connect()?;
+    let conn = lib.worker_connection()?;
     // A local filename and manual display title are private. Only send a catalog
     // title to a title-based service, or a verified disc serial to a serial-based one.
     let (serial, title, region) = conn.query_row(
@@ -432,53 +339,117 @@ fn fetch_edition(
             serial,
             revision: reserve_selection(&conn, id)?,
         }
+    } else if let Some(claim) = claim {
+        Remote::Job {
+            serial,
+            full: mode == Mode::Full,
+            claim,
+        }
     } else if mode == Mode::Full {
         Remote::Refresh(serial)
     } else {
         Remote::Matching(serial)
     };
+    drop(conn);
     let key = provider_key(provider, template, serial, title, region)?;
     let _permit = (provider == Provider::ScreenScraper)
         .then(|| SCREENSCRAPER_REQUESTS.acquire(cancel))
         .transpose()?;
     fetch_url(lib, id, art, &key, cancel, || {
-        let client = http_client(reqwest::redirect::Policy::none())?;
+        let client = transport::api().map_err(|e| e.to_string())?;
         let result = match provider {
-            Provider::Libretro => libretro::resolve(lib, &client, serial, region, cancel)?,
-            Provider::ScreenScraper => screenscraper::resolve(&client, serial, region)?,
-            Provider::Igdb => igdb::resolve(&client, title, region, cancel)?,
-            Provider::Custom => Lookup::Image(key.clone()),
+            Provider::Libretro => libretro::resolve(lib, client, serial, region, cancel)?,
+            Provider::ScreenScraper => screenscraper::resolve(client, serial, region, cancel)?,
+            Provider::Igdb => igdb::resolve(client, title, region, cancel)?,
+            Provider::Custom => Lookup::Image(cover_url(template, serial)?),
         };
         check_cancel(cancel)?;
         match result {
             Lookup::Missing => Ok(None),
             Lookup::Http(response) => Ok(Some(response)),
             Lookup::Image(image) if provider == Provider::ScreenScraper => {
-                screenscraper::fetch_image(&client, image)
+                screenscraper::fetch_image(client, image, cancel)
             }
-            Lookup::Image(image) => http_client(reqwest::redirect::Policy::limited(5))?
-                .get(image)
-                .send()
-                .map(Some)
-                .map_err(|e| e.without_url().to_string()),
+            Lookup::Image(image) => {
+                let client = transport::art().map_err(|e| e.to_string())?;
+                transport::cover(client.get(image), MAX_BYTES, cancel)
+                    .map(Some)
+                    .map_err(|e| e.to_string())
+            }
         }
     })
 }
 
-fn http_client(redirect: reqwest::redirect::Policy) -> Result<Client, String> {
-    Client::builder()
-        .https_only(true)
-        .referer(false)
-        .redirect(redirect)
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(25))
-        .user_agent(concat!("Eidoryn/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| e.to_string())
+// Include the complete URL when identifying an asset, while persisting only its
+// origin and digest. CDN signatures and credentials may occur in paths or queries.
+fn private_key(mut url: Url) -> Url {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(url.as_str().as_bytes());
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_path(&format!("/.eidoryn/cover/{digest:x}"));
+    url.set_query(None);
+    url.set_fragment(None);
+    url
+}
+
+/// Remove old custom source URLs from active cache records when upgrading.
+pub(super) fn migrate_private_sources(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let mut stmt = tx.prepare(
+        "SELECT source FROM cover_assets WHERE kind='download' OR serial IS NOT NULL UNION SELECT url FROM cover_attempts"
+    )?;
+    let old = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for source in old {
+        let Ok(url) = Url::parse(&source) else {
+            continue;
+        };
+        let private = url.query().is_none()
+            && url.fragment().is_none()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url
+                .path()
+                .strip_prefix("/.eidoryn/cover/")
+                .is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                });
+        if private
+            || url.fragment().is_none()
+                && [
+                    libretro::BOXART,
+                    "https://api.screenscraper.fr/api2/jeuInfos.php",
+                    "https://api.igdb.com/v4/games",
+                ]
+                .iter()
+                .any(|endpoint| {
+                    source
+                        .split_once('?')
+                        .is_some_and(|(base, _)| base == *endpoint)
+                        && url
+                            .query_pairs()
+                            .all(|(k, _)| matches!(k.as_ref(), "serial" | "region" | "title"))
+                })
+        {
+            continue;
+        }
+        let key = private_key(url);
+        tx.execute(
+            "UPDATE cover_assets SET source=?1 WHERE source=?2 AND (kind='download' OR serial IS NOT NULL)",
+            [key.as_str(), &source],
+        )?;
+        tx.execute(
+            "UPDATE OR IGNORE cover_attempts SET url=?1 WHERE url=?2",
+            [key.as_str(), &source],
+        )?;
+        tx.execute("DELETE FROM cover_attempts WHERE url=?", [&source])?;
+    }
+    Ok(())
 }
 
 // The database key identifies the public source and edition, never a signed media URL.
-fn provider_key(
+pub(super) fn provider_key(
     provider: Provider,
     template: &str,
     serial: &str,
@@ -489,7 +460,7 @@ fn provider_key(
         Provider::Libretro => libretro::BOXART,
         Provider::ScreenScraper => "https://api.screenscraper.fr/api2/jeuInfos.php",
         Provider::Igdb => "https://api.igdb.com/v4/games",
-        Provider::Custom => return cover_url(template, serial),
+        Provider::Custom => return Ok(private_key(cover_url(template, serial)?)),
     };
     let mut url = Url::parse(base).map_err(|e| e.to_string())?;
     let mut query = url.query_pairs_mut();
@@ -509,12 +480,12 @@ fn fetch_url(
     art: Remote<'_>,
     url: &Url,
     cancel: &AtomicBool,
-    request: impl FnOnce() -> Result<Option<reqwest::blocking::Response>, String>,
+    request: impl FnOnce() -> Result<Option<http::Response<Vec<u8>>>, String>,
 ) -> Result<String, String> {
     let serial = art.serial();
-    let conn = lib.connect()?;
+    let conn = lib.worker_connection()?;
     let now = seconds(SystemTime::now());
-    if !matches!(art, Remote::Refresh(_)) {
+    if !art.full() {
         let cached = conn
             .query_row(
                 "SELECT original,thumb FROM cover_assets
@@ -542,7 +513,10 @@ fn fetch_url(
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if let Some(state) = state {
+        if let Some(state) = state
+            && !(matches!(art, Remote::Job { .. }) && state == "failed")
+        {
+            // The durable scheduler has already honored its own retry deadline.
             return Ok(state);
         }
     }
@@ -561,7 +535,7 @@ fn fetch_url(
     check_cancel(cancel)?;
     let result = request().and_then(|resolved| {
         if let Some(response) = resolved {
-            download(lib, id, art, url, response, cancel, &conn)
+            download(lib, id, art, url, &response, cancel, &conn)
         } else {
             record(
                 &conn,
@@ -594,7 +568,7 @@ fn download(
     id: i64,
     art: Remote<'_>,
     url: &Url,
-    response: reqwest::blocking::Response,
+    response: &http::Response<Vec<u8>>,
     cancel: &AtomicBool,
     conn: &Connection,
 ) -> Result<String, String> {
@@ -614,7 +588,7 @@ fn download(
             .map_err(|e| e.to_string())?;
             Ok("not_found".into())
         }
-        429 => {
+        _ if super::http_retry::should_defer(response.status(), response.headers()) => {
             let until = retry_deadline(
                 response
                     .headers()
@@ -631,13 +605,39 @@ fn download(
             Err(format!("Cover source returned HTTP {status}"))
         }
         _ => {
-            if response
-                .content_length()
-                .is_some_and(|n| n > MAX_BYTES as u64)
+            if response.body().len() > MAX_BYTES
+                || response
+                    .headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok()?.parse::<u64>().ok())
+                    .is_some_and(|n| n > MAX_BYTES as u64)
             {
                 return Err("Cover exceeds the 8 MiB limit".into());
             }
-            let bytes = read_bounded(response, cancel)?;
+            let declared = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .map(|value| {
+                    value
+                        .to_str()
+                        .unwrap_or("invalid")
+                        .split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase()
+                });
+            let bytes = response.body();
+            if let Some(mime) = declared
+                && !mime.is_empty()
+                && mime != "application/octet-stream"
+                && !matches!(
+                    (mime.as_str(), image::guess_format(bytes)),
+                    ("image/png", Ok(ImageFormat::Png)) | ("image/jpeg", Ok(ImageFormat::Jpeg))
+                )
+            {
+                return Err("Cover Content-Type does not match a JPEG or PNG image".into());
+            }
             let applied = store(
                 lib,
                 id,
@@ -645,7 +645,7 @@ fn download(
                     art,
                     url: url.as_str(),
                 },
-                &bytes,
+                bytes,
                 cancel,
             )?;
             Ok(if applied { "ready" } else { "superseded" }.into())

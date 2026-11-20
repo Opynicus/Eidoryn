@@ -257,10 +257,10 @@ fn unresolved_metadata_survives_incremental_rescans() {
     let f = Fixture::new();
     f.db.connect()
         .unwrap()
-        .execute(
+        .execute_batch(
             "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date)
-         VALUES('Q1/SCUS-00001','SCUS-00001','USA','Test Adventure','','','')",
-            [],
+             VALUES('Q1/SCUS-00001','SCUS-00001','USA','Test Adventure','','','');
+             INSERT INTO release_names(name,release_id) VALUES('test adventure','Q1/SCUS-00001')",
         )
         .unwrap();
     f.image("Test Adventure.iso", 3);
@@ -511,4 +511,212 @@ fn benchmark_thousand_images() {
     {
         eprintln!("{line}");
     }
+}
+
+#[test]
+fn targeted_reads_include_only_requested_visible_games_and_their_statistics() {
+    let f = Fixture::new();
+    f.image("One.iso", 1);
+    f.image("Two.iso", 2);
+    f.image("Three.iso", 3);
+    f.scan();
+    let games = f.db.games().unwrap();
+    let [one, two, three] = games.as_slice() else {
+        panic!("expected three distinct entries")
+    };
+    f.session(two.id, 123);
+    f.db.remove(three.id).unwrap();
+    super::metadata::set_override(
+        &f.db,
+        two.id,
+        super::metadata::Field::Title,
+        Some("Localized"),
+    )
+    .unwrap();
+    let ids = [two.id, three.id, two.id];
+    let updated = f.db.games_by_id(&ids).unwrap();
+    assert_eq!(updated.len(), 1);
+    assert_eq!((updated[0].id, updated[0].seconds), (two.id, 123));
+    assert_eq!(updated[0].locations[0].path, two.locations[0].path);
+    let fields = super::metadata::list_by_id(&f.db, &ids).unwrap();
+    assert_eq!(fields[&two.id].title.as_deref(), Some("Localized"));
+    assert!(!fields.contains_key(&one.id));
+    assert!(f.db.games_by_id(&[]).unwrap().is_empty());
+}
+
+#[test]
+fn directory_scan_commits_the_parent_before_discovering_child_media() {
+    let f = Fixture::new();
+    f.image("root.iso", 1);
+    let child = f.media.join("child");
+    fs::create_dir(&child).unwrap();
+    let mut inserted = false;
+    let report =
+        f.db.scan_directory(&f.media, true, &AtomicBool::default(), |progress| {
+            if progress.added == 1 && !inserted {
+                assert_eq!(f.db.games().unwrap()[0].title, "root");
+                fs::write(child.join("later.iso"), [2; 2048 * 5]).unwrap();
+                inserted = true;
+            }
+        })
+        .unwrap();
+    assert_eq!((report.added, report.total, report.processed), (2, 2, 2));
+}
+
+#[test]
+fn cancelling_parent_scan_preserves_unvisited_child_availability() {
+    let f = Fixture::new();
+    let child = f.media.join("child");
+    fs::create_dir(&child).unwrap();
+    let missing = child.join("missing.iso");
+    fs::write(&missing, [2; 2048 * 5]).unwrap();
+    f.scan();
+    fs::remove_file(&missing).unwrap();
+    f.image("new.iso", 1);
+    let cancel = AtomicBool::default();
+    let report =
+        f.db.scan_directory(&f.media, true, &cancel, |progress| {
+            if progress.added == 1 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+    assert_eq!(report.added, 1);
+    let available = || {
+        f.db.games()
+            .unwrap()
+            .iter()
+            .find(|game| game.title == "missing")
+            .unwrap()
+            .locations[0]
+            .available
+    };
+    assert!(available());
+    f.scan();
+    assert!(!available());
+}
+
+#[test]
+fn parent_cue_claims_nested_bin_without_creating_a_second_game_or_scrape_jobs() {
+    let mut f = Fixture::new();
+    f.db.configure_import_scraping(Some(super::covers::Provider::Libretro));
+    let child = f.media.join("audio");
+    fs::create_dir(&child).unwrap();
+    let mut sector = [0; 2352];
+    sector[1..11].fill(255);
+    sector[15] = 2;
+    fs::write(child.join("track.bin"), sector).unwrap();
+    let cue = f.media.join("release.cue");
+    fs::write(
+        &cue,
+        "FILE \"audio/track.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n",
+    )
+    .unwrap();
+    let report = f.scan();
+    assert_eq!((report.added, report.failed, report.processed), (1, 0, 2));
+    assert_eq!(f.db.games().unwrap()[0].locations[0].path, cue);
+    let counts: (i64, i64) =
+        f.db.connect()
+            .unwrap()
+            .query_row(
+                "SELECT (SELECT count(*) FROM games),count(*) FROM scrape_jobs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+    assert_eq!(counts, (1, 2));
+}
+
+#[test]
+fn explicit_reimport_after_missing_file_check_keeps_the_location_available() {
+    let f = Fixture::new();
+    let old = f.image("temporarily-offline.iso", 1);
+    f.scan();
+    let storage = f.root.path().join("detached.iso");
+    fs::rename(&old, &storage).unwrap();
+    let db = f.db.connect().unwrap();
+    let seen: i64 = db
+        .query_row("SELECT last_seen_at FROM locations", [], |r| r.get(0))
+        .unwrap();
+    let mut checked = false;
+    f.db.scan_directory(&f.media, true, &AtomicBool::default(), |progress| {
+        if progress.phase == super::ScanPhase::CheckingAvailability
+            && progress.current_file.as_ref() == Some(&old)
+        {
+            assert!(!checked);
+            fs::rename(&storage, &old).unwrap();
+            let report =
+                f.db.scan_files(std::slice::from_ref(&old), &AtomicBool::default(), |_| {})
+                    .unwrap();
+            assert_eq!(report.existing, 1);
+            // Preserve equal timestamps even if the system clock ticked during the test.
+            db.execute("UPDATE locations SET last_seen_at=?", [seen])
+                .unwrap();
+            assert!(
+                db.query_row(
+                    "SELECT availability_check IS NULL FROM locations",
+                    [],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap()
+            );
+            checked = true;
+        }
+    })
+    .unwrap();
+    assert!(checked);
+    assert!(f.db.games().unwrap()[0].locations[0].available);
+}
+
+#[test]
+fn relocating_after_missing_file_check_keeps_the_new_path_available() {
+    let f = Fixture::new();
+    let old = f.image("move.iso", 2);
+    f.scan();
+    let location = f.db.games().unwrap()[0].locations[0].id;
+    let new = f.root.path().join("new.iso");
+    fs::rename(&old, &new).unwrap();
+    let mut relocated = false;
+    f.db.scan_directory(&f.media, true, &AtomicBool::default(), |progress| {
+        if progress.phase == super::ScanPhase::CheckingAvailability
+            && progress.current_file.as_ref() == Some(&old)
+        {
+            f.db.relocate(location, &new).unwrap();
+            relocated = true;
+        }
+    })
+    .unwrap();
+    assert!(relocated);
+    let games = f.db.games().unwrap();
+    let location = &games[0].locations[0];
+    assert_eq!(location.path, new);
+    assert!(location.available);
+}
+
+#[test]
+fn cancelling_availability_checks_releases_the_observation_and_preserves_the_location() {
+    let f = Fixture::new();
+    let old = f.image("unplugged.iso", 3);
+    f.scan();
+    fs::remove_file(&old).unwrap();
+    let cancel = AtomicBool::default();
+    f.db.scan_directory(&f.media, true, &cancel, |progress| {
+        if progress.phase == super::ScanPhase::CheckingAvailability
+            && progress.current_file.as_ref() == Some(&old)
+        {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    })
+    .unwrap();
+    let available: bool =
+        f.db.connect()
+            .unwrap()
+            .query_row(
+                "SELECT available AND availability_check IS NULL FROM locations",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(cancel.load(Ordering::Relaxed));
+    assert!(available);
 }

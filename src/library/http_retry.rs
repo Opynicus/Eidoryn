@@ -5,15 +5,17 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::transport::ProviderError;
+
 /// Bound in-flight requests and the time between starts independently of game worker count.
 pub(super) struct RequestLimit {
-    max_active: usize,
     spacing: Duration,
     state: Mutex<RequestState>,
     released: Condvar,
 }
 
 struct RequestState {
+    max_active: usize,
     active: usize,
     last_start: Option<Instant>,
     retry_after: i64,
@@ -22,9 +24,9 @@ struct RequestState {
 impl RequestLimit {
     pub(super) const fn new(max_active: usize, spacing: Duration) -> Self {
         Self {
-            max_active,
             spacing,
             state: Mutex::new(RequestState {
+                max_active,
                 active: 0,
                 last_start: None,
                 retry_after: 0,
@@ -33,29 +35,48 @@ impl RequestLimit {
         }
     }
 
+    pub(super) fn resize(&self, maximum: u8) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.max_active = usize::from(maximum.max(1));
+        self.released.notify_all();
+    }
+
     pub(super) fn acquire(&self, cancel: &AtomicBool) -> Result<RequestPermit<'_>, String> {
+        self.acquire_typed(cancel).map_err(|e| e.to_string())
+    }
+
+    pub(super) fn acquire_typed(
+        &self,
+        cancel: &AtomicBool,
+    ) -> Result<RequestPermit<'_>, ProviderError> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".into());
+                return Err(ProviderError::Cancelled);
             }
             if state.retry_after > seconds(SystemTime::now()) {
-                return Err("Service rate limit reached. Retry later.".into());
+                return Err(ProviderError::Http {
+                    status: 429,
+                    retry_at: Some(state.retry_after),
+                });
             }
             let remaining = state.last_start.map_or(Duration::ZERO, |last| {
                 self.spacing.saturating_sub(last.elapsed())
             });
-            if state.active < self.max_active && remaining.is_zero() {
+            if state.active < state.max_active && remaining.is_zero() {
                 state.active += 1;
                 state.last_start = Some(Instant::now());
                 return Ok(RequestPermit(self));
             }
             // Cancellation is signalled independently of the service's in-flight requests.
             let poll_cancel = Duration::from_millis(200);
-            let wait = if state.active == self.max_active {
+            let wait = if state.active >= state.max_active {
                 poll_cancel
             } else {
                 remaining.min(poll_cancel)
@@ -67,9 +88,8 @@ impl RequestLimit {
         }
     }
 
-    pub(super) fn defer(&self, response: &reqwest::blocking::Response) {
-        let after = response
-            .headers()
+    pub(super) fn defer(&self, headers: &reqwest::header::HeaderMap) {
+        let after = headers
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|h| h.to_str().ok());
         let mut state = self
@@ -95,6 +115,14 @@ impl Drop for RequestPermit<'_> {
         state.active -= 1;
         self.0.released.notify_one();
     }
+}
+
+pub(super) fn should_defer(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error() && headers.contains_key(reqwest::header::RETRY_AFTER)
 }
 
 pub(super) const RETRY_SECONDS: i64 = 300;
@@ -138,10 +166,9 @@ mod tests {
         let response = http::Response::builder()
             .status(429)
             .header("Retry-After", "10")
-            .body(Vec::new())
-            .unwrap()
-            .into();
-        limit.defer(&response);
+            .body(())
+            .unwrap();
+        limit.defer(response.headers());
         assert!(limit.acquire(&cancel).is_err());
     }
 

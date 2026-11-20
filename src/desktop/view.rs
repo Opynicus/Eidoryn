@@ -16,6 +16,7 @@ impl Render for Desktop {
             probe.record(self.snapshot.video_frames, "render");
         }
         if self.snapshot.close_ready {
+            self.library.shutdown();
             window.remove_window();
         }
         let p = self.themes.active().palette;

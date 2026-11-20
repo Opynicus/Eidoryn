@@ -21,14 +21,14 @@ use eidoryn_psx::{
 use gpui::{Context, Div, Entity, Focusable, Window, div, prelude::*, px, rgb, uniform_list};
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
 };
 
 pub(super) fn open() -> Result<Library, String> {
     let path = Library::default_path().ok_or("Cannot locate the game library data directory")?;
-    Library::open(&path)
+    Ok(Library::deferred(&path))
 }
 
 struct Entry {
@@ -37,6 +37,7 @@ struct Entry {
     search: String,
     sort_title: String,
     pending: bool,
+    scrape_active: bool,
     source: Option<String>,
     refreshed: Option<i64>,
     date: Option<String>,
@@ -65,6 +66,7 @@ impl Entry {
         Self {
             sort_title: title.to_lowercase(),
             pending: metadata.as_ref().is_some_and(|m| m.pending),
+            scrape_active: metadata.as_ref().is_some_and(|m| m.scrape_active),
             source: metadata.as_ref().and_then(|m| m.source.clone()),
             refreshed: metadata.as_ref().and_then(|m| m.refreshed),
             title,
@@ -160,6 +162,8 @@ pub(super) struct Workspace {
     last_refresh: std::time::Instant,
     reading: bool,
     reload_pending: bool,
+    dirty_games: BTreeSet<i64>,
+    thumbnails: VecDeque<(PathBuf, Entity<gpui::RetainAllImageCache>)>,
     selected: Option<i64>,
     details: bool,
     location: Option<i64>,
@@ -176,6 +180,7 @@ pub(super) struct Workspace {
     editor: Option<Editor>,
     matches: Vec<Release>,
     match_generation: u64,
+    launch_generation: u64,
     metadata_lookups: HashMap<i64, MetadataLookup>,
     confirmation: Option<Confirm>,
     settings: bool,
@@ -199,6 +204,8 @@ impl Workspace {
             last_refresh: std::time::Instant::now(),
             reading: false,
             reload_pending: false,
+            dirty_games: BTreeSet::new(),
+            thumbnails: VecDeque::new(),
             selected: None,
             details: false,
             location: None,
@@ -214,10 +221,47 @@ impl Workspace {
             editor: None,
             matches: vec![],
             match_generation: 0,
+            launch_generation: 0,
             metadata_lookups: HashMap::new(),
             confirmation: None,
             settings: false,
         }
+    }
+
+    pub(super) fn shutdown(&mut self) {
+        if let Some(store) = &self.store {
+            store.request_scrape_shutdown();
+        }
+        // Scans and individual cover requests have no durable leases. Stop their local I/O.
+        if let Some(scan) = &self.scan {
+            scan.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(cover) = &self.cover {
+            cover
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    // Each GPUI cache owns one decoded thumbnail and its texture. Retain recent
+    // viewports across scrolling, and release the oldest entry at this bound.
+    fn thumbnail_cache(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Desktop>,
+    ) -> Option<Entity<gpui::RetainAllImageCache>> {
+        let path = self.entries[index].thumbnail.as_ref()?;
+        let entry = if let Some(old) = self.thumbnails.iter().position(|(key, _)| key == path) {
+            self.thumbnails.remove(old)?
+        } else {
+            if self.thumbnails.len() >= 64 {
+                self.thumbnails.pop_front();
+            }
+            (path.clone(), gpui::RetainAllImageCache::new(cx))
+        };
+        let cache = entry.1.clone();
+        self.thumbnails.push_back(entry);
+        Some(cache)
     }
 
     fn reorder(&mut self) {
@@ -571,7 +615,12 @@ impl Desktop {
                         );
                         for cell in row * columns..(row + 1) * columns {
                             if let Some(&i) = v.library.order.get(cell) {
-                                line = line.child(v.library_cell(&v.library.entries[i], cx));
+                                let cache = if v.preferences.library.list {
+                                    None
+                                } else {
+                                    v.library.thumbnail_cache(i, cx)
+                                };
+                                line = line.child(v.library_cell(&v.library.entries[i], cache, cx));
                             } else {
                                 line = line.child(div().flex_1().min_w_0());
                             }
@@ -586,7 +635,27 @@ impl Desktop {
         .w_full()
     }
 
-    fn library_cell(&self, entry: &Entry, cx: &Context<Self>) -> gpui::Stateful<Div> {
+    fn library_tags(&self, entry: &Entry) -> String {
+        let discs = entry.disc_count();
+        let mut tags = entry.region.iter().cloned().collect::<Vec<_>>();
+        if discs > 1 {
+            tags.push(format!("{} {discs}", self.tr(Text::LibraryDiscs)));
+        }
+        if entry.scrape_active {
+            tags.push(self.tr(Text::LibraryScrapePending).into());
+        }
+        if entry.pending {
+            tags.push(self.tr(Text::LibraryPending).into());
+        }
+        tags.join(" · ")
+    }
+
+    fn library_cell(
+        &self,
+        entry: &Entry,
+        cache: Option<Entity<gpui::RetainAllImageCache>>,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let p = self.themes.active().palette;
         let id = entry.game.id;
         let title = div()
@@ -594,15 +663,7 @@ impl Desktop {
             .font(self.fonts.medium())
             .text_sm()
             .child(entry.title.clone());
-        let discs = entry.disc_count();
-        let mut tags = entry.region.iter().cloned().collect::<Vec<_>>();
-        if discs > 1 {
-            tags.push(format!("{} {discs}", self.tr(Text::LibraryDiscs)));
-        }
-        if entry.pending {
-            tags.push(self.tr(Text::LibraryPending).into());
-        }
-        let subtitle = label(&p, tags.join(" · ")).truncate();
+        let subtitle = label(&p, self.library_tags(entry)).truncate();
         let mut cell = div()
             .id(("library-entry", id as u64))
             .debug_selector(move || format!("library-entry-{id}"))
@@ -668,9 +729,8 @@ impl Desktop {
                 .rounded_md()
                 .overflow_hidden()
                 .bg(rgb(p.inset_surface()));
-            let cover = if let Some(path) = &entry.thumbnail {
-                // The cell owns its decoded image and atlas entry for its visible lifetime.
-                cover.image_cache(gpui::retain_all("thumbnail")).child(
+            let cover = if let (Some(path), Some(cache)) = (&entry.thumbnail, cache) {
+                cover.image_cache(cache).child(
                     gpui::img(path.clone())
                         .size_full()
                         .object_fit(gpui::ObjectFit::Contain),

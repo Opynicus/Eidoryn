@@ -1,6 +1,7 @@
 use super::*;
 use crate::library::metadata;
 use image::{DynamicImage, RgbImage};
+use std::fs;
 
 const SERIAL: &str = "SCUS-94900";
 
@@ -27,12 +28,8 @@ fn url(path: &str) -> Url {
     Url::parse(&format!("https://covers.example/{path}")).unwrap()
 }
 
-fn response(status: u16, body: Vec<u8>) -> reqwest::blocking::Response {
-    http::Response::builder()
-        .status(status)
-        .body(body)
-        .unwrap()
-        .into()
+fn response(status: u16, body: Vec<u8>) -> http::Response<Vec<u8>> {
+    http::Response::builder().status(status).body(body).unwrap()
 }
 
 #[test]
@@ -144,7 +141,6 @@ fn negative_cache_and_server_backoff_apply_across_requests() {
                     .header("Retry-After", after.to_string())
                     .body(Vec::new())
                     .unwrap()
-                    .into()
             )
         ))
         .unwrap(),
@@ -183,6 +179,24 @@ fn rejects_oversize_invalid_and_cancelled_work_before_committing() {
     assert!(cover_url("https://example.invalid", SERIAL).is_err());
     assert!(cover_url(DEFAULT_TEMPLATE, "../../secret").is_err());
     assert!(read_bounded(std::io::repeat(0).take(MAX_BYTES as u64 + 1), &cancel).is_err());
+    for response in [
+        response(200, vec![0; MAX_BYTES + 1]),
+        http::Response::builder()
+            .header("Content-Length", MAX_BYTES + 1)
+            .body(encoded(ImageFormat::Png))
+            .unwrap(),
+    ] {
+        let err = fetch_url(
+            &lib,
+            1,
+            Remote::Refresh(SERIAL),
+            &url("large"),
+            &cancel,
+            || Ok(Some(response)),
+        )
+        .unwrap_err();
+        assert!(err.contains("8 MiB"));
+    }
     let image = DynamicImage::ImageLuma8(image::GrayImage::new(4097, 4096));
     let mut bytes = Cursor::new(Vec::new());
     image.write_to(&mut bytes, ImageFormat::Png).unwrap();
@@ -239,7 +253,7 @@ fn live_libretro_cover_smoke() {
         "ready"
     );
     let thumb = metadata::list(&lib).unwrap()[&1].thumbnail.clone().unwrap();
-    assert!(thumb.starts_with(dir.path().join("covers/download")));
+    assert!(thumb.starts_with(dir.path().join("covers/objects")));
     assert!(thumb.with_file_name("original.png").is_file());
     let (w, h) = image::image_dimensions(thumb).unwrap();
     assert!(w > 0 && h > 0 && w.max(h) <= THUMB_SIZE);
@@ -274,9 +288,8 @@ fn loopback_http_response_uses_real_transport_and_negative_cache() {
     let cancel = AtomicBool::new(false);
     assert_eq!(
         fetch_url(&lib, 1, Remote::Matching(SERIAL), &url, &cancel, || {
-            Client::new()
-                .get(url.clone())
-                .send()
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            transport::cover(client.get(url.clone()), MAX_BYTES, &cancel)
                 .map(Some)
                 .map_err(|e| e.to_string())
         })
@@ -406,7 +419,15 @@ fn live_library_batch_full_and_incremental_smoke() {
     let cancel = AtomicBool::new(false);
     metadata::set_override(&lib, 1, metadata::Field::Title, Some("My copy")).unwrap();
     let run = |mode| {
+        let (ok_before, failed_before) = transport::sample::totals();
         let report = scrape::run(&lib, &[1], mode, Provider::Libretro, "", &cancel, |_, _| {});
+        let (ok_after, failed_after) = transport::sample::totals();
+        let ok = ok_after - ok_before;
+        let failed = failed_after - failed_before;
+        println!(
+            "HTTP {mode:?}: {} completed, {ok} successful, {failed} failed",
+            ok + failed
+        );
         assert_eq!(
             (report.finished, report.failed, report.skipped),
             (1, 0, 0),
@@ -419,7 +440,7 @@ fn live_library_batch_full_and_incremental_smoke() {
         assert_eq!(game.date.as_deref(), Some("1996-09-09"));
         assert_eq!(game.source.as_deref(), Some("Wikidata (online)"));
         let thumbnail = game.thumbnail.as_ref().unwrap();
-        assert!(thumbnail.starts_with(directory.path().join("covers/download")));
+        assert!(thumbnail.starts_with(directory.path().join("covers/objects")));
         assert!(thumbnail.with_file_name("original.png").is_file());
         assert!(image::image_dimensions(thumbnail).is_ok());
         thumbnail.clone()
@@ -444,6 +465,253 @@ fn live_library_batch_full_and_incremental_smoke() {
     );
     assert_eq!(run(scrape::Mode::Incremental), first);
     let refreshed = run(scrape::Mode::Full);
-    assert_ne!(refreshed, first);
-    assert!(!first.exists());
+    assert_eq!(refreshed, first); // Identical upstream image shares the same immutable files.
+}
+
+#[test]
+fn identical_covers_share_files_and_collection_checks_references() {
+    let (dir, lib) = fixture();
+    let db = lib.connect().unwrap();
+    db.execute(
+        "INSERT INTO games(id,fallback_title) VALUES(2,'Second')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO game_metadata(game_id,filename) VALUES(2,'Second')",
+        [],
+    )
+    .unwrap();
+    let image = dir.path().join("front.png");
+    fs::write(&image, encoded(ImageFormat::Png)).unwrap();
+    set_local(&lib, 1, &image).unwrap();
+    set_local(&lib, 2, &image).unwrap();
+    let games = metadata::list(&lib).unwrap();
+    let thumb = games[&1].thumbnail.as_ref().unwrap();
+    assert_eq!(Some(thumb), games[&2].thumbnail.as_ref());
+    assert_eq!(db.query_row("SELECT count(DISTINCT original) FROM cover_assets WHERE width=500 AND height=125 AND mime_type='image/png' AND length(content_hash)=64", [], |r| r.get::<_,i32>(0)).unwrap(), 1);
+    reset_local(&lib, 1).unwrap();
+    assert!(thumb.is_file());
+    let leftover = dir.path().join("covers/objects").join("0".repeat(64));
+    fs::create_dir(&leftover).unwrap();
+    let unknown = dir.path().join("covers/objects/my-scans");
+    fs::create_dir(&unknown).unwrap();
+    assert_eq!(collect_orphans(&lib).unwrap(), 1);
+    assert!(!leftover.exists() && thumb.is_file() && unknown.is_dir());
+    reset_local(&lib, 2).unwrap();
+    assert!(!thumb.exists() && image.is_file());
+}
+
+#[test]
+fn artwork_recovers_from_crashes_before_and_after_commit() {
+    const DB: &str = "EIDORYN_TEST_COVER_CRASH_DB";
+    if let Some(path) = std::env::var_os(DB) {
+        let lib = Library::open(Path::new(&path)).unwrap();
+        set_local(&lib, 1, &lib.base_dir().join("user.png")).unwrap();
+        unreachable!("child should terminate at the configured crash point");
+    }
+    for point in ["staged", "published", "committed"] {
+        let (dir, _lib) = fixture();
+        fs::write(dir.path().join("user.png"), encoded(ImageFormat::Png)).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "library::covers::tests::artwork_recovers_from_crashes_before_and_after_commit",
+            ])
+            .env(DB, dir.path().join("library.db"))
+            .env("EIDORYN_TEST_COVER_CRASH", point)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(73), "{point}");
+        let reopened = Library::open(&dir.path().join("library.db")).unwrap();
+        if point == "staged" {
+            let objects = dir.path().join("covers/objects");
+            let temp = fs::read_dir(objects).unwrap().next().unwrap().unwrap();
+            assert!(temp.file_name().to_str().unwrap().starts_with(".incoming-"));
+            assert_eq!(collect_orphans(&reopened).unwrap(), 0);
+        }
+        assert_eq!(
+            assets::collect_at(&reopened, SystemTime::now() + Duration::from_hours(25)).unwrap(),
+            usize::from(point != "committed"),
+            "{point}"
+        );
+        let games = metadata::list(&reopened).unwrap();
+        assert_eq!(
+            games[&1]
+                .thumbnail
+                .as_ref()
+                .is_some_and(|path| path.is_file()),
+            point == "committed"
+        );
+    }
+}
+
+#[test]
+fn migration_redacts_custom_urls_for_automatic_and_user_selected_art() {
+    let (_dir, lib) = fixture();
+    let mut conn = lib.connect().unwrap();
+    let tx = conn.transaction().unwrap();
+    let sensitive = "https://images.example/.eidoryn/cover/private-path/scan.png?token=secret";
+    for kind in ["download", "user"] {
+        tx.execute("INSERT INTO cover_assets(game_id,kind,serial,source,original,thumb) VALUES(1,?1,?2,?3,'covers/a','covers/b')",params![kind,SERIAL,sensitive]).unwrap();
+    }
+    tx.execute("INSERT INTO games(id,fallback_title) VALUES(2,'Other')", [])
+        .unwrap();
+    tx.execute("INSERT INTO cover_assets(game_id,kind,serial,source,original,thumb) VALUES(2,'user',NULL,'My cover.jpg','covers/c','covers/d')", []).unwrap();
+    record(&tx, 1, SERIAL, sensitive, "ready", 0).unwrap();
+    migrate_private_sources(&tx).unwrap();
+    let expected = private_key(Url::parse(sensitive).unwrap());
+    assert_eq!(expected.host_str(), Some("images.example"));
+    assert!(expected.query().is_none());
+    assert!(!expected.as_str().contains("private-path"));
+    let count: u32 = tx
+        .query_row(
+            "SELECT count(*) FROM cover_assets WHERE source=?",
+            [expected.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
+    assert!(
+        tx.prepare("SELECT 1 FROM cover_attempts WHERE url=?")
+            .unwrap()
+            .exists([expected.as_str()])
+            .unwrap()
+    );
+    let local: String = tx
+        .query_row("SELECT source FROM cover_assets WHERE game_id=2", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(local, "My cover.jpg");
+}
+
+#[test]
+fn migration_backup_keeps_older_cover_paths_available_for_rollback() {
+    let (dir, lib) = fixture();
+    let original = dir
+        .path()
+        .join("covers/download/4f55ce75-daa9-4700-9bb7-825abefb2d3f/original.png");
+    fs::create_dir_all(original.parent().unwrap()).unwrap();
+    fs::write(&original, encoded(ImageFormat::Png)).unwrap();
+    let backup = dir.path().join("library.db.v3.bak");
+    lib.connect()
+        .unwrap()
+        .execute("VACUUM INTO ?", [backup.to_str().unwrap()])
+        .unwrap();
+    assert_eq!(collect_orphans(&lib).unwrap(), 0);
+    assert!(original.is_file());
+    let archived = dir
+        .path()
+        .join("library.db.v3.909e6d9d-1ff4-4176-be0c-ab5c4bbf66c8.bak");
+    fs::rename(backup, &archived).unwrap();
+    assert_eq!(collect_orphans(&lib).unwrap(), 0);
+    fs::remove_file(archived).unwrap();
+    assert_eq!(collect_orphans(&lib).unwrap(), 1);
+}
+
+#[test]
+fn cover_download_validates_mime_against_the_encoded_image() {
+    let (_dir, lib) = fixture();
+    let cancel = AtomicBool::default();
+    let key = url("mime");
+    for (header, format, valid) in [
+        ("image/png; charset=binary", ImageFormat::Png, true),
+        ("image/jpeg", ImageFormat::Jpeg, true),
+        ("application/octet-stream", ImageFormat::Png, true),
+        ("", ImageFormat::Jpeg, true),
+        ("image/png", ImageFormat::Jpeg, false),
+        ("text/html", ImageFormat::Png, false),
+    ] {
+        let previous = metadata::list(&lib).unwrap()[&1].thumbnail.clone();
+        let result = fetch_url(&lib, 1, Remote::Refresh(SERIAL), &key, &cancel, || {
+            Ok(Some(
+                http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", header)
+                    .body(encoded(format))
+                    .unwrap(),
+            ))
+        });
+        if valid {
+            assert_eq!(result.as_deref(), Ok("ready"), "{header}");
+        } else {
+            assert!(result.unwrap_err().contains("Content-Type"));
+            assert_eq!(metadata::list(&lib).unwrap()[&1].thumbnail, previous);
+        }
+    }
+}
+
+#[test]
+fn a_late_response_from_the_replaced_provider_cannot_publish_an_asset() {
+    use crate::library::jobs::{self, Stage};
+
+    for in_backoff in [false, true] {
+        let (_dir, lib) = fixture();
+        let mut first = lib.connect().unwrap();
+        jobs::prepare_targets(&mut first, &[1], Mode::Full, Provider::Igdb, false).unwrap();
+        let old_meta = jobs::claim(&mut first, "old", Stage::Metadata, 1)
+            .unwrap()
+            .pop()
+            .unwrap();
+        old_meta.finish(&first, "updated").unwrap();
+        let old = jobs::claim(&mut first, "old", Stage::Cover, 1)
+            .unwrap()
+            .pop()
+            .unwrap();
+        if in_backoff {
+            let tx = first.transaction().unwrap();
+            jobs::fail(
+                &tx,
+                &old,
+                &jobs::Failure {
+                    code: "limited",
+                    message: "Provider rate limit",
+                    retry: true,
+                    deadline: Some(i64::MAX),
+                },
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        jobs::enqueue_games(&lib, &[1], Mode::Full, Provider::Libretro).unwrap();
+        let mut next = lib.connect().unwrap();
+        jobs::prepare_targets(&mut next, &[1], Mode::Full, Provider::Libretro, true).unwrap();
+        let meta = jobs::claim(&mut next, "new", Stage::Metadata, 1)
+            .unwrap()
+            .pop()
+            .unwrap();
+        meta.finish(&next, "updated").unwrap();
+        let new = jobs::claim(&mut next, "new", Stage::Cover, 1)
+            .unwrap()
+            .pop()
+            .unwrap();
+        let publish = |claim, provider, format| {
+            store(
+                &lib,
+                1,
+                Source::Download {
+                    art: Remote::Job {
+                        serial: SERIAL,
+                        full: true,
+                        claim,
+                    },
+                    url: provider,
+                },
+                &encoded(format),
+                &AtomicBool::new(false),
+            )
+        };
+        assert!(publish(&new, "https://libretro.example/front", ImageFormat::Png).unwrap());
+        assert!(publish(&old, "https://igdb.example/other", ImageFormat::Jpeg).is_err());
+        let (source,mime,path):(String,String,String)=next.query_row("SELECT source,mime_type,original FROM cover_assets WHERE game_id=1 AND kind='download'",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        assert_eq!(source, "https://libretro.example/front");
+        assert_eq!(mime, "image/png");
+        assert_eq!(
+            fs::read(lib.base_dir().join(path)).unwrap(),
+            encoded(ImageFormat::Png)
+        );
+        assert_eq!(jobs::due_games(&lib).unwrap(), []);
+        assert_eq!(jobs::recent_failures(&lib).unwrap(), []);
+    }
 }

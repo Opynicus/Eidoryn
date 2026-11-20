@@ -1,6 +1,6 @@
 use super::{Desktop, Entry, Text, div, label};
 use eidoryn_psx::{
-    library::{Library, ScanReport, TrackChoice, covers, metadata},
+    library::{Library, ScanPhase, ScanReport, TrackChoice, covers, metadata},
     systems::ps1::{media::validate_bios_path, runner::Command},
 };
 use gpui::{Context, Div, PathPromptOptions, prelude::*, px};
@@ -17,6 +17,9 @@ use std::{
 #[derive(Default)]
 pub(super) struct Report {
     counts: [usize; 4],
+    processed: usize,
+    total: usize,
+    current: Option<String>,
     status: Option<Text>,
     errors: Vec<String>,
 }
@@ -48,7 +51,13 @@ enum Source {
 }
 
 enum Update {
-    Counts([usize; 4]),
+    Counts {
+        phase: ScanPhase,
+        counts: [usize; 4],
+        processed: usize,
+        total: usize,
+        current: Option<String>,
+    },
     Done(Report, Vec<TrackChoice>),
 }
 
@@ -168,7 +177,7 @@ impl Desktop {
                 if let Err(error) = result {
                     v.notice = Some(error);
                 }
-                v.reload_library(cx);
+                v.update_library_games([id], cx);
                 cx.notify();
             });
         })
@@ -180,7 +189,16 @@ impl Desktop {
             && self.snapshot.disc_mounted
             && self.library.last_refresh.elapsed() >= Duration::from_secs(30)
         {
-            self.reload_library(cx);
+            self.library.last_refresh = Instant::now();
+            if let Some(path) = &self.snapshot.disc_path
+                && let Some(entry) = self
+                    .library
+                    .entries
+                    .iter()
+                    .find(|entry| entry.game.locations.iter().any(|l| &l.path == path))
+            {
+                self.update_library_games([entry.game.id], cx);
+            }
         }
     }
 
@@ -193,8 +211,8 @@ impl Desktop {
             return;
         }
         self.library.last_refresh = Instant::now();
+        self.library.dirty_games.clear();
         self.library.reading = true;
-        let prepare_full = self.library.scraping.preparing_full;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -213,15 +231,8 @@ impl Desktop {
                 .await;
             let _ = this.update(cx, |v, cx| {
                 v.library.reading = false;
-                if prepare_full {
-                    v.library.scraping.preparing_full = false;
-                }
                 match result {
                     Ok((entries, roots)) => {
-                        if prepare_full {
-                            // Imports may have committed since the last visible grid update.
-                            v.library.scraping.include_full_library(&entries);
-                        }
                         v.library.loaded = true;
                         v.library.entries = entries;
                         v.library.roots = roots;
@@ -239,9 +250,92 @@ impl Desktop {
                     }
                     Err(error) => v.notice = Some(error),
                 }
-                if std::mem::take(&mut v.library.reload_pending) {
-                    v.reload_library(cx);
+                v.read_pending_games(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn update_library_games(
+        &mut self,
+        ids: impl IntoIterator<Item = i64>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.library.reload_pending {
+            return;
+        }
+        for id in ids {
+            if self.library.dirty_games.len() == 512 && !self.library.dirty_games.contains(&id) {
+                self.library.dirty_games.clear();
+                self.reload_library(cx);
+                return;
+            }
+            self.library.dirty_games.insert(id);
+        }
+        self.read_pending_games(cx);
+    }
+
+    fn read_pending_games(&mut self, cx: &mut Context<Self>) {
+        if self.library.reading {
+            return;
+        }
+        if std::mem::take(&mut self.library.reload_pending) {
+            self.reload_library(cx);
+            return;
+        }
+        let Some(store) = self.library.store.clone() else {
+            return;
+        };
+        if self.library.dirty_games.is_empty() {
+            return;
+        }
+        let ids: Vec<_> = (0..128)
+            .map_while(|_| self.library.dirty_games.pop_first())
+            .collect();
+        self.library.reading = true;
+        cx.spawn(async move |this, cx| {
+            let (ids, result) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = (|| {
+                        let mut meta = metadata::list_by_id(&store, &ids)?;
+                        Ok::<_, String>(
+                            store
+                                .games_by_id(&ids)?
+                                .into_iter()
+                                .map(|game| {
+                                    let data = meta.remove(&game.id);
+                                    Entry::new(game, data)
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })();
+                    (ids, result)
+                })
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                v.library.reading = false;
+                match result {
+                    Ok(rows) => {
+                        // The bounded list is sorted. Missing rows were removed or grouped.
+                        v.library
+                            .entries
+                            .retain(|e| ids.binary_search(&e.game.id).is_err());
+                        v.library.entries.extend(rows);
+                        v.library.reorder();
+                        if let Some(id) = v.library.selected
+                            && ids.binary_search(&id).is_ok()
+                            && !v.library.entries.iter().any(|e| e.game.id == id)
+                        {
+                            v.library.selected = None;
+                            v.library.details = false;
+                            v.library.close_editor();
+                        }
+                    }
+                    Err(e) => v.notice = Some(e),
                 }
+                v.read_pending_games(cx);
                 cx.notify();
             });
         })
@@ -379,26 +473,65 @@ impl Desktop {
         let fast_boot = loc.fast_boot;
         self.library.location = Some(loc.id);
         self.library.pending_bios = None;
-        if !loc.available || !path.is_file() {
-            let location_id = loc.id;
-            self.library_picker(Picker::Relocate(location_id), cx);
-            self.notice = Some(self.tr(Text::LibraryMissing).to_owned());
-            cx.notify();
-            return;
-        }
-        if !self.validate_disc_bios(fast_boot, cx) {
-            self.library.pending_bios = Some((path, fast_boot));
-            cx.notify();
-            return;
-        }
-        self.command(
-            Command::LaunchLibraryDisc {
-                path,
-                bios: self.bios.clone(),
-                fast_boot,
-            },
-            cx,
-        );
+        let location = loc.id;
+        let available = loc.available;
+        let bios = self.bios.clone();
+        self.library.launch_generation = self.library.launch_generation.wrapping_add(1);
+        let generation = self.library.launch_generation;
+        cx.spawn(async move |this, cx| {
+            let (path, bios, disc_available, choice, validation) = cx
+                .background_executor()
+                .spawn(async move {
+                    let disc_available = available && path.is_file();
+                    let mut choice = bios.clone();
+                    let validation = if disc_available {
+                        eidoryn_psx::preferences::validate_bios_choice(&mut choice)
+                    } else {
+                        Ok(None)
+                    };
+                    (path, bios, disc_available, choice, validation)
+                })
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                if v.library.launch_generation != generation
+                    || v.library.selected != Some(id)
+                    || v.library.location != Some(location)
+                    || v.bios != bios
+                    || v.page != crate::desktop::WorkspacePage::Library
+                {
+                    return;
+                }
+                if !disc_available {
+                    v.library_picker(Picker::Relocate(location), cx);
+                    v.notice = Some(v.tr(Text::LibraryMissing).to_owned());
+                } else if bios.is_some() && choice.is_none() {
+                    v.bios = None;
+                    v.notice = Some(v.tr(Text::MissingBios).into());
+                    if v.preferences.bios_path == bios {
+                        v.preferences.bios_path = None;
+                        v.save_preferences();
+                    }
+                    v.library.pending_bios = Some((path, fast_boot));
+                } else if let Err(error) = validation {
+                    v.notice = Some(error);
+                    v.library.pending_bios = Some((path, fast_boot));
+                } else if !fast_boot && choice.is_none() {
+                    v.notice = Some(v.tr(Text::BiosRequired).into());
+                    v.library.pending_bios = Some((path, fast_boot));
+                } else {
+                    v.command(
+                        Command::LaunchLibraryDisc {
+                            path,
+                            bios: choice,
+                            fast_boot,
+                        },
+                        cx,
+                    );
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(super) fn scan_roots(&mut self, cx: &mut Context<Self>) {
@@ -430,7 +563,7 @@ impl Desktop {
         {
             self.library.choices.clear();
         }
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(8);
         cx.background_executor()
             .spawn(async move {
                 scan(&store, sources, &cancel, &tx);
@@ -443,7 +576,25 @@ impl Desktop {
                     if this
                         .update(cx, |v, cx| {
                             match update {
-                                Update::Counts(counts) => v.library.report.counts = counts,
+                                Update::Counts {
+                                    phase,
+                                    counts,
+                                    processed,
+                                    total,
+                                    current,
+                                } => {
+                                    v.library.report.status = Some(match phase {
+                                        ScanPhase::Discovering => Text::LibraryDiscovering,
+                                        ScanPhase::Indexing => Text::LibraryScanning,
+                                        ScanPhase::CheckingAvailability => {
+                                            Text::LibraryCheckingPaths
+                                        }
+                                    });
+                                    v.library.report.counts = counts;
+                                    v.library.report.processed = processed;
+                                    v.library.report.total = total;
+                                    v.library.report.current = current;
+                                }
                                 Update::Done(report, choices) => {
                                     v.library.report = report;
                                     v.library.choices.extend(choices);
@@ -451,7 +602,12 @@ impl Desktop {
                                     finished = true;
                                 }
                             }
-                            v.reload_library(cx);
+                            if finished {
+                                // Reconcile missing locations, tracks absorbed by CUEs, and roots.
+                                v.reload_library(cx);
+                            } else {
+                                v.poll_library_scrape(cx);
+                            }
                             cx.notify();
                         })
                         .is_err()
@@ -519,39 +675,61 @@ impl Desktop {
             chosen_edition: edition.is_some(),
         });
         let provider = self.preferences.library.cover_provider;
-        let template = self.preferences.library.cover_template.clone();
+        let template: Arc<str> = self.preferences.library.cover_template.as_str().into();
+        let edition = edition.map(Arc::new);
         cx.spawn(async move |this, cx| {
-            let errors = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut errors = vec![];
-                    for id in ids {
-                        if cancel.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        let result = match &edition {
+            let mut errors = Vec::new();
+            let mut changed = Vec::new();
+            let mut last_update = Instant::now();
+            for id in ids {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let store = store.clone();
+                let cancel_fetch = cancel.clone();
+                let template = template.clone();
+                let edition = edition.clone();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        match edition.as_deref() {
                             Some(release) => covers::fetch_release(
-                                &store, id, provider, &template, release, &cancel,
+                                &store,
+                                id,
+                                provider,
+                                &template,
+                                release,
+                                &cancel_fetch,
                             ),
-                            None => covers::fetch(&store, id, provider, &template, &cancel),
-                        };
-                        if !cancel.load(Ordering::Relaxed)
-                            && let Err(error) = result
-                            && !errors.contains(&error)
-                            && errors.len() < 8
-                        {
-                            errors.push(error);
+                            None => covers::fetch(&store, id, provider, &template, &cancel_fetch),
                         }
+                    })
+                    .await;
+                changed.push(id);
+                if !cancel.load(Ordering::Relaxed)
+                    && let Err(error) = result
+                    && errors.len() < 8
+                    && !errors.contains(&error)
+                {
+                    errors.push(error);
+                }
+                if changed.len() >= 64 || last_update.elapsed() >= Duration::from_millis(100) {
+                    if this
+                        .update(cx, |v, cx| v.update_library_games(changed.drain(..), cx))
+                        .is_err()
+                    {
+                        return;
                     }
-                    errors
-                })
-                .await;
+                    last_update = Instant::now();
+                }
+            }
             let _ = this.update(cx, |v, cx| {
                 v.library.cover = None;
                 if !errors.is_empty() {
                     v.notice = Some(errors.join("\n"));
                 }
-                v.reload_library(cx);
+                v.update_library_games(changed, cx);
+                v.poll_library_scrape(cx);
                 cx.notify();
             });
         })
@@ -641,7 +819,10 @@ impl Desktop {
                 ));
         }
         let panel = self.scan_report_panel(panel, cx);
-        if self.library.scraping.busy() || self.library.scraping.last.is_some() {
+        if self.library.scraping.busy()
+            || self.library.scraping.last.is_some()
+            || self.library.scraping.has_failures()
+        {
             panel.child(self.scrape_status(cx))
         } else {
             panel
@@ -662,12 +843,23 @@ impl Desktop {
                 .map(|(key, n)| format!("{} {n}", self.tr(key)))
                 .collect::<Vec<_>>()
                 .join(" · ");
+            let scan = &self.library.report;
+            let current = scan.current.as_deref().unwrap_or("");
             panel = panel.child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
-                    .child(label(&p, format!("{}   {counts}", self.tr(status))))
+                    .child(label(
+                        &p,
+                        format!(
+                            "{} {}/{} · {counts}  {current}",
+                            self.tr(status),
+                            scan.processed,
+                            scan.total
+                        ),
+                    ))
                     .when_some(self.library.scan.clone(), |s, cancel| {
                         s.child(self.library_button(
                             "lib-cancel-scan",
@@ -763,21 +955,33 @@ impl Desktop {
     }
 }
 
-fn scan(store: &Library, sources: Vec<Source>, cancel: &AtomicBool, tx: &mpsc::Sender<Update>) {
+fn scan(store: &Library, sources: Vec<Source>, cancel: &AtomicBool, tx: &mpsc::SyncSender<Update>) {
     let mut report = Report::default();
     let mut choices = vec![];
-    let mut last = Instant::now();
+    let mut last: Option<Instant> = None;
+    let mut phase = None;
     for source in sources {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
         let mut progress = |p: &eidoryn_psx::library::ScanProgress| {
-            if last.elapsed() >= Duration::from_millis(300) {
+            if phase != Some(p.phase)
+                || last.is_none_or(|at| at.elapsed() >= Duration::from_millis(300))
+            {
                 let now = [p.added, p.existing, p.pending, p.failed];
-                let _ = tx.send(Update::Counts(std::array::from_fn(|i| {
-                    report.counts[i] + now[i]
-                })));
-                last = Instant::now();
+                let _ = tx.try_send(Update::Counts {
+                    phase: p.phase,
+                    counts: std::array::from_fn(|i| report.counts[i] + now[i]),
+                    processed: report.processed + p.processed,
+                    total: report.total + p.total,
+                    current: p
+                        .current_file
+                        .as_ref()
+                        .and_then(|f| f.file_name())
+                        .map(|n| n.to_string_lossy().into_owned()),
+                });
+                last = Some(Instant::now());
+                phase = Some(p.phase);
             }
         };
         let result = match source {
@@ -788,6 +992,8 @@ fn scan(store: &Library, sources: Vec<Source>, cancel: &AtomicBool, tx: &mpsc::S
         };
         match result {
             Ok(ScanReport {
+                processed,
+                total,
                 added,
                 existing,
                 pending,
@@ -799,6 +1005,8 @@ fn scan(store: &Library, sources: Vec<Source>, cancel: &AtomicBool, tx: &mpsc::S
                 for (i, n) in [added, existing, pending, failed].into_iter().enumerate() {
                     report.counts[i] += n;
                 }
+                report.processed += processed;
+                report.total += total;
                 report.errors.extend(errors);
                 choices.extend(more);
             }

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO scrape_jobs(game_id,provider,job_type,mode,dependency)\nSELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM games WHERE id=?1 AND NOT hidden)\nON CONFLICT(game_id,provider,job_type) WHERE status IN ('pending','retry_wait','running')\nDO UPDATE SET\n  mode=CASE WHEN excluded.mode='full' THEN 'full' ELSE scrape_jobs.mode END,\n  dependency=CASE WHEN scrape_jobs.status='running' THEN scrape_jobs.dependency ELSE excluded.dependency END,\n  next_attempt_at=CASE WHEN excluded.mode='full' AND scrape_jobs.status='retry_wait'\n     AND scrape_jobs.last_error_code NOT IN ('limited','rate_limited') THEN 0 ELSE scrape_jobs.next_attempt_at END\nRETURNING id AS \"id!: i64\"\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "633e0b300e55e45a4a076fc7ab6ce2de966abfb0416c57b8c67aae58ec791131"
+}

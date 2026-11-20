@@ -2,10 +2,10 @@
 //! Its covers have no platform field, so a shared multi-platform entry cannot
 //! establish that the image is the PlayStation box.
 
-use std::{io::Read, sync::atomic::AtomicBool, time::Duration};
+use std::{sync::atomic::AtomicBool, time::Duration};
 
-use reqwest::Url;
-use reqwest::blocking::{Client, Response};
+use crate::library::transport;
+use reqwest::{Client, Url};
 use serde::Deserialize;
 
 use super::Lookup;
@@ -16,7 +16,7 @@ static REQUESTS: RequestLimit = RequestLimit::new(8, Duration::from_millis(250))
 
 const GAMES: &str = "https://api.igdb.com/v4/games";
 const MAX_RESULTS: usize = 50;
-const MAX_BYTES: u64 = 512 * 1024;
+const MAX_BYTES: usize = 512 * 1024;
 
 #[derive(Deserialize)]
 struct Game {
@@ -84,11 +84,10 @@ pub(super) fn resolve(
         .header("Accept", "application/json")
         .body(query);
     let _permit = REQUESTS.acquire(cancel)?;
-    let response = request
-        .send()
-        .map_err(|error| format!("IGDB request failed: {}", error.without_url()))?;
-    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        REQUESTS.defer(&response);
+    let response =
+        transport::request(request, MAX_BYTES, cancel).map_err(|error| error.to_string())?;
+    if crate::library::http_retry::should_defer(response.status(), response.headers()) {
+        REQUESTS.defer(response.headers());
     }
     lookup(response, title, region)
 }
@@ -106,20 +105,16 @@ fn query(title: &str) -> Option<String> {
     ))
 }
 
-fn lookup(response: Response, title: &str, region: &str) -> Result<Lookup, String> {
+fn lookup(response: http::Response<Vec<u8>>, title: &str, region: &str) -> Result<Lookup, String> {
     if !response.status().is_success() {
         return Ok(Lookup::Http(response));
     }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("Reading IGDB response: {e}"))?;
-    if bytes.len() as u64 > MAX_BYTES {
+    let bytes = response.body();
+    if bytes.len() > MAX_BYTES {
         return Err("IGDB response exceeds the 512 KiB limit".into());
     }
     let games: Vec<Game> =
-        serde_json::from_slice(&bytes).map_err(|_| "Invalid IGDB game response")?;
+        serde_json::from_slice(bytes).map_err(|_| "Invalid IGDB game response")?;
     Ok(match regional_cover(&games, title, region) {
         Some(image) => Lookup::Image(
             Url::parse(&format!(
@@ -201,7 +196,7 @@ mod tests {
     }
 
     fn result(games: &Value, title: &str, region: &str) -> Option<String> {
-        let response = http::Response::new(serde_json::to_vec(games).unwrap()).into();
+        let response = http::Response::new(serde_json::to_vec(games).unwrap());
         match lookup(response, title, region).unwrap() {
             Lookup::Image(url) => Some(url.to_string()),
             Lookup::Missing => None,
@@ -246,22 +241,14 @@ mod tests {
             .status(429)
             .header("Retry-After", "30")
             .body(Vec::<u8>::new())
-            .unwrap()
-            .into();
+            .unwrap();
         let Lookup::Http(response) = lookup(retry, "Test", "USA").unwrap() else {
             panic!("expected HTTP response")
         };
         assert_eq!(response.headers()["Retry-After"], "30");
-        let too_large = http::Response::new(vec![b' '; MAX_BYTES as usize + 1]).into();
+        let too_large = http::Response::new(vec![b' '; MAX_BYTES + 1]);
         assert!(lookup(too_large, "Test", "USA").is_err());
-        assert!(
-            lookup(
-                http::Response::new(b"invalid JSON".to_vec()).into(),
-                "Test",
-                "USA"
-            )
-            .is_err()
-        );
+        assert!(lookup(http::Response::new(b"invalid JSON".to_vec()), "Test", "USA").is_err());
         assert!(query("a\nb").is_none());
         assert!(
             query(r#"one\two "three""#)

@@ -1,12 +1,24 @@
 //! Background scraping of release metadata and regional cover art.
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    mpsc,
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
 };
-use std::thread;
 
-use super::{Library, covers, metadata};
+pub use super::jobs::{
+    CoverClaim, cancel_games, due_games, enqueue_games, failed_games, recent_failures,
+};
+use super::{
+    Library, covers,
+    jobs::{self, Failure, Stage},
+    metadata,
+};
 
 /// A manual refresh revalidates remote results. New imports reuse cached results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,12 +35,14 @@ pub struct Report {
     pub skipped: usize,
     pub failed: usize,
     pub errors: Vec<String>,
-}
-
-enum Outcome {
-    Done,
-    Skipped,
-    Failed(String),
+    pub retry_waiting: usize,
+    pub pending: usize,
+    pub cancelled: usize,
+    pub writer_batches: usize,
+    pub max_batch: usize,
+    pub max_in_flight: usize,
+    /// Sampled transaction latencies in microseconds, bounded to 2048 batches.
+    pub commit_micros: Vec<u64>,
 }
 
 /// Number of game entries that a single batch can process concurrently.
@@ -52,7 +66,7 @@ impl From<i64> for WorkerCount {
 
 impl Default for WorkerCount {
     fn default() -> Self {
-        Self(3)
+        Self(6)
     }
 }
 
@@ -63,6 +77,7 @@ pub struct Options<'a> {
     pub provider: covers::Provider,
     pub template: &'a str,
     pub workers: WorkerCount,
+    pub cover_workers: WorkerCount,
 }
 
 /// Run a batch using the default worker count.
@@ -83,127 +98,373 @@ pub fn run(
             provider,
             template,
             workers: WorkerCount::default(),
+            cover_workers: WorkerCount::from(3),
         },
         cancel,
         progress,
     )
 }
 
-/// Run on a background executor. Progress is delivered sequentially on the calling thread.
-/// Cancelling stops new work and lets pending network requests reach their timeout.
+/// Run a durable refresh, reporting aggregate game counts.
 pub fn run_with_options(
     lib: &Library,
     ids: &[i64],
     options: Options<'_>,
     cancel: &AtomicBool,
-    progress: impl FnMut(usize, usize),
+    mut progress: impl FnMut(usize, usize),
 ) -> Report {
-    let Options {
-        mode,
-        provider,
-        template,
-        workers,
-    } = options;
-    let metadata = metadata::Batch::default();
-    dispatch(ids, workers, cancel, progress, |id| {
-        let release = metadata.refresh(lib, id, mode, cancel);
-        if matches!(
-            release,
-            Ok(metadata::RefreshOutcome::NoSerial | metadata::RefreshOutcome::Candidates)
-        ) {
-            return Outcome::Skipped;
-        }
-        if cancel.load(Ordering::Relaxed) {
-            return Outcome::Skipped;
-        }
-        let cover = covers::scrape(lib, id, provider, template, mode, cancel);
-        if release == Ok(metadata::RefreshOutcome::NotFound) && cover.as_deref() == Ok("not_found")
-        {
-            return Outcome::Skipped;
-        }
-        let mut errors = Vec::new();
-        if let Err(error) = release {
-            errors.push(error);
-        }
-        match cover {
-            Err(error) => errors.push(error),
-            Ok(state) if state == "retry" => {
-                errors.push("Cover provider rate limit reached. Retry later.".into());
-            }
-            Ok(state) if state == "failed" => {
-                errors.push("Recent cover request failed. Retry later.".into());
-            }
-            _ => {}
-        }
-        if errors.is_empty() {
-            Outcome::Done
-        } else {
-            Outcome::Failed(errors.join("\n"))
-        }
+    run_events(lib, ids, options, cancel, |event| {
+        progress(event.finished, event.total);
     })
 }
 
-fn dispatch(
+/// A committed game update or the initial batch totals. Repeated IDs can be coalesced by the view.
+pub struct Event {
+    pub game_id: Option<i64>,
+    pub started: Option<i64>,
+    pub finished: usize,
+    pub total: usize,
+    pub failed: usize,
+}
+
+pub fn run_events(
+    lib: &Library,
     ids: &[i64],
-    workers: WorkerCount,
+    options: Options<'_>,
     cancel: &AtomicBool,
-    mut progress: impl FnMut(usize, usize),
-    job: impl Fn(i64) -> Outcome + Sync,
+    event: impl FnMut(Event),
 ) -> Report {
-    let mut ids = ids.to_vec();
-    ids.sort_unstable();
-    ids.dedup();
+    run_batch(lib, ids, options, cancel, event, false)
+}
+
+/// Resume queued stages without creating a new generation or resetting the retry deadline.
+pub fn resume_events(
+    lib: &Library,
+    ids: &[i64],
+    options: Options<'_>,
+    cancel: &AtomicBool,
+    event: impl FnMut(Event),
+) -> Report {
+    run_batch(lib, ids, options, cancel, event, true)
+}
+
+fn run_batch(
+    lib: &Library,
+    ids: &[i64],
+    options: Options<'_>,
+    cancel: &AtomicBool,
+    mut event: impl FnMut(Event),
+    resume: bool,
+) -> Report {
+    let pending: BTreeSet<_> = ids.iter().copied().collect();
     let mut report = Report {
-        total: ids.len(),
+        total: pending.len(),
         ..Report::default()
     };
-    progress(0, report.total);
-    if ids.is_empty() || cancel.load(Ordering::Relaxed) {
-        return report;
-    }
-    let next = AtomicUsize::new(0);
-    thread::scope(|scope| {
-        let (send, recv) = mpsc::channel();
-        for _ in 0..usize::from(workers.get()).min(ids.len()) {
-            let send = send.clone();
-            let ids = &ids;
-            let next = &next;
-            let job = &job;
-            scope.spawn(move || {
-                while !cancel.load(Ordering::Relaxed) {
-                    let Some(&id) = ids.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                        break;
-                    };
-                    let result = job(id);
-                    if cancel.load(Ordering::Relaxed) || send.send(result).is_err() {
-                        break;
-                    }
-                }
-            });
+    event(Event {
+        game_id: None,
+        started: None,
+        finished: 0,
+        total: report.total,
+        failed: 0,
+    });
+    let run = || -> Result<(), String> {
+        if lib.shutdown.load(Ordering::Acquire) {
+            return Ok(());
         }
-        drop(send);
-        for result in recv {
-            match result {
-                Outcome::Done => {}
-                Outcome::Skipped => report.skipped += 1,
-                Outcome::Failed(error) => {
-                    report.failed += 1;
-                    if report.errors.len() < 8 && !report.errors.contains(&error) {
-                        report.errors.push(error);
-                    }
+        super::transport::configure(options.workers.get(), options.cover_workers.get());
+        let mut db = lib.connect()?;
+        jobs::prepare_targets(&mut db, ids, options.mode, options.provider, resume)
+            .map_err(|e| e.to_string())?;
+        let slots = [options.workers, options.cover_workers]
+            .map(|n| usize::from(n.get()).min(pending.len()));
+        let (meta_tx, meta_rx) = mpsc::sync_channel(slots[0]);
+        let (art_tx, art_rx) = mpsc::sync_channel(slots[1]);
+        let receivers = [Mutex::new(meta_rx), Mutex::new(art_rx)];
+        let (output, results) = mpsc::sync_channel(slots.iter().sum());
+        let metadata = metadata::Batch::default();
+        let providers = lib.for_batch();
+        let abort = AtomicBool::new(false);
+        let mut writer = BatchWriter {
+            db,
+            owner: uuid::Uuid::new_v4().to_string(),
+            pending,
+            report: &mut report,
+            event: &mut event,
+            cancel,
+            shutdown: &lib.shutdown,
+            abort: &abort,
+        };
+        thread::scope(|scope| {
+            for (receiver, limit) in receivers.iter().zip(slots) {
+                for _ in 0..limit {
+                    let output = output.clone();
+                    let metadata = &metadata;
+                    let providers = &providers;
+                    let abort = &abort;
+                    scope.spawn(move || {
+                        loop {
+                            let job = receiver.lock().expect("job channel lock poisoned").recv();
+                            let Ok(claim) = job else {
+                                break;
+                            };
+                            let result = work(providers, metadata, &claim, options.template, abort);
+                            if output.send((claim, result)).is_err() {
+                                break;
+                            }
+                        }
+                    });
                 }
             }
-            report.finished += 1;
-            progress(report.finished, report.total);
-        }
-    });
+            drop(output);
+            // Dropping both senders wakes idle workers on cancellation and writer errors.
+            writer.drive(&[meta_tx, art_tx], slots, &results)
+        })
+    };
+    if let Err(error) = run() {
+        report.failed += 1;
+        report.errors.push(error);
+    }
     report
 }
 
+fn work(
+    lib: &Library,
+    metadata: &metadata::Batch,
+    claim: &CoverClaim,
+    template: &str,
+    cancel: &AtomicBool,
+) -> Work {
+    if cancel.load(Ordering::Relaxed) {
+        return Work::Cancelled;
+    }
+    match claim.stage {
+        Stage::Metadata => match metadata.prepare(lib, claim.game, claim.mode, cancel) {
+            Ok(prepared) => Work::Metadata(prepared),
+            Err(e) => Work::Failed(Failure {
+                code: e.code(),
+                message: "Release metadata lookup failed",
+                retry: e.retryable(),
+                deadline: e.retry_after(),
+            }),
+        },
+        Stage::Cover => match covers::scrape_claim(
+            lib,
+            claim.game,
+            claim.provider,
+            template,
+            claim.mode,
+            cancel,
+            claim,
+        ) {
+            Ok(state) if state == "retry" || state == "failed" => {
+                Work::Failed(Failure::cover(&state))
+            }
+            Ok(state) => Work::Cover(state),
+            Err(e) => Work::Failed(Failure::cover(&e)),
+        },
+    }
+}
+
+struct BatchWriter<'a, F> {
+    db: rusqlite::Connection,
+    owner: String,
+    pending: BTreeSet<i64>,
+    report: &'a mut Report,
+    event: &'a mut F,
+    cancel: &'a AtomicBool,
+    shutdown: &'a AtomicBool,
+    abort: &'a AtomicBool,
+}
+
+impl<F: FnMut(Event)> BatchWriter<'_, F> {
+    fn drive(
+        &mut self,
+        senders: &[mpsc::SyncSender<CoverClaim>; 2],
+        slots: [usize; 2],
+        results: &mpsc::Receiver<(CoverClaim, Work)>,
+    ) -> Result<(), String> {
+        let mut active = [0_usize; 2];
+        let mut heartbeat = Instant::now();
+        loop {
+            if self.shutdown.load(Ordering::Acquire) {
+                self.abort.store(true, Ordering::Release);
+                return jobs::release_owner(&self.db, &self.owner).map_err(|e| e.to_string());
+            }
+            if self.cancel.load(Ordering::Relaxed) {
+                self.abort.store(true, Ordering::Release);
+                return jobs::cancel(&self.db, &self.owner).map_err(|e| e.to_string());
+            }
+            if heartbeat.elapsed() >= Duration::from_secs(30) {
+                jobs::renew(&self.db, &self.owner).map_err(|e| e.to_string())?;
+                heartbeat = Instant::now();
+            }
+            for (i, stage) in [Stage::Metadata, Stage::Cover].into_iter().enumerate() {
+                let claims = jobs::claim(&mut self.db, &self.owner, stage, slots[i] - active[i])
+                    .map_err(|e| e.to_string())?;
+                if let Some(first) = claims.first() {
+                    (self.event)(Event {
+                        game_id: None,
+                        started: Some(first.game),
+                        finished: self.report.finished,
+                        total: self.report.total,
+                        failed: self.report.failed,
+                    });
+                }
+                for claim in claims {
+                    senders[i].send(claim).map_err(|e| e.to_string())?;
+                    active[i] += 1;
+                }
+            }
+            let in_flight = active.iter().sum();
+            self.report.max_in_flight = self.report.max_in_flight.max(in_flight);
+            if in_flight == 0 {
+                break;
+            }
+            let first = match results.recv_timeout(Duration::from_millis(100)) {
+                Ok(result) => result,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(e) => return Err(e.to_string()),
+            };
+            let mut batch = vec![first];
+            let until = Instant::now() + Duration::from_micros(300);
+            while batch.len() < 32 && batch.len() < in_flight {
+                let Ok(result) =
+                    results.recv_timeout(until.saturating_duration_since(Instant::now()))
+                else {
+                    break;
+                };
+                batch.push(result);
+            }
+            if !self.cancel.load(Ordering::Relaxed) && !self.shutdown.load(Ordering::Acquire) {
+                self.apply(batch, &mut active)?;
+            }
+        }
+        for id in std::mem::take(&mut self.pending) {
+            record(
+                self.report,
+                jobs::state(&self.db, id).map_err(|e| e.to_string())?,
+            );
+            self.notify(id);
+        }
+        Ok(())
+    }
+
+    fn notify(&mut self, id: i64) {
+        (self.event)(Event {
+            game_id: Some(id),
+            started: None,
+            finished: self.report.finished,
+            total: self.report.total,
+            failed: self.report.failed,
+        });
+    }
+
+    fn apply(
+        &mut self,
+        batch: Vec<(CoverClaim, Work)>,
+        active: &mut [usize; 2],
+    ) -> Result<(), String> {
+        self.report.max_batch = self.report.max_batch.max(batch.len());
+        let started = Instant::now();
+        let mut changed = BTreeSet::new();
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        for (claim, result) in batch {
+            active[usize::from(claim.stage == Stage::Cover)] -= 1;
+            changed.insert(claim.game);
+            tx.execute_batch("SAVEPOINT publish_job")
+                .map_err(|e| e.to_string())?;
+            if let Err(error) = commit_result(&tx, &claim, result) {
+                tx.execute_batch("ROLLBACK TO publish_job")
+                    .map_err(|e| e.to_string())?;
+                let failure = Failure {
+                    code: "commit",
+                    message: "Could not commit current job result",
+                    retry: true,
+                    deadline: None,
+                };
+                jobs::fail(&tx, &claim, &failure).map_err(|e| format!("{error}: {e}"))?;
+            }
+            tx.execute_batch("RELEASE publish_job")
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        self.report.writer_batches += 1;
+        if self.report.commit_micros.len() < 2048 {
+            self.report
+                .commit_micros
+                .push(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+        }
+        for id in changed {
+            let state = jobs::state(&self.db, id).map_err(|e| e.to_string())?;
+            if state.outcome != jobs::GameState::Pending && self.pending.remove(&id) {
+                record(self.report, state);
+            }
+            self.notify(id);
+        }
+        Ok(())
+    }
+}
+
+fn record(report: &mut Report, state: jobs::State) {
+    match state.outcome {
+        jobs::GameState::RetryWaiting => report.retry_waiting += 1,
+        jobs::GameState::Pending => report.pending += 1,
+        jobs::GameState::Cancelled => report.cancelled += 1,
+        jobs::GameState::Done | jobs::GameState::Skipped => {
+            report.finished += 1;
+            if state.error.is_some() {
+                report.failed += 1;
+            } else if state.outcome == jobs::GameState::Skipped {
+                report.skipped += 1;
+            }
+        }
+    }
+    if let Some(error) = state.error
+        && report.errors.len() < 8
+    {
+        report.errors.push(error);
+    }
+}
+
+enum Work {
+    Metadata(metadata::Prepared),
+    Cover(String),
+    Failed(Failure),
+    Cancelled,
+}
+
+fn commit_result(
+    tx: &rusqlite::Transaction<'_>,
+    claim: &CoverClaim,
+    result: Work,
+) -> Result<(), String> {
+    if !claim.owns(tx).map_err(|e| e.to_string())? {
+        return Ok(());
+    }
+    let finished = match result {
+        Work::Metadata(prepared) => match prepared.commit_claim(tx, claim.game)? {
+            Some(metadata::RefreshOutcome::Updated) => "updated",
+            Some(metadata::RefreshOutcome::Candidates | metadata::RefreshOutcome::NoSerial)
+            | None => "skip_cover",
+            Some(metadata::RefreshOutcome::NotFound) => "not_found",
+        },
+        Work::Cover(ref outcome) => outcome,
+        Work::Failed(failure) => return jobs::fail(tx, claim, &failure).map_err(|e| e.to_string()),
+        Work::Cancelled => return Ok(()),
+    };
+    if claim.finish(tx, finished).map_err(|e| e.to_string())? {
+        Ok(())
+    } else {
+        Err("Job lease expired before result publication".into())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Barrier, Mutex};
 
     #[test]
     fn incremental_run_reuses_metadata_and_cover_cache_only_for_given_games() {
@@ -226,8 +487,20 @@ mod tests {
             [serial],
         )
         .unwrap();
-        tx.execute("INSERT INTO cover_attempts(game_id,serial,url,state,retry_after,updated)
-            VALUES(1,?,'https://example.invalid/SCUS-94900.png','not_found',unixepoch()+3600,unixepoch())", [serial]).unwrap();
+        let key = covers::provider_key(
+            covers::Provider::Custom,
+            "https://example.invalid/${serial}.png",
+            serial,
+            "",
+            "",
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO cover_attempts(game_id,serial,url,state,retry_after,updated)
+            VALUES(1,?,?,'not_found',unixepoch()+3600,unixepoch())",
+            [serial, key.as_str()],
+        )
+        .unwrap();
         tx.commit().unwrap();
         let report = run(
             &lib,
@@ -242,88 +515,5 @@ mod tests {
         let rows = metadata::list(&lib).unwrap();
         assert_eq!(rows[&1].title.as_deref(), Some("Cached title"));
         assert_ne!(rows[&2].title.as_deref(), Some("Cached title"));
-    }
-
-    #[test]
-    fn workers_overlap_and_visit_only_distinct_requested_entries() {
-        let barrier = Barrier::new(3);
-        let seen = Mutex::new(Vec::new());
-        let mut progress = Vec::new();
-        let cancel = AtomicBool::new(false);
-        let report = dispatch(
-            &[5, 2, 5, 1],
-            WorkerCount::default(),
-            &cancel,
-            |n, total| progress.push((n, total)),
-            |id| {
-                barrier.wait();
-                seen.lock().unwrap().push(id);
-                match id {
-                    1 => Outcome::Skipped,
-                    2 => Outcome::Failed("offline".into()),
-                    _ => Outcome::Done,
-                }
-            },
-        );
-        let mut seen = seen.into_inner().unwrap();
-        seen.sort_unstable();
-        assert_eq!(seen, [1, 2, 5]);
-        assert_eq!(progress, [(0, 3), (1, 3), (2, 3), (3, 3)]);
-        assert_eq!((report.finished, report.failed, report.skipped), (3, 1, 1));
-        assert_eq!(report.errors, ["offline"]);
-    }
-
-    #[test]
-    fn dispatch_uses_the_configured_number_of_workers() {
-        use std::{collections::HashSet, sync::Condvar, time::Duration};
-
-        for limit in [1, 7, 20] {
-            let workers = WorkerCount::from(limit);
-            let expected = usize::from(workers.get());
-            let ids: Vec<_> = (1..=limit * 2).collect();
-            let reached = Condvar::new();
-            let threads = Mutex::new(HashSet::new());
-            let report = dispatch(
-                &ids,
-                workers,
-                &AtomicBool::new(false),
-                |_, _| {},
-                |_| {
-                    let mut threads = threads.lock().unwrap();
-                    threads.insert(thread::current().id());
-                    reached.notify_all();
-                    let (threads, _) = reached
-                        .wait_timeout_while(threads, Duration::from_secs(3), |ids| {
-                            ids.len() < expected
-                        })
-                        .unwrap();
-                    assert_eq!(threads.len(), expected, "worker limit {limit}");
-                    Outcome::Done
-                },
-            );
-            assert_eq!(report.finished, ids.len());
-            assert_eq!(threads.into_inner().unwrap().len(), expected);
-        }
-    }
-
-    #[test]
-    fn cancellation_stops_the_queue_and_joins_in_flight_workers() {
-        let cancel = AtomicBool::new(false);
-        let started = AtomicUsize::new(0);
-        let mut ids = Vec::from_iter(1..100);
-        ids.push(1);
-        let report = dispatch(
-            &ids,
-            WorkerCount::default(),
-            &cancel,
-            |_, _| {},
-            |_| {
-                started.fetch_add(1, Ordering::Relaxed);
-                cancel.store(true, Ordering::Relaxed);
-                Outcome::Done
-            },
-        );
-        assert!(started.load(Ordering::Relaxed) <= 3);
-        assert_eq!((report.finished, report.total), (0, 99));
     }
 }

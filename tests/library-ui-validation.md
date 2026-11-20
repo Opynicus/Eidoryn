@@ -10,7 +10,7 @@ The GPUI interaction tests exercise the desktop's regular navigation, SQLite rea
 | Copies and grouped discs | Three locations with disc numbers 1, 1 and 2 produce a two-disc badge. |
 | Search and switch layouts | Searching for a specific serial isolates one entry. Switching between grid and compact list uses the configured layout immediately. |
 
-## Scrolling measurement
+## Scrolling measurement before optimization
 
 The deterministic fixture generates 1,000 local 192 × 192 PNG thumbnails with distinct paths. The window is 1280 × 900. Timings cover the UI update, layout, thumbnail loading, and the test executor reaching idle. The dataset is ready in memory before the timed grid draw. The index benchmark covers discovery and SQLite separately.
 
@@ -20,7 +20,7 @@ The deterministic fixture generates 1,000 local 192 × 192 PNG thumbnails with d
 | Scroll down 1,500 px | 40–59 | 250 ms | 23,628 |
 | Switch to compact list at that offset | 24–34 | — | — |
 
-Peak process RSS was 52,096 KiB. The machine used an AMD Ryzen 9 8945H, Linux 7.3.4 and Rust 1.100.0. Byte counts come from Linux process I/O accounting and include page-cache reads. Each visible card owns its GPUI image cache. Removing the card releases its decoded artwork. The test measures a software test window. Native compositor latency and physical display refresh were outside this measurement.
+Peak process RSS was 52,096 KiB. The machine used an AMD Ryzen 9 8945H, Linux 7.3.4 and Rust 1.100.0. Byte counts come from Linux process I/O accounting and include page-cache reads. At revision `9fc73ae` each visible card owned its image cache and released decoded artwork on removal. The current grid retains up to 64 decoded thumbnails across scrolls. Measurements for 100, 500 and 2,000 games are in the [library optimization report](library-optimization-validation.md).
 
 ```sh
 cargo test --locked --all-features --bin eidoryn desktop::library::tests

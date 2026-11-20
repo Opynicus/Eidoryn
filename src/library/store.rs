@@ -46,25 +46,24 @@ struct Indexed {
     strong: Option<String>,
 }
 fn current(db: &Connection, key: &[u8]) -> rusqlite::Result<Option<Indexed>> {
-    db.query_row(
+    db.prepare_cached(
         "SELECT l.id,d.id,d.home_game_id,d.game_id,d.sample,d.strong_id
-         FROM locations l JOIN discs d ON d.id=l.disc_id WHERE l.path=? AND l.current",
-        [key],
-        |r| {
-            Ok(Indexed {
-                location: r.get(0)?,
-                disc: r.get(1)?,
-                home: r.get(2)?,
-                game: r.get(3)?,
-                sample: r.get(4)?,
-                strong: r.get(5)?,
-            })
-        },
-    )
+         FROM locations l JOIN discs d ON d.id=l.disc_id WHERE l.path=? AND l.current=1",
+    )?
+    .query_row([key], |r| {
+        Ok(Indexed {
+            location: r.get(0)?,
+            disc: r.get(1)?,
+            home: r.get(2)?,
+            game: r.get(3)?,
+            sample: r.get(4)?,
+            strong: r.get(5)?,
+        })
+    })
     .optional()
 }
 fn parts(db: &Connection, location: i64) -> rusqlite::Result<Vec<Stamp>> {
-    db.prepare("SELECT path,size,mtime FROM parts WHERE location_id=? ORDER BY path")?
+    db.prepare_cached("SELECT path,size,mtime FROM parts WHERE location_id=? ORDER BY path")?
         .query_map([location], |r| {
             Ok(Stamp {
                 path: key_path(r.get(0)?),
@@ -120,11 +119,13 @@ fn restore(
             [entry.game],
         )?;
     }
-    tx.execute(
-        "UPDATE locations SET available=1,fast_boot=COALESCE(?1,fast_boot)
-        WHERE id=?2 AND (available=0 OR ( ?1 IS NOT NULL AND fast_boot<>?1))",
-        params![fast_boot, entry.location],
-    )?;
+    tx.prepare_cached(
+        "UPDATE locations SET available=1,fast_boot=COALESCE(?1,fast_boot),last_seen_at=unixepoch(),
+             availability_check=NULL
+         WHERE id=?2 AND (available=0 OR last_seen_at IS NOT unixepoch()
+             OR availability_check IS NOT NULL OR (?1 IS NOT NULL AND fast_boot<>?1))",
+    )?
+    .execute(params![fast_boot, entry.location])?;
     Ok(())
 }
 
@@ -156,6 +157,17 @@ fn dependency_paths(stamps: Vec<Stamp>, path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+fn probe_files(path: &Path) -> IndexResult<(DiscProbe, Vec<Stamp>)> {
+    let mut stamps = vec![Stamp::read(path)?];
+    let probe = DiscImage::probe(path)?;
+    for dependency in &probe.dependencies {
+        if !stamps.iter().any(|s| &s.path == dependency) {
+            stamps.push(Stamp::read(dependency)?);
+        }
+    }
+    Ok((probe, stamps))
+}
+
 impl Library {
     // One SQLite transaction per completed entry. Long fingerprints are calculated
     // before taking the writer lock, only for explicit verification/association.
@@ -169,14 +181,13 @@ impl Library {
         let path = path.canonicalize()?;
         let key = path_key(&path);
         loop {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let entry = current(&tx, &key)?;
+            let entry = current(db, &key)?;
             let saved = entry
                 .as_ref()
-                .map(|v| parts(&tx, v.location))
+                .map(|v| parts(db, v.location))
                 .transpose()?
                 .unwrap_or_default();
-            if mode == Mode::Directory && is_ignored(&tx, &key)? {
+            if mode == Mode::Directory && is_ignored(db, &key)? {
                 return Ok(IndexedFile {
                     change: Change::Ignored,
                     home: 0,
@@ -189,6 +200,11 @@ impl Library {
                 && cached
                 && verified.is_none_or(|(id, _)| existing.strong.as_deref() == Some(id))
             {
+                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                if current(&tx, &key)? != entry || mode == Mode::Directory && is_ignored(&tx, &key)?
+                {
+                    continue;
+                }
                 restore(&tx, existing, &key, mode, verified.map(|(_, fast)| fast))?;
                 let pending = needs_confirmation(&tx, existing.home, existing.game)?;
                 tx.commit()?;
@@ -199,38 +215,37 @@ impl Library {
                     pending,
                 });
             }
-            let initial = Stamp::read(&path)?;
-            let probe = DiscImage::probe(&path)?;
-            let mut stamps = vec![initial];
-            for p in &probe.dependencies {
-                if !stamps.iter().any(|s| s.path == *p) {
-                    stamps.push(Stamp::read(p)?);
-                }
-            }
+            let (probe, stamps) = probe_files(&path)?;
             // A known strong identity with matching samples can resolve a changed
             // timestamp or a possible move. A new, unrelated entry never hashes.
             let needs_identity = verified.is_some()
-                || tx
+                || db
                     .prepare_cached("SELECT 1 FROM discs WHERE sample=? AND strong_id IS NOT NULL")?
                     .exists([&probe.sample])?;
-            let (tx, identity) = if needs_identity {
-                drop(tx);
+            let identity = if needs_identity {
                 let hash = DiscImage::open(&path)?.identity().to_owned();
                 if verified.is_some_and(|(booted, _)| booted != hash) {
                     return Err("Disc changed between loading and library association".into());
                 }
-                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                if current(&tx, &key)? != entry
-                    || (mode == Mode::Directory && is_ignored(&tx, &key)?)
-                {
-                    continue;
-                }
-                (tx, Some(hash))
+                Some(hash)
             } else {
-                (tx, None)
+                None
             };
             if !stamps.iter().all(Stamp::unchanged) {
                 return Err("Disc changed during indexing; rescan it".into());
+            }
+            // Another importer may finish while a slow disc probe or hash is in flight.
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if current(&tx, &key)? != entry
+                || mode == Mode::Directory && is_ignored(&tx, &key)?
+                || identity.is_none()
+                    && tx
+                        .prepare_cached(
+                            "SELECT 1 FROM discs WHERE sample=? AND strong_id IS NOT NULL",
+                        )?
+                        .exists([&probe.sample])?
+            {
+                continue;
             }
             if let Some(existing) = &entry
                 && existing.sample == probe.sample
@@ -333,13 +348,9 @@ impl Library {
         }
         metadata::identify(&tx, home, probe.serial.as_deref(), region, title.as_ref())?;
         let pending = needs_confirmation(&tx, home, game)?;
+        self.queue_new_game(&tx, home, game)?;
         tx.commit()?;
-        // A verified copy gets a home ID for its own sessions, but shares the existing game card.
-        if game == home
-            && let Some(additions) = &self.additions
-        {
-            let _ = additions.send(game);
-        }
+        self.notify_addition(home, game);
         Ok(IndexedFile {
             change: Change::Added,
             home,
@@ -364,15 +375,45 @@ impl Library {
         .map_err(|e| e.to_string())
     }
 
-    pub fn games(&self) -> Result<Vec<Game>, String> {
-        self.read_games().map_err(|e| e.to_string())
+    /// Visible games across all search and sort settings, including newly committed imports.
+    pub fn visible_game_ids(&self) -> Result<Vec<i64>, String> {
+        let db = self.connect()?;
+        let mut q = db
+            .prepare(
+                "SELECT g.id FROM games g WHERE NOT g.hidden AND EXISTS(
+            SELECT 1 FROM discs d JOIN listed_locations l ON l.disc_id=d.id WHERE d.game_id=g.id)
+            ORDER BY g.id",
+            )
+            .map_err(|e| e.to_string())?;
+        q.query_map([], |r| r.get(0))
+            .and_then(Iterator::collect)
+            .map_err(|e| e.to_string())
     }
 
-    fn read_games(&self) -> rusqlite::Result<Vec<Game>> {
+    pub fn games(&self) -> Result<Vec<Game>, String> {
+        self.read_games(None).map_err(|e| e.to_string())
+    }
+
+    /// Read only the visible cards affected by a batch of library events.
+    pub fn games_by_id(&self, ids: &[i64]) -> Result<Vec<Game>, String> {
+        let keys = serde_json::to_string(ids).map_err(|error| error.to_string())?;
+        self.read_games(Some(&keys))
+            .map_err(|error| error.to_string())
+    }
+
+    fn read_games(&self, ids: Option<&str>) -> IndexResult<Vec<Game>> {
         let mut db = self.connection()?;
         let tx = db.transaction()?;
-        let mut query = tx.prepare(
-            "SELECT g.id, g.fallback_title, COALESCE(stats.seconds, 0), stats.last_played
+        let (game_filter, stats_filter) = if ids.is_some() {
+            (
+                "AND g.id IN (SELECT value FROM json_each(?1))",
+                "WHERE d.game_id IN (SELECT value FROM json_each(?1))",
+            )
+        } else {
+            ("", "")
+        };
+        let mut query = tx.prepare(&format!(
+            "SELECT g.id, g.fallback_title, COALESCE(stats.seconds, 0), stats.last_played, g.platform
              FROM games g
              LEFT JOIN (
                  SELECT d.game_id, SUM(s.seconds - s.cleared_seconds) AS seconds,
@@ -380,21 +421,23 @@ impl Library {
                                  THEN s.last_played END) AS last_played
                  FROM discs d
                  JOIN sessions s ON s.game_id = d.home_game_id
+                 {stats_filter}
                  GROUP BY d.game_id
              ) stats ON stats.game_id = g.id
-             WHERE NOT g.hidden AND EXISTS (
+             WHERE NOT g.hidden {game_filter} AND EXISTS (
                  SELECT 1 FROM discs d JOIN listed_locations l ON l.disc_id = d.id
                  WHERE d.game_id = g.id
              )
-             ORDER BY g.id",
-        )?;
+             ORDER BY g.id"
+        ))?;
         let mut games = query
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(ids), |row| {
                 Ok(Game {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     seconds: row.get(2)?,
                     last_played: row.get(3)?,
+                    platform: row.get(4)?,
                     serial: None,
                     region: None,
                     locations: Vec::new(),
@@ -402,15 +445,15 @@ impl Library {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let index: HashMap<_, _> = games.iter().enumerate().map(|(i, g)| (g.id, i)).collect();
-        let mut query = tx.prepare(
+        let mut query = tx.prepare(&format!(
             "SELECT d.game_id, d.serial, d.region, l.id, d.id, d.number, l.path, l.available, l.fast_boot
              FROM discs d
              JOIN listed_locations l ON l.disc_id = d.id
              JOIN games g ON g.id = d.game_id
-             WHERE NOT g.hidden
-             ORDER BY d.game_id, d.number, l.available DESC, l.id",
-        )?;
-        let mut rows = query.query([])?;
+             WHERE NOT g.hidden {game_filter}
+             ORDER BY d.game_id, d.number, l.available DESC, l.id"
+        ))?;
+        let mut rows = query.query(rusqlite::params_from_iter(ids))?;
         while let Some(r) = rows.next()? {
             let id: i64 = r.get(0)?;
             if let Some(i) = index.get(&id) {
@@ -438,7 +481,7 @@ impl Library {
         self.hide(game).map_err(|e| e.to_string())
     }
 
-    fn hide(&self, game: i64) -> rusqlite::Result<()> {
+    fn hide(&self, game: i64) -> IndexResult<()> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
@@ -448,7 +491,8 @@ impl Library {
             [game],
         )?;
         tx.execute("UPDATE games SET hidden=1 WHERE id=?", [game])?;
-        tx.commit()
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn clear_statistics(&self, game: i64) -> Result<(), String> {
@@ -598,7 +642,8 @@ impl Library {
             )?;
         }
         let changed = tx.execute(
-            "UPDATE locations SET path=?,available=1,current=1 WHERE id=? AND path=?",
+            "UPDATE locations SET path=?,available=1,current=1,last_seen_at=unixepoch(),availability_check=NULL
+             WHERE id=? AND path=?",
             params![key, location, prior_path],
         )?;
         if changed != 1 {

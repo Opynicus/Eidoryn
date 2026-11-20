@@ -15,20 +15,15 @@ fn bytes_read() -> Option<u64> {
         .find_map(|line| line.strip_prefix("rchar: ")?.parse().ok())
 }
 
-#[gpui::test]
-fn library_grid_virtualizes_scrolling_and_switches_to_a_compact_list(cx: &mut TestAppContext) {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = Library::open(&tmp.path().join("library.db")).unwrap();
-    let (view, cx) = cx.add_window_view(desktop);
-    cx.simulate_resize(size(px(1280.), px(900.)));
-    cx.run_until_parked();
+fn thumbnail_entries(root: &std::path::Path, games: i64) -> Vec<Entry> {
     let image = image::RgbImage::from_pixel(192, 192, image::Rgb([10, 20, 30]));
-    let original = tmp.path().join("cover.png");
+    let original = root.join("cover.png");
     image.save(&original).unwrap();
-    let entries = (1..=1000)
+    (1..=games)
         .map(|id| {
             let mut entry = Entry::new(
                 Game {
+                    platform: "PS1".into(),
                     id,
                     title: format!("Disc {id:04}"),
                     serial: Some(format!("SLUS-{id:05}")),
@@ -39,12 +34,36 @@ fn library_grid_virtualizes_scrolling_and_switches_to_a_compact_list(cx: &mut Te
                 },
                 None,
             );
-            let path = tmp.path().join(format!("thumb-{id}.png"));
+            let path = root.join(format!("thumb-{id}.png"));
             std::fs::copy(&original, &path).unwrap();
             entry.thumbnail = Some(path);
             entry
         })
-        .collect();
+        .collect()
+}
+
+fn scroll_by(cx: &mut gpui::VisualTestContext, position: gpui::Point<gpui::Pixels>, dy: f32) {
+    cx.simulate_event(ScrollEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+        modifiers: Modifiers::default(),
+        touch_phase: TouchPhase::Moved,
+        source: ScrollSource::Pointer,
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn library_grid_virtualizes_scrolling_and_switches_to_a_compact_list(cx: &mut TestAppContext) {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Library::open(&tmp.path().join("library.db")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    cx.run_until_parked();
+    let games: i64 = std::env::var("EIDORYN_BENCH_GAMES")
+        .ok()
+        .map_or(1000, |s| s.parse().unwrap());
+    let entries = thumbnail_entries(tmp.path(), games);
     let before = bytes_read();
     let start = Instant::now();
     view.update(cx, |v, cx| {
@@ -64,14 +83,7 @@ fn library_grid_virtualizes_scrolling_and_switches_to_a_compact_list(cx: &mut Te
     assert_eq!(first.start, 0);
     assert!((4..100).contains(&first.end), "first viewport {first:?}");
     let start = Instant::now();
-    cx.simulate_event(ScrollEvent {
-        position,
-        delta: ScrollDelta::Pixels(point(px(0.), px(-1500.))),
-        modifiers: Modifiers::default(),
-        touch_phase: TouchPhase::Moved,
-        source: ScrollSource::Pointer,
-    });
-    cx.run_until_parked();
+    scroll_by(cx, position, -1500.);
     let scroll = start.elapsed();
     let after_scroll = bytes_read();
     let scrolled = view.read_with(cx, |v, _| v.library.rendered_cells.clone());
@@ -80,12 +92,28 @@ fn library_grid_virtualizes_scrolling_and_switches_to_a_compact_list(cx: &mut Te
         "{scrolled:?}"
     );
     assert!(cx.debug_bounds("library-entry-1").is_none());
+    let mut scroll_samples = Vec::new();
+    for step in 0..20 {
+        let start = Instant::now();
+        scroll_by(cx, position, if step % 2 == 0 { 1000. } else { -1000. });
+        scroll_samples.push(start.elapsed());
+    }
+    for _ in 0..4 {
+        scroll_by(cx, position, -1200.);
+    }
+    assert_eq!(view.read_with(cx, |v, _| v.library.thumbnails.len()), 64);
+    scroll_samples.sort_unstable();
+    println!(
+        "scroll_p50_us={} scroll_p95_us={}",
+        scroll_samples[9].as_micros(),
+        scroll_samples[18].as_micros()
+    );
     click_control(cx, "lib-layout");
     assert!(view.read_with(cx, |v, _| v.preferences.library.list));
     let list = view.read_with(cx, |v, _| v.library.rendered_cells.clone());
     assert!((1..25).contains(&list.len()), "{list:?}");
     println!(
-        "1,000 games at 1280x900: grid {first:?} in {first_paint:?}, scroll {scrolled:?} in {scroll:?}, compact list {list:?}"
+        "{games} games at 1280x900: grid {first:?} in {first_paint:?}, scroll {scrolled:?} in {scroll:?}, compact list {list:?}"
     );
     if let (Some(a), Some(b), Some(c)) = (before, after_first, after_scroll) {
         println!(
@@ -100,9 +128,25 @@ fn library_grid_virtualizes_scrolling_and_switches_to_a_compact_list(cx: &mut Te
         println!("{peak}");
     }
     click_control(cx, "library-search");
-    cx.simulate_input("SLUS-01000");
+    cx.simulate_input(&format!("SLUS-{games:05}"));
     assert_eq!(view.read_with(cx, |v, _| v.library.order.len()), 1);
-    assert!(cx.debug_bounds("library-entry-1000").is_some());
+    assert_eq!(
+        view.read_with(cx, |v, _| v.library.entries[v.library.order[0]].game.id),
+        games
+    );
+    measure_window_exit(view, cx);
+}
+
+fn measure_window_exit(view: Entity<Desktop>, cx: &mut gpui::VisualTestContext) {
+    let start = Instant::now();
+    view.update(cx, |v, cx| {
+        v.command(crate::desktop::Command::RequestClose, cx);
+    });
+    wait_for_snapshot(&view, cx, |snapshot| snapshot.close_ready);
+    drop(view);
+    cx.run_until_parked();
+    assert_eq!(cx.windows(), [] as [gpui::AnyWindowHandle; 0]);
+    println!("window_exit_us={}", start.elapsed().as_micros());
 }
 
 #[gpui::test]
@@ -168,6 +212,7 @@ fn library_enter_requires_bios_then_navigates_only_after_success(cx: &mut TestAp
 fn verified_copies_share_a_disc_number_in_the_card_badge() {
     let entry = Entry::new(
         Game {
+            platform: "PS1".into(),
             id: 1,
             title: "Edition".into(),
             serial: None,
@@ -259,7 +304,7 @@ fn cover_settings_persist_provider_and_keep_custom_template(cx: &mut TestAppCont
             .library
             .scrape_workers
             .get(),
-        4
+        7
     );
     click_control(cx, "lib-workers-down");
     assert_eq!(
@@ -268,7 +313,16 @@ fn cover_settings_persist_provider_and_keep_custom_template(cx: &mut TestAppCont
             .library
             .scrape_workers
             .get(),
-        3
+        6
+    );
+    click_control(cx, "lib-cover-workers-up");
+    assert_eq!(
+        Preferences::load(&settings)
+            .unwrap()
+            .library
+            .cover_workers
+            .get(),
+        4
     );
     assert!(view.read_with(cx, |v, _| v.preferences.library.scrape_new_games));
     click_control(cx, "lib-scrape-new");
@@ -387,6 +441,7 @@ fn scrape_refreshes_all_games_and_only_new_imports(cx: &mut TestAppContext) {
     let watched = view.update(cx, |v, _| {
         v.preferences_path = Some(tmp.path().join("preferences.json"));
         v.library = Workspace::new(Some(db));
+        v.configure_imports();
         v.library.store.clone().unwrap()
     });
     cx.simulate_resize(size(px(1280.), px(900.)));
@@ -432,4 +487,129 @@ fn scrape_refreshes_all_games_and_only_new_imports(cx: &mut TestAppContext) {
     assert!(view.read_with(cx, |v, _| {
         !v.library.scraping.busy() && v.library.scraping.last.is_none()
     }));
+}
+
+#[gpui::test]
+fn recovered_import_jobs_can_be_retried_after_reopening_library(cx: &mut TestAppContext) {
+    use eidoryn_psx::library::{covers::Provider, scrape};
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("library.db");
+    let mut db = Library::open(&path).unwrap();
+    db.configure_import_scraping(Some(Provider::Libretro));
+    let image = tmp.path().join("Offline.iso");
+    std::fs::write(&image, vec![11u8; 2048 * 8]).unwrap();
+    db.scan_files(&[image], &AtomicBool::default(), |_| {})
+        .unwrap();
+    let ids = db.visible_game_ids().unwrap();
+    assert_eq!(ids.len(), 1);
+    let id = ids[0];
+    // Reopen without delivering any of the previous process's in-memory notifications.
+    drop(db);
+    let db = Library::open(&path).unwrap();
+    assert_eq!(
+        scrape::due_games(&db).unwrap(),
+        [(id, scrape::Mode::Incremental)]
+    );
+    let (view, cx) = cx.add_window_view(desktop);
+    view.update(cx, |v, _| v.library = Workspace::new(Some(db.clone())));
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    click_control(cx, "nav-library");
+    cx.run_until_parked();
+    assert_eq!(scrape::due_games(&db).unwrap(), []);
+    view.update(cx, |v, _| {
+        let (_, report, cancelled) = v.library.scraping.last.as_ref().unwrap();
+        assert_eq!((report.finished, report.skipped, *cancelled), (1, 1, false));
+    });
+    // A terminal failure survives restart and the retry action is discoverable without a session report.
+    scrape::enqueue_games(&db, &ids, scrape::Mode::Full, Provider::Libretro).unwrap();
+    db.connect().unwrap().execute("UPDATE scrape_jobs SET status='failed', last_error_code='offline',last_error_message='Service unavailable' WHERE status='pending'",[]).unwrap();
+    view.update(cx, |v, cx| {
+        v.library = Workspace::new(Some(db.clone()));
+        v.enter_library(cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("lib-retry-failed").is_some());
+    click_control(cx, "lib-retry-failed");
+    cx.run_until_parked();
+    assert_eq!(scrape::failed_games(&db).unwrap(), [] as [i64; 0]);
+    assert_eq!(view.read_with(cx, |v, _| v.library.entries.len()), 1);
+
+    scrape::enqueue_games(&db, &ids, scrape::Mode::Full, Provider::Libretro).unwrap();
+    db.connect().unwrap().execute(
+        "UPDATE scrape_jobs SET status='retry_wait',next_attempt_at=unixepoch()+3600 WHERE status='pending'", []
+    ).unwrap();
+    view.update(cx, |v, cx| {
+        v.library = Workspace::new(Some(db.clone()));
+        v.enter_library(cx);
+    });
+    cx.run_until_parked();
+    click_control(cx, "library-entry-1");
+    click_control(cx, "lib-details");
+    click_control(cx, "lib-cancel-job");
+    cx.run_until_parked();
+    let cancelled: i64 = db
+        .connect()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM scrape_jobs WHERE status='cancelled'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cancelled, 2);
+}
+
+#[gpui::test]
+fn first_window_paints_while_library_migration_waits_for_the_database_writer(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("library.sqlite");
+    let mut locked = rusqlite::Connection::open(&file).unwrap();
+    let lock = locked
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let store = Library::deferred(&file);
+    let reader = store.clone();
+    let (started, waiting) = std::sync::mpsc::channel();
+    let initialization = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        reader.wait_until_ready()
+    });
+    waiting.recv().unwrap();
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = desktop(window, cx);
+        view.library = Workspace::new(Some(store));
+        view.page = WorkspacePage::Library;
+        view
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("library-add-images").is_some());
+    assert!(!initialization.is_finished());
+    lock.commit().unwrap();
+    initialization.join().unwrap().unwrap();
+    view.update(cx, |v, cx| {
+        Desktop::start_library(v.library.store.clone().unwrap(), Vec::new(), cx);
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.library.loaded));
+}
+
+#[gpui::test]
+fn failed_deferred_open_reports_the_library_path_in_the_workspace(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let bad_path = temp.path().join("read-only-parent");
+    std::fs::write(&bad_path, b"not a directory").unwrap();
+    let path = bad_path.join("library.sqlite");
+    let (view, cx) = cx.add_window_view(desktop);
+    view.update(cx, |v, cx| {
+        let store = Library::deferred(&path);
+        v.library = Workspace::new(Some(store.clone()));
+        Desktop::start_library(store, Vec::new(), cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert!(v.library.store.is_none());
+        assert!(v.notice.as_ref().unwrap().contains(path.to_str().unwrap()));
+    });
 }

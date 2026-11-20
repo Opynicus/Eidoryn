@@ -10,6 +10,8 @@ use std::{
 };
 use uuid::Uuid;
 
+mod recovery;
+
 const CHECKPOINT: Duration = Duration::from_secs(30);
 // A running worker normally samples every frame. On platforms whose monotonic
 // clock includes suspend, discard an unobserved gap and start a fresh interval.
@@ -17,12 +19,14 @@ const MAX_SAMPLE_GAP: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Checkpoint {
+    started_at: i64,
     seconds: u64,
     last_played: i64,
 }
 
 #[derive(Default)]
 struct ForwardTime {
+    started_at: Option<i64>,
     elapsed: Duration,
     previous: Option<Instant>,
     committed: Duration,
@@ -45,6 +49,7 @@ impl ForwardTime {
         {
             self.committed = self.elapsed;
             return Some(Checkpoint {
+                started_at: *self.started_at.get_or_insert(utc),
                 seconds: self.elapsed.as_secs(),
                 last_played: utc,
             });
@@ -62,8 +67,14 @@ struct Disc {
 enum Event {
     Disc(Uuid, Disc),
     Progress(Uuid, Checkpoint),
-    Finish(Uuid),
+    Finish(Uuid, ExitReason),
     Clear(i64, mpsc::Sender<Result<(), String>>),
+}
+
+#[derive(Clone, Copy)]
+enum ExitReason {
+    Normal,
+    Interrupted,
 }
 
 pub(super) struct Playtime {
@@ -135,9 +146,13 @@ impl Playtime {
     }
 
     pub(super) fn finish(&mut self) {
+        self.end(ExitReason::Normal);
+    }
+
+    fn end(&mut self, reason: ExitReason) {
         self.sample(false);
         if let Some((id, _)) = self.current.take() {
-            self.send(Event::Finish(id));
+            self.send(Event::Finish(id, reason));
         }
     }
 
@@ -148,7 +163,11 @@ impl Playtime {
 
 impl Drop for Playtime {
     fn drop(&mut self) {
-        self.finish();
+        self.end(if thread::panicking() {
+            ExitReason::Interrupted
+        } else {
+            ExitReason::Normal
+        });
         drop(self.sender.take());
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
@@ -163,7 +182,8 @@ struct Pending {
     disc: Disc,
     game: Option<i64>,
     point: Option<Checkpoint>,
-    finished: bool,
+    finished: Option<ExitReason>,
+    owner: Option<recovery::SessionLock>,
 }
 
 impl Pending {
@@ -180,8 +200,28 @@ impl Pending {
             game
         };
         if let Some(point) = self.point {
+            if self.owner.is_none() {
+                self.owner =
+                    Some(recovery::SessionLock::acquire(library, id).map_err(|e| e.to_string())?);
+            }
             save_checkpoint(&library.connect()?, id, game, point)?;
             self.point = None;
+        }
+        if let Some(reason) = self.finished
+            && self.owner.is_some()
+        {
+            let reason = match reason {
+                ExitReason::Normal => "normal",
+                ExitReason::Interrupted => "interrupted",
+            };
+            library
+                .connect()?
+                .execute(
+                    "UPDATE sessions SET ended_at=max(last_played,unixepoch()),exit_reason=?2
+                 WHERE session_id=?1 AND ended_at IS NULL",
+                    params![id.to_string(), reason],
+                )
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -194,10 +234,10 @@ fn save_checkpoint(
     point: Checkpoint,
 ) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO sessions(session_id,game_id,seconds,last_played) VALUES(?1,?2,?3,?4)
+        "INSERT INTO sessions(session_id,game_id,seconds,last_played,started_at) VALUES(?1,?2,?3,?4,?5)
          ON CONFLICT(session_id) DO UPDATE SET seconds=max(seconds,excluded.seconds),
                                               last_played=max(last_played,excluded.last_played)",
-        params![id.to_string(), game, point.seconds, point.last_played],
+        params![id.to_string(), game, point.seconds, point.last_played, point.started_at],
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
@@ -205,9 +245,21 @@ fn save_checkpoint(
 
 fn write_sessions(library: &Library, rx: &mpsc::Receiver<Event>, error: &Mutex<Option<String>>) {
     let mut sessions: HashMap<Uuid, Pending> = HashMap::new();
+    let mut recover = true;
     let mut retry = false;
     loop {
-        let event = if retry {
+        let recovery_error = if recover {
+            match recovery::close_interrupted(library) {
+                Ok(()) => {
+                    recover = false;
+                    None
+                }
+                Err(e) => Some(format!("Play session recovery failed: {e}")),
+            }
+        } else {
+            None
+        };
+        let event = if retry || recover {
             rx.recv_timeout(Duration::from_secs(5))
         } else {
             rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected)
@@ -222,7 +274,8 @@ fn write_sessions(library: &Library, rx: &mpsc::Receiver<Event>, error: &Mutex<O
                         disc,
                         game: None,
                         point: None,
-                        finished: false,
+                        finished: None,
+                        owner: None,
                     },
                 );
             }
@@ -231,17 +284,17 @@ fn write_sessions(library: &Library, rx: &mpsc::Receiver<Event>, error: &Mutex<O
                     pending.point = Some(point);
                 }
             }
-            Ok(Event::Finish(id)) => {
+            Ok(Event::Finish(id, reason)) => {
                 if let Some(pending) = sessions.get_mut(&id) {
-                    pending.finished = true;
+                    pending.finished = Some(reason);
                 }
             }
             Ok(Event::Clear(game, reply)) => clear = Some((game, reply)),
             Err(_) => {}
         }
-        let mut failure = None;
+        let mut failure = recovery_error;
         sessions.retain(|id, session| match session.flush(library, *id) {
-            Ok(()) => !session.finished,
+            Ok(()) => session.finished.is_none(),
             Err(e) => {
                 failure = Some(format!("Play statistics could not be saved: {e}"));
                 true
@@ -308,6 +361,47 @@ mod tests {
             .sample(start + Duration::from_secs(732), 732, false)
             .unwrap();
         assert_eq!(stopped.seconds, 102);
+        assert_eq!(stopped.started_at, 0);
+    }
+
+    #[test]
+    fn media_changes_and_forward_checkpoints_queue_while_library_initialization_is_blocked() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("library.sqlite");
+        let mut locked = rusqlite::Connection::open(&database).unwrap();
+        let lock = locked
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let library = Library::deferred(&database);
+        let mut recorder = Playtime::open(library.clone()).unwrap();
+        for (name, value, elapsed) in [("cli", 1, 3), ("next", 2, 5)] {
+            let path = temp.path().join(format!("{name}.iso"));
+            std::fs::write(&path, [value; 2048]).unwrap();
+            let identity = crate::disc::DiscImage::open(&path)
+                .unwrap()
+                .identity()
+                .to_owned();
+            recorder.select(path, identity, false);
+            let start = Instant::now();
+            for (at, forward) in [(0, true), (elapsed, false)] {
+                let (id, clock) = recorder.current.as_mut().unwrap();
+                let point = clock
+                    .sample(start + Duration::from_secs(at), 100 + at as i64, forward)
+                    .unwrap();
+                let id = *id;
+                recorder.send(Event::Progress(id, point));
+            }
+        }
+        recorder.finish();
+        lock.commit().unwrap();
+        drop(recorder);
+        let games = library
+            .games()
+            .unwrap()
+            .into_iter()
+            .map(|game| (game.title, game.seconds))
+            .collect::<Vec<_>>();
+        assert_eq!(games, [("cli".into(), 3), ("next".into(), 5)]);
     }
 
     #[test]
@@ -335,6 +429,15 @@ mod tests {
         writer.send(Event::Progress(
             id,
             Checkpoint {
+                started_at: 170,
+                seconds: 0,
+                last_played: 170,
+            },
+        ));
+        writer.send(Event::Progress(
+            id,
+            Checkpoint {
+                started_at: 170,
                 seconds: 30,
                 last_played: 200,
             },
@@ -350,14 +453,23 @@ mod tests {
         writer.send(Event::Progress(
             id,
             Checkpoint {
+                started_at: 170,
                 seconds: 45,
                 last_played: 215,
             },
         ));
-        writer.send(Event::Finish(id));
+        writer.send(Event::Finish(id, ExitReason::Normal));
         drop(writer);
         let games = library.games().unwrap();
         assert_eq!((games[0].seconds, games[0].last_played), (45, Some(215)));
+        let (reason, started): (String, i64) = conn
+            .query_row(
+                "SELECT exit_reason,started_at FROM play_sessions WHERE session_id=?",
+                [id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((reason.as_str(), started), ("normal", 170));
     }
 
     #[test]
@@ -365,6 +477,7 @@ mod tests {
         const CHILD_DB: &str = "EIDORYN_CHECKPOINT_CRASH_TEST_DATABASE";
         let id = Uuid::from_u128(1);
         let thirty = Checkpoint {
+            started_at: 170,
             seconds: 30,
             last_played: 200,
         };
@@ -380,6 +493,7 @@ mod tests {
                 id,
                 1,
                 Checkpoint {
+                    started_at: 170,
                     seconds: 47,
                     last_played: 217,
                 },
@@ -416,6 +530,7 @@ mod tests {
         for point in [
             thirty,
             Checkpoint {
+                started_at: 170,
                 seconds: 42,
                 last_played: 212,
             },
@@ -423,6 +538,20 @@ mod tests {
         ] {
             save_checkpoint(&conn, id, 1, point).unwrap();
         }
+        assert_eq!(totals(), (1, 42, 212));
+        let owner = recovery::SessionLock::acquire(&reopened, id).unwrap();
+        recovery::close_interrupted(&reopened).unwrap();
+        let ended = || {
+            conn.query_row("SELECT ended_at,exit_reason FROM play_sessions", [], |r| {
+                Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?))
+            })
+            .unwrap()
+        };
+        assert_eq!(ended(), (None, None));
+        drop(owner);
+        recovery::close_interrupted(&reopened).unwrap();
+        assert_eq!(ended(), (Some(212), Some("interrupted".into())));
+        recovery::close_interrupted(&reopened).unwrap();
         assert_eq!(totals(), (1, 42, 212));
     }
 }
