@@ -1,4 +1,4 @@
-use super::Library;
+use super::{GameMove, Library, Placement};
 use crate::disc::DiscImage;
 use rusqlite::params;
 use std::{
@@ -447,6 +447,190 @@ fn opening_a_future_schema_preserves_data() {
             .unwrap(),
         10
     );
+}
+
+#[test]
+fn bulk_remove_is_atomic_and_explicit_reimport_restores_data() {
+    let f = Fixture::new();
+    for (i, name) in ["A.iso", "B.iso", "C.iso"].into_iter().enumerate() {
+        f.image(name, i as u8);
+    }
+    f.scan();
+    let games = f.db.games().unwrap();
+    let ids = [games[0].id, games[1].id, games[0].id, -1];
+    f.session(ids[0], 92);
+    super::metadata::set_override(&f.db, ids[0], super::metadata::Field::Title, Some("Custom"))
+        .unwrap();
+    let db = f.db.connect().unwrap();
+    db.execute_batch(&format!(
+        "CREATE TRIGGER deny_hide BEFORE UPDATE OF hidden ON games WHEN NEW.id = {}
+         BEGIN SELECT RAISE(ABORT, 'cannot hide'); END;",
+        ids[1]
+    ))
+    .unwrap();
+    assert!(f.db.remove_games(&ids).is_err());
+    assert_eq!(f.db.games().unwrap().len(), 3);
+    let ignored = || {
+        db.query_row("SELECT COUNT(*) FROM ignored", [], |r| r.get::<_, usize>(0))
+            .unwrap()
+    };
+    assert_eq!(ignored(), 0);
+    db.execute_batch("DROP TRIGGER deny_hide").unwrap();
+    f.db.remove_games(&[]).unwrap();
+    f.db.remove_games(&ids).unwrap();
+    f.db.remove_games(&ids).unwrap();
+    assert_eq!(ignored(), 2);
+    f.scan();
+    assert_eq!(f.db.games().unwrap()[0].id, games[2].id);
+    assert_eq!(f.db.games().unwrap().len(), 1);
+    let paths = [
+        games[0].locations[0].path.clone(),
+        games[1].locations[0].path.clone(),
+    ];
+    assert!(paths.iter().all(|p| p.is_file()));
+    f.db.scan_files(&paths, &AtomicBool::default(), |_| {})
+        .unwrap();
+    assert_eq!(f.db.games().unwrap().len(), 3);
+    assert_eq!(f.db.games_by_id(&[ids[0]]).unwrap()[0].seconds, 92);
+    assert_eq!(
+        super::metadata::list(&f.db).unwrap()[&ids[0]]
+            .title
+            .as_deref(),
+        Some("Custom")
+    );
+}
+
+#[test]
+fn moves_use_the_displayed_order_and_keep_filtered_or_new_games_in_place() {
+    let fixture = Fixture::new();
+    for (i, name) in ["A.iso", "B.iso", "C.iso", "D.iso", "E.iso"]
+        .into_iter()
+        .enumerate()
+    {
+        fixture.image(name, i as u8);
+    }
+    fixture.scan();
+    let games = fixture.db.games().unwrap();
+    let [first, second_game, third, fourth, fifth] = games.as_slice() else {
+        panic!("expected five games")
+    };
+    let movement = GameMove {
+        source: first.id,
+        target: third.id,
+        placement: Placement::After,
+        initial_order: vec![fifth.id, first.id, third.id, third.id, -1],
+    };
+    // A second window imports a game after the first window rendered its list.
+    let second = Library::open(&fixture.root.path().join("index.sqlite3")).unwrap();
+    let extra = fixture.image("F.iso", 5);
+    second
+        .scan_files(&[extra], &AtomicBool::default(), |_| {})
+        .unwrap();
+    let new = second.games().unwrap()[5].id;
+    let expected = [fifth.id, second_game.id, third.id, fourth.id, first.id, new];
+    let mut preview = vec![first.id, second_game.id, third.id, fourth.id, fifth.id, new];
+    assert!(movement.apply(&mut preview));
+    assert_eq!(preview, expected);
+    assert_eq!(fixture.db.move_game(&movement).unwrap(), expected);
+    let reopened = Library::open(&fixture.root.path().join("index.sqlite3")).unwrap();
+    for game in reopened.games().unwrap() {
+        assert_eq!(
+            game.manual_position.map(|i| expected[i as usize]),
+            Some(game.id)
+        );
+    }
+    second.remove(third.id).unwrap();
+    assert!(fixture.db.move_game(&movement).is_err());
+    assert!(reopened.games_by_id(&[third.id]).unwrap().is_empty());
+    // Hidden games retain their slot and reappear there on explicit reimport.
+    let reverse = GameMove {
+        source: new,
+        target: fifth.id,
+        placement: Placement::Before,
+        initial_order: Vec::new(),
+    };
+    assert_eq!(
+        second.move_game(&reverse).unwrap(),
+        [new, fifth.id, third.id, second_game.id, fourth.id, first.id]
+    );
+    reopened
+        .scan_files(
+            std::slice::from_ref(&third.locations[0].path),
+            &AtomicBool::default(),
+            |_| {},
+        )
+        .unwrap();
+    assert_eq!(
+        reopened.games_by_id(&[third.id]).unwrap()[0].manual_position,
+        Some(2)
+    );
+    fixture.image("G.iso", 6);
+    fixture.scan();
+    assert_eq!(
+        reopened.games().unwrap().last().unwrap().manual_position,
+        None
+    );
+}
+
+#[test]
+fn independent_simultaneous_drops_preserve_each_others_changes() {
+    let fixture = Fixture::new();
+    for (i, name) in ["A.iso", "B.iso", "C.iso", "D.iso"].into_iter().enumerate() {
+        fixture.image(name, i as u8);
+    }
+    fixture.scan();
+    let games = fixture.db.games().unwrap();
+    let [first, second_game, third, fourth] = games.as_slice() else {
+        panic!("expected four games")
+    };
+    let second = Library::open(&fixture.root.path().join("index.sqlite3")).unwrap();
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|workers| {
+        for (store, source, target) in [
+            (&fixture.db, second_game.id, first.id),
+            (&second, fourth.id, third.id),
+        ] {
+            let barrier = &barrier;
+            workers.spawn(move || {
+                barrier.wait();
+                store
+                    .move_game(&GameMove {
+                        source,
+                        target,
+                        placement: Placement::Before,
+                        initial_order: Vec::new(),
+                    })
+                    .unwrap();
+            });
+        }
+    });
+    let mut after = fixture.db.games().unwrap();
+    after.sort_by_key(|game| game.manual_position);
+    assert_eq!(
+        after.iter().map(|game| game.id).collect::<Vec<_>>(),
+        [second_game.id, first.id, fourth.id, third.id]
+    );
+}
+
+#[test]
+fn opening_v5_backs_up_existing_games_and_starts_them_without_manual_positions() {
+    let f = Fixture::new();
+    f.image("Original.iso", 1);
+    f.scan();
+    let game = f.db.games().unwrap()[0].id;
+    f.session(game, 26);
+    f.db.connect()
+        .unwrap()
+        .execute_batch("ALTER TABLE games DROP COLUMN manual_position; PRAGMA user_version = 5;")
+        .unwrap();
+    drop(f.db);
+    let migrated = Library::open(&f.root.path().join("index.sqlite3")).unwrap();
+    let old_game = migrated.games().unwrap().remove(0);
+    assert_eq!(
+        (old_game.id, old_game.seconds, old_game.manual_position),
+        (game, 26, None)
+    );
+    assert!(f.root.path().join("index.sqlite3.v5.bak").is_file());
 }
 
 /// Run in isolation with --ignored --nocapture --test-threads=1. Sparse test

@@ -413,7 +413,7 @@ impl Library {
             ("", "")
         };
         let mut query = tx.prepare(&format!(
-            "SELECT g.id, g.fallback_title, COALESCE(stats.seconds, 0), stats.last_played, g.platform
+            "SELECT g.id, g.fallback_title, COALESCE(stats.seconds, 0), stats.last_played, g.platform, g.manual_position
              FROM games g
              LEFT JOIN (
                  SELECT d.game_id, SUM(s.seconds - s.cleared_seconds) AS seconds,
@@ -438,6 +438,7 @@ impl Library {
                     seconds: row.get(2)?,
                     last_played: row.get(3)?,
                     platform: row.get(4)?,
+                    manual_position: row.get(5)?,
                     serial: None,
                     region: None,
                     locations: Vec::new(),
@@ -478,19 +479,31 @@ impl Library {
     }
 
     pub fn remove(&self, game: i64) -> Result<(), String> {
-        self.hide(game).map_err(|e| e.to_string())
+        self.remove_games(&[game])
     }
 
-    fn hide(&self, game: i64) -> IndexResult<()> {
+    /// Hide all selected cards and ignore their current paths on future directory scans.
+    pub fn remove_games(&self, games: &[i64]) -> Result<(), String> {
+        if games.is_empty() {
+            return Ok(());
+        }
+        self.hide_games(games).map_err(|e| e.to_string())
+    }
+
+    fn hide_games(&self, games: &[i64]) -> IndexResult<()> {
+        let ids = serde_json::to_string(games)?;
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
             "INSERT OR IGNORE INTO ignored
              SELECT l.path FROM locations l JOIN discs d ON d.id = l.disc_id
-             WHERE d.game_id = ? AND l.current",
-            [game],
+             WHERE d.game_id IN (SELECT value FROM json_each(?1)) AND l.current",
+            [&ids],
         )?;
-        tx.execute("UPDATE games SET hidden=1 WHERE id=?", [game])?;
+        tx.execute(
+            "UPDATE games SET hidden=1 WHERE id IN (SELECT value FROM json_each(?1)) AND NOT hidden",
+            [&ids],
+        )?;
         tx.commit()?;
         Ok(())
     }

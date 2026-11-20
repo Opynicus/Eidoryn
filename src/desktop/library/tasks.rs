@@ -233,6 +233,7 @@ impl Desktop {
         self.library.last_refresh = Instant::now();
         self.library.dirty_games.clear();
         self.library.reading = true;
+        let order_revision = self.library.order_revision;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -250,7 +251,9 @@ impl Desktop {
                 })
                 .await;
             let _ = this.update(cx, |v, cx| {
-                v.library.reading = false;
+                if !v.finish_library_read(order_revision, cx) {
+                    return;
+                }
                 match result {
                     Ok((entries, roots)) => {
                         v.library.loaded = true;
@@ -264,7 +267,7 @@ impl Desktop {
                             v.library.location = None;
                             v.library.close_editor();
                         }
-                        v.library.reorder();
+                        v.reorder_library();
                         v.poll_library_scrape(cx);
                         v.auto_covers(cx);
                     }
@@ -296,6 +299,17 @@ impl Desktop {
         self.read_pending_games(cx);
     }
 
+    // A read started before a completed drop can contain obsolete positions.
+    fn finish_library_read(&mut self, order_revision: u64, cx: &mut Context<Self>) -> bool {
+        self.library.reading = false;
+        if self.library.order_revision == order_revision {
+            return true;
+        }
+        self.library.reload_pending = true;
+        self.read_pending_games(cx);
+        false
+    }
+
     fn read_pending_games(&mut self, cx: &mut Context<Self>) {
         if self.library.reading {
             return;
@@ -314,6 +328,7 @@ impl Desktop {
             .map_while(|_| self.library.dirty_games.pop_first())
             .collect();
         self.library.reading = true;
+        let order_revision = self.library.order_revision;
         cx.spawn(async move |this, cx| {
             let (ids, result) = cx
                 .background_executor()
@@ -335,7 +350,9 @@ impl Desktop {
                 })
                 .await;
             let _ = this.update(cx, |v, cx| {
-                v.library.reading = false;
+                if !v.finish_library_read(order_revision, cx) {
+                    return;
+                }
                 match result {
                     Ok(rows) => {
                         // The bounded list is sorted. Missing rows were removed or grouped.
@@ -343,7 +360,7 @@ impl Desktop {
                             .entries
                             .retain(|e| ids.binary_search(&e.game.id).is_err());
                         v.library.entries.extend(rows);
-                        v.library.reorder();
+                        v.reorder_library();
                         if let Some(id) = v.library.selected
                             && ids.binary_search(&id).is_ok()
                             && !v.library.entries.iter().any(|e| e.game.id == id)

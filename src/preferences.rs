@@ -29,9 +29,22 @@ pub struct RecentDisc {
     pub fast_boot: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibrarySort {
+    Manual,
+    Date,
+    Played,
+    Time,
+    #[default]
+    #[serde(other)]
+    Title,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "SavedLibraryPreferences")]
 pub struct LibraryPreferences {
+    pub sort: LibrarySort,
     pub list: bool,
     pub auto_covers: bool,
     pub scrape_new_games: bool,
@@ -44,6 +57,7 @@ pub struct LibraryPreferences {
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct SavedLibraryPreferences {
+    sort: LibrarySort,
     list: bool,
     auto_covers: bool,
     scrape_new_games: Option<bool>,
@@ -68,6 +82,7 @@ impl From<SavedLibraryPreferences> for LibraryPreferences {
             });
         Self {
             list: saved.list,
+            sort: saved.sort,
             auto_covers: saved.auto_covers,
             scrape_new_games: saved.scrape_new_games.unwrap_or(true),
             scrape_workers: saved.scrape_workers,
@@ -306,6 +321,44 @@ pub fn validate_bios_choice(choice: &mut Option<PathBuf>) -> Result<Option<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_or_unknown_library_sort_preserves_the_other_preferences() {
+        for library in [
+            serde_json::json!({"list": true, "scrape_workers": 10}),
+            serde_json::json!({"sort": "future-sort", "list": true, "scrape_workers": 10}),
+        ] {
+            let settings: Preferences =
+                serde_json::from_value(serde_json::json!({"library": library, "volume": 42}))
+                    .unwrap();
+            assert_eq!(settings.library.sort, LibrarySort::Title);
+            assert!(settings.library.list);
+            assert_eq!(settings.library.scrape_workers.get(), 10);
+            assert_eq!(settings.volume, 42);
+        }
+    }
+
+    #[test]
+    fn library_sort_modes_round_trip_through_settings_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut settings = Preferences::load(&path).unwrap();
+        assert_eq!(settings.library.sort, LibrarySort::Title);
+        for (sort, value) in [
+            (LibrarySort::Manual, "manual"),
+            (LibrarySort::Title, "title"),
+            (LibrarySort::Date, "date"),
+            (LibrarySort::Played, "played"),
+            (LibrarySort::Time, "time"),
+        ] {
+            settings.library.sort = sort;
+            settings.save(&path).unwrap();
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["library"]["sort"], value);
+            assert_eq!(Preferences::load(&path).unwrap(), settings);
+        }
+    }
 
     #[test]
     fn cover_provider_migration_preserves_existing_custom_templates() {

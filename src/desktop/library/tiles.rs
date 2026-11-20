@@ -90,9 +90,15 @@ impl Desktop {
                                 let entry = &v.library.entries[i];
                                 let cell = v.collection_cell(entry, cx);
                                 line = line.child(if layout.compact {
-                                    v.collection_list_row(entry, cell, layout.narrow)
+                                    v.collection_list_row(entry, cell, layout.narrow, cx)
                                 } else {
-                                    v.collection_grid_card(entry, cell, cache, layout.cover_width)
+                                    v.collection_grid_card(
+                                        entry,
+                                        cell,
+                                        cache,
+                                        layout.cover_width,
+                                        cx,
+                                    )
                                 });
                             } else {
                                 line = line.child(div().flex_1().min_w_0());
@@ -108,41 +114,17 @@ impl Desktop {
         .w_full()
     }
 
-    fn collection_cell(&self, entry: &Entry, cx: &Context<Self>) -> gpui::Stateful<Div> {
-        let p = self.library_palette();
-        let id = entry.game.id;
-        div()
-            .id(("library-entry", id as u64))
-            .debug_selector(move || format!("library-entry-{id}"))
-            .tab_index(0)
-            .role(gpui::Role::Button)
-            .aria_label(entry.title.clone())
-            .aria_selected(self.library.selected == Some(id))
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .cursor_pointer()
-            .focus(move |s| s.bg(rgb(p.tonal)))
-            .on_click(cx.listener(move |v, event: &gpui::ClickEvent, _, cx| {
-                v.library.select(id);
-                if event.is_keyboard() || event.click_count() >= 2 {
-                    v.launch_library(id, cx);
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }))
-    }
-
     fn collection_grid_card(
         &self,
         entry: &Entry,
         cell: gpui::Stateful<Div>,
         cache: Option<Entity<RetainAllImageCache>>,
         cover_width: Pixels,
+        cx: &Context<Self>,
     ) -> gpui::Stateful<Div> {
         let p = self.library_palette();
         let id = entry.game.id;
-        let selected = self.library.selected == Some(id);
+        let selected = self.card_selected(id);
         cell.flex_col()
             .rounded_md()
             .overflow_hidden()
@@ -154,7 +136,10 @@ impl Desktop {
                     .flex_shrink_0()
                     .border_2()
                     .border_color(rgb(if selected { p.primary } else { p.border }))
-                    .group_hover("library-card", move |s| s.border_color(rgb(p.primary))),
+                    .group_hover("library-card", move |s| s.border_color(rgb(p.primary)))
+                    .when(self.library.checked_games.is_some(), |art| {
+                        art.child(self.game_checkbox(entry, cx).absolute().top_2().right_2())
+                    }),
             )
             .child(
                 div()
@@ -363,6 +348,9 @@ impl Desktop {
             .rounded_t_md()
             .bg(rgb(p.surface))
             .border_color(rgb(p.border))
+            .when(self.library.checked_games.is_some(), |row| {
+                row.child(div().size(px(26.)).flex_shrink_0())
+            })
             .children(
                 headings
                     .into_iter()
@@ -382,9 +370,10 @@ impl Desktop {
         entry: &Entry,
         cell: gpui::Stateful<Div>,
         narrow: bool,
+        cx: &Context<Self>,
     ) -> gpui::Stateful<Div> {
         let p = self.library_palette();
-        let selected = self.library.selected == Some(entry.game.id);
+        let selected = self.card_selected(entry.game.id);
         let field = |value: String| {
             div()
                 .flex_1()
@@ -401,6 +390,9 @@ impl Desktop {
             .border_color(rgb(p.border))
             .when(selected, |cell| cell.bg(rgb(p.tonal)))
             .hover(move |s| s.bg(rgb(p.tonal_hover)))
+            .when(self.library.checked_games.is_some(), |row| {
+                row.child(self.game_checkbox(entry, cx))
+            })
             .child(
                 div()
                     .min_w_0()

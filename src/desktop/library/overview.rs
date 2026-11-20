@@ -8,6 +8,7 @@ pub(super) enum OverviewMenu {
     Add,
     Rescan,
     Sort(Rc<Cell<Bounds<Pixels>>>),
+    Remove(super::selection::Removal),
 }
 
 impl Desktop {
@@ -56,7 +57,7 @@ impl Desktop {
             }
             page = page.child(self.library_results(window, cx));
         }
-        page.child(
+        page.children(self.card_menu(cx)).child(
             label(
                 &p,
                 self.tr(Text::LibraryResultCount)
@@ -129,6 +130,7 @@ impl Desktop {
         let enabled = !self.library.entries.is_empty() && !self.library.scraping.full_requested();
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .justify_between()
             .gap_2()
@@ -156,6 +158,19 @@ impl Desktop {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .when(
+                        self.library.checked_games.is_none() && !self.library.entries.is_empty(),
+                        |row| {
+                            row.child(self.library_action(
+                                "lib-batch-select",
+                                Text::LibraryBatchSelect,
+                                Some("check"),
+                                false,
+                                cx,
+                                |v, _, cx| v.begin_batch_selection(cx),
+                            ))
+                        },
+                    )
                     .child(
                         ghost_icon_button(&p, "lib-refresh-all", "reset", hint)
                             .debug_selector(|| "lib-refresh-all".into())
@@ -184,6 +199,7 @@ impl Desktop {
                         .aria_label(self.tr(Text::LibrarySettings))
                         .on_click(cx.listener(|v, _, _, cx| {
                             v.library.menu = None;
+                            v.library.checked_games = None;
                             v.library.settings = true;
                             v.library.close_editor();
                             cx.stop_propagation();
@@ -248,9 +264,9 @@ impl Desktop {
 
     fn collection_sort(&self, cx: &Context<Self>) -> Div {
         let p = self.library_palette();
-        let current = Sort::ALL
+        let current = super::ordering::SORT_OPTIONS
             .into_iter()
-            .find(|(sort, _)| *sort == self.library.sort)
+            .find(|(sort, _)| *sort == self.preferences.library.sort)
             .map_or(Text::LibraryTitle, |(_, key)| key);
         let display = |key| {
             self.tr(if key == Text::LibraryTitle {
@@ -292,8 +308,8 @@ impl Desktop {
                     cx.notify();
                 }
             }))
-            .children(Sort::ALL.map(|(sort, key)| {
-                let selected = self.library.sort == sort;
+            .children(super::ordering::SORT_OPTIONS.map(|(sort, key)| {
+                let selected = self.preferences.library.sort == sort;
                 div()
                     .id(key.id())
                     .debug_selector(move || key.id().into())
@@ -314,8 +330,7 @@ impl Desktop {
                     .child(display(key))
                     .when(selected, |row| row.child(icon("check", p.primary)))
                     .on_click(cx.listener(move |v, _, _, cx| {
-                        v.library.sort = sort;
-                        v.library.reorder();
+                        v.set_library_sort(sort);
                         v.library.menu = None;
                         cx.stop_propagation();
                         cx.notify();
@@ -346,6 +361,9 @@ impl Desktop {
     }
 
     fn collection_selection(&self, selected: Option<usize>, cx: &Context<Self>) -> Div {
+        if let Some(checked) = &self.library.checked_games {
+            return self.batch_selection_bar(checked.len(), cx);
+        }
         let p = self.library_palette();
         let bar = div()
             .min_h(px(54.))
@@ -372,7 +390,8 @@ impl Desktop {
                             .text_sm()
                             .font(self.fonts.semibold())
                             .child(entry.title.clone()),
-                    ),
+                    )
+                    .children(self.card_metadata_status(entry.game.id)),
             )
             .child(
                 div()
@@ -463,7 +482,12 @@ impl Desktop {
     }
 
     pub(in crate::desktop) fn close_overview_dialog(&mut self) -> bool {
-        self.library.menu.take().is_some()
+        if self.removal_in_progress() {
+            return true;
+        }
+        self.dismiss_library_context_menu()
+            || self.library.menu.take().is_some()
+            || self.library.checked_games.take().is_some()
     }
 
     pub(in crate::desktop) fn overview_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -471,6 +495,7 @@ impl Desktop {
         let body = div().flex().flex_col().gap_4();
         let actions = div().flex().flex_wrap().justify_end().gap_2();
         match self.library.menu.as_ref()? {
+            OverviewMenu::Remove(removal) => Some(self.removal_dialog(removal, cx)),
             OverviewMenu::Sort(_) => None,
             OverviewMenu::Add => Some(
                 self.library_modal(

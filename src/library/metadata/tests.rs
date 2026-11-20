@@ -323,7 +323,7 @@ fn v1_upgrade_preserves_user_edits_and_session_rows() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        5
+        crate::library::SCHEMA_VERSION
     );
 }
 

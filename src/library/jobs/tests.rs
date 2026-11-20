@@ -532,9 +532,9 @@ fn concurrent_reupgrade_after_a_rollback_refreshes_the_default_backup() {
             library
                 .connect()
                 .unwrap()
-                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            5
+            crate::library::SCHEMA_VERSION
         );
         return;
     }

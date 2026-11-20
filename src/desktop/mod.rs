@@ -197,7 +197,8 @@ fn open_window(
                                 window,
                                 |view: &mut Desktop, window, cx| {
                                     if !window.is_window_active() {
-                                        if view.snapshot_menu.take().is_some() {
+                                        let library_menu = view.dismiss_library_context_menu();
+                                        if view.snapshot_menu.take().is_some() || library_menu {
                                             cx.notify();
                                         }
                                         view.stop_input(cx);

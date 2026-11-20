@@ -1,7 +1,10 @@
 //! Desktop library browsing. File reads, media inspection and database writes run off the UI thread.
 mod detail;
+mod interactions;
+mod ordering;
 mod overview;
 mod scraping;
+mod selection;
 mod settings;
 mod tasks;
 #[cfg(all(test, feature = "ui-tests"))]
@@ -19,9 +22,10 @@ use super::{
 use eidoryn_psx::{
     i18n::Text,
     library::{
-        Game, Library, ScanRoot,
+        Game, GameMove, Library, ScanRoot,
         metadata::{self, Release},
     },
+    preferences::LibrarySort as Sort,
 };
 use gpui::{Context, Div, Entity, Focusable, Window, div, prelude::*, px, rgb};
 use std::{
@@ -113,24 +117,6 @@ impl Entry {
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum Sort {
-    #[default]
-    Title,
-    Date,
-    Played,
-    Time,
-}
-
-impl Sort {
-    const ALL: [(Self, Text); 4] = [
-        (Self::Title, Text::LibraryTitle),
-        (Self::Date, Text::LibraryDate),
-        (Self::Played, Text::LibraryPlayed),
-        (Self::Time, Text::LibraryTime),
-    ];
-}
-
 #[derive(Clone, Copy)]
 enum Confirm {
     Remove(i64),
@@ -153,7 +139,10 @@ pub(super) struct Workspace {
     entries: Vec<Entry>,
     roots: Vec<ScanRoot>,
     order: Vec<usize>,
-    sort: Sort,
+    pending_moves: VecDeque<GameMove>,
+    order_revision: u64,
+    checked_games: Option<BTreeSet<i64>>,
+    card_menu: Option<interactions::CardMenu>,
     menu: Option<OverviewMenu>,
     source_menu_open: bool,
     template_field: Option<settings::TemplateField>,
@@ -199,7 +188,10 @@ impl Workspace {
             entries: vec![],
             roots: vec![],
             order: vec![],
-            sort: Sort::Title,
+            pending_moves: VecDeque::new(),
+            order_revision: 0,
+            checked_games: None,
+            card_menu: None,
             menu: None,
             source_menu_open: false,
             template_field: None,
@@ -279,31 +271,6 @@ impl Workspace {
         let cache = entry.1.clone();
         self.thumbnails.push_back(entry);
         Some(cache)
-    }
-
-    fn reorder(&mut self) {
-        self.order = (0..self.entries.len())
-            .filter(|&i| self.entries[i].search.contains(&self.query))
-            .collect();
-        self.order.sort_by(|&a, &b| {
-            let (a, b) = (&self.entries[a], &self.entries[b]);
-            let order = match self.sort {
-                Sort::Date => missing_last(a.date.as_ref(), b.date.as_ref(), Ord::cmp),
-                Sort::Played => {
-                    missing_last(a.game.last_played, b.game.last_played, |a, b| b.cmp(a))
-                }
-                Sort::Time => b.game.seconds.cmp(&a.game.seconds).then_with(|| {
-                    b.game
-                        .last_played
-                        .is_some()
-                        .cmp(&a.game.last_played.is_some())
-                }),
-                Sort::Title => Ordering::Equal,
-            };
-            order
-                .then_with(|| a.sort_title.cmp(&b.sort_title))
-                .then_with(|| a.game.id.cmp(&b.game.id))
-        });
     }
 
     fn visible_selection(&mut self) -> Option<usize> {
@@ -386,9 +353,15 @@ impl Desktop {
         }))
     }
 
+    pub(super) fn dismiss_library_context_menu(&mut self) -> bool {
+        self.library.card_menu.take().is_some()
+    }
+
     pub(super) fn enter_library(&mut self, cx: &mut Context<Self>) {
         self.library.details = false;
         self.library.settings = false;
+        self.library.checked_games = None;
+        self.library.card_menu = None;
         self.library.menu = None;
         self.library.task_history_open = false;
         self.library.source_menu_open = false;
@@ -435,8 +408,8 @@ impl Desktop {
             let query = input.read(cx).value().trim().to_lowercase();
             if query != view.library.query {
                 view.library.query = query;
-                view.library.reorder();
-
+                view.library.card_menu = None;
+                view.reorder_library();
                 cx.notify();
             }
         }));

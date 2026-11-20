@@ -33,7 +33,7 @@ impl Desktop {
         .detach();
     }
 
-    fn fetch_metadata(&mut self, id: i64, window: &Window, cx: &mut Context<Self>) {
+    pub(super) fn fetch_metadata(&mut self, id: i64, window: &Window, cx: &mut Context<Self>) {
         let Some(store) = self.library.store.clone() else {
             return;
         };

@@ -15,7 +15,7 @@ impl Render for Desktop {
         if let Some(probe) = &mut self.probe {
             probe.record(self.snapshot.video_frames, "render");
         }
-        if self.snapshot.close_ready {
+        if self.snapshot.close_ready && !self.saving_library_changes() {
             self.library.shutdown();
             window.remove_window();
         }

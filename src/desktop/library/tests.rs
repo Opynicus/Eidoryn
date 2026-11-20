@@ -24,6 +24,7 @@ fn thumbnail_entries(root: &std::path::Path, games: i64) -> Vec<Entry> {
             let mut entry = Entry::new(
                 Game {
                     platform: "PS1".into(),
+                    manual_position: None,
                     id,
                     title: format!("Disc {id:04}"),
                     serial: Some(format!("SLUS-{id:05}")),
@@ -71,7 +72,7 @@ fn library_grid_virtualizes_scrolling_and_switches_to_a_compact_list(cx: &mut Te
         v.library = Workspace::new(Some(db));
         v.library.entries = entries;
         v.library.loaded = true;
-        v.library.reorder();
+        v.reorder_library();
         v.page = WorkspacePage::Library;
         cx.notify();
     });
@@ -213,6 +214,7 @@ fn verified_copies_share_a_disc_number_in_the_card_badge() {
     let entry = Entry::new(
         Game {
             platform: "PS1".into(),
+            manual_position: None,
             id: 1,
             title: "Edition".into(),
             serial: None,
@@ -644,7 +646,7 @@ fn library_sort_search_and_layout_keep_the_selected_game_visible(cx: &mut TestAp
         v.library = Workspace::new(Some(store));
         v.library.entries = entries;
         v.library.loaded = true;
-        v.library.reorder();
+        v.reorder_library();
         v.page = WorkspacePage::Library;
         cx.notify();
     });
@@ -663,6 +665,69 @@ fn library_sort_search_and_layout_keep_the_selected_game_visible(cx: &mut TestAp
         && v.library.selected.is_none()));
     click_control(cx, "lib-clear-search");
     assert_eq!(view.read_with(cx, |v, _| v.library.order.len()), 3);
+}
+
+#[gpui::test]
+fn filtered_drops_survive_concurrent_refresh_and_immediate_close(cx: &mut TestAppContext) {
+    use eidoryn_psx::{library::Placement, preferences::Preferences};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let prefs = dir.path().join("preferences.json");
+    let store = Library::open(&path).unwrap();
+    for (i, name) in ["Zoo Set", "Other", "Alpha Set", "Beta Set"]
+        .iter()
+        .enumerate()
+    {
+        let disc = dir.path().join(format!("{name}.iso"));
+        std::fs::write(&disc, vec![i as u8; 2048 * 32]).unwrap();
+        store
+            .scan_files(&[disc], &AtomicBool::default(), |_| {})
+            .unwrap();
+    }
+
+    let (view, cx) = cx.add_window_view(desktop);
+    view.update(cx, |v, _| {
+        v.preferences_path = Some(prefs.clone());
+        v.library = Workspace::new(Some(store));
+    });
+    cx.run_until_parked();
+    click_control(cx, "nav-library");
+    click_control(cx, "library-search");
+    cx.simulate_input("set");
+    cx.run_until_parked();
+    view.update(cx, |v, cx| {
+        let ids = |w: &Workspace| {
+            w.order
+                .iter()
+                .map(|&i| w.entries[i].game.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&v.library), [3, 4, 1]);
+        v.reload_library(cx);
+        v.move_library_game(4, 1, Placement::After, cx);
+        assert_eq!(ids(&v.library), [3, 1, 4]);
+        v.move_library_game(4, 1, Placement::Before, cx);
+        assert_eq!(ids(&v.library), [3, 4, 1]);
+
+        v.library.query.clear();
+        v.reorder_library();
+        assert_eq!(ids(&v.library), [3, 2, 4, 1]);
+        v.command(crate::desktop::Command::RequestClose, cx);
+    });
+    wait_for_snapshot(&view, cx, |s| s.close_ready);
+    cx.run_until_parked();
+    assert_eq!(cx.windows(), [] as [gpui::AnyWindowHandle; 0]);
+    assert_eq!(
+        Preferences::load(&prefs).unwrap().library.sort,
+        Sort::Manual
+    );
+    let mut games = Library::open(&path).unwrap().games().unwrap();
+    games.sort_by_key(|g| g.manual_position);
+    assert_eq!(
+        games.into_iter().map(|g| g.id).collect::<Vec<_>>(),
+        [3, 2, 4, 1]
+    );
 }
 
 #[gpui::test]
@@ -708,7 +773,7 @@ fn library_grid_fits_the_window_and_list_rows_match_the_header(cx: &mut TestAppC
         v.library = Workspace::new(Some(store));
         v.library.entries = entries;
         v.library.loaded = true;
-        v.library.reorder();
+        v.reorder_library();
         v.page = WorkspacePage::Library;
         cx.notify();
     });

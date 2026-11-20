@@ -338,6 +338,7 @@ impl Desktop {
 
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.snapshot_confirmation = None;
+        self.dismiss_library_context_menu();
         self.stop_rewind(cx);
         if !window.is_fullscreen() {
             self.presentation.fullscreen = FullscreenView::Workspace {
@@ -362,6 +363,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         self.snapshot_confirmation = None;
+        self.dismiss_library_context_menu();
         self.stop_rewind(cx);
         if window.is_fullscreen() && self.presentation.shows_video() {
             window.toggle_fullscreen();
@@ -386,6 +388,7 @@ impl Desktop {
 
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.snapshot_confirmation = None;
+        self.dismiss_library_context_menu();
         self.stop_rewind(cx);
         self.release_buttons(cx);
         self.rebinding = None;

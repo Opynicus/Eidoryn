@@ -4,11 +4,13 @@ pub mod covers;
 mod http_retry;
 mod jobs;
 pub mod metadata;
+mod ordering;
 mod scan;
 pub mod scrape;
 mod store;
 mod transport;
 
+pub use ordering::{GameMove, Placement};
 use rusqlite::{Connection, TransactionBehavior};
 pub use scan::{ScanPhase, ScanProgress, ScanReport, ScanRoot, TrackChoice};
 use std::{
@@ -37,6 +39,8 @@ pub struct Game {
     pub id: i64,
     pub platform: String,
     pub title: String,
+    /// Unranked games follow the saved order, by increasing game ID.
+    pub manual_position: Option<i64>,
     pub serial: Option<String>,
     pub region: Option<String>,
     pub locations: Vec<Location>,
@@ -55,6 +59,7 @@ pub struct Location {
     pub fast_boot: bool,
 }
 
+const SCHEMA_VERSION: u32 = 6;
 const SCHEMA: &str = include_str!("schema.sql");
 
 impl Library {
@@ -266,11 +271,11 @@ impl Library {
     fn migrate(&self, pool: &sqlx::SqlitePool) -> IndexResult<()> {
         let mut db = self.raw_connection()?;
         let from: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if from == 5 {
+        if from == SCHEMA_VERSION {
             db.pragma_update(None, "journal_mode", "WAL")?;
             return Ok(());
         }
-        if from > 5 {
+        if from > SCHEMA_VERSION {
             return Err(format!("Unsupported library schema version {from}").into());
         }
         // The stable sidecar serializes the snapshot and both migration transactions.
@@ -283,15 +288,15 @@ impl Library {
             .open(self.sidecar_path(".migration.lock"))?;
         migration_lock.lock()?;
         let from: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if from == 5 {
+        if from == SCHEMA_VERSION {
             return Ok(());
         }
-        if (1..=4).contains(&from) {
+        if (1..SCHEMA_VERSION).contains(&from) {
             self.backup_before_upgrade(&db, from)?;
         }
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version = tx.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))?;
-        if version > 5 {
+        if version > SCHEMA_VERSION {
             return Err(format!("Unsupported library schema version {version}").into());
         }
         if version == 0 {
@@ -324,12 +329,14 @@ impl Library {
                 sqlx::raw_sql(include_str!("optimization.sql"))
                     .execute(&mut *tx)
                     .await?;
-                sqlx::query("PRAGMA user_version=5")
-                    .execute(&mut *tx)
-                    .await?;
             } else if current != 5 {
                 return Err(format!("Unsupported library schema version {current}").into());
             }
+            sqlx::raw_sql(
+                "ALTER TABLE games ADD COLUMN manual_position INTEGER; PRAGMA user_version=6;",
+            )
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
             Ok(())
         })
