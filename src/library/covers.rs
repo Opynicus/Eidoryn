@@ -14,6 +14,26 @@ use uuid::Uuid;
 
 use super::Library;
 
+mod igdb;
+mod libretro;
+mod screenscraper;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    #[default]
+    Libretro,
+    ScreenScraper,
+    Igdb,
+    Custom,
+}
+
+enum Lookup {
+    Image(Url),
+    Http(reqwest::blocking::Response),
+    Missing,
+}
+
 pub const DEFAULT_TEMPLATE: &str =
     "https://raw.githubusercontent.com/xlenore/psx-covers/main/covers/default/${serial}.jpg";
 
@@ -333,62 +353,128 @@ fn record(
 pub fn fetch(
     lib: &Library,
     id: i64,
+    provider: Provider,
     template: &str,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    fetch_edition(lib, id, template, None, cancel)
+    fetch_edition(lib, id, provider, template, None, cancel)
 }
 
 /// Assign art from a user-selected edition while retaining the game's metadata match.
 pub fn fetch_release(
     lib: &Library,
     id: i64,
+    provider: Provider,
     template: &str,
     release: &super::metadata::Release,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    fetch_edition(lib, id, template, Some(release.serial), cancel)
+    fetch_edition(lib, id, provider, template, Some(release), cancel)
 }
 
 fn fetch_edition(
     lib: &Library,
     id: i64,
+    provider: Provider,
     template: &str,
-    art_serial: Option<&str>,
+    chosen: Option<&super::metadata::Release>,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     check_cancel(cancel)?;
-    let serial = lib
-        .connect()?
-        .query_row(
-            "SELECT COALESCE(release_serial,disc_serial) FROM game_metadata WHERE game_id=?1",
-            [id],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let art = if let Some(chosen) = art_serial {
+    let conn = lib.connect()?;
+    // A local filename and manual display title are private. Only send a catalog
+    // title to a title-based service, or a verified disc serial to a serial-based one.
+    let (serial, title, region) = conn.query_row(
+        "SELECT COALESCE(release_serial,disc_serial),auto_title,COALESCE(auto_region,disc_region)
+         FROM game_metadata WHERE game_id=?",
+        [id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
+    ).map_err(|e|e.to_string())?;
+    let title = chosen
+        .map(|r| r.title.as_str())
+        .or(title.as_deref())
+        .unwrap_or("");
+    let region = chosen
+        .map(|r| r.region.as_str())
+        .or(region.as_deref())
+        .unwrap_or("");
+    let serial = chosen
+        .map(|r| r.serial.as_str())
+        .or(serial.as_deref())
+        .ok_or("A disc serial or a selected release is needed to get cover art")?;
+    if provider == Provider::Igdb && title.is_empty() {
+        return Err(
+            "Choose a release or fetch its title from Wikidata before searching IGDB".into(),
+        );
+    }
+    let art = if chosen.is_some() {
         Remote::Chosen {
-            serial: chosen,
-            revision: reserve_selection(&lib.connect()?, id)?,
+            serial,
+            revision: reserve_selection(&conn, id)?,
         }
     } else {
-        Remote::Matching(
-            serial
-                .as_deref()
-                .ok_or("A serial number is needed to get a cover")?,
-        )
+        Remote::Matching(serial)
     };
-    let url = cover_url(template, art.serial())?;
-    fetch_url(lib, id, art, &url, cancel, || {
-        Client::builder()
-            .https_only(true)
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(20))
-            .user_agent(concat!("Eidoryn/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .and_then(|client| client.get(url.clone()).send())
-            .map_err(|e| e.to_string())
+    let key = provider_key(provider, template, serial, title, region)?;
+    fetch_url(lib, id, art, &key, cancel, || {
+        let client = http_client(reqwest::redirect::Policy::none())?;
+        let result = match provider {
+            Provider::Libretro => libretro::resolve(lib, &client, serial, region, cancel)?,
+            Provider::ScreenScraper => screenscraper::resolve(&client, serial, region)?,
+            Provider::Igdb => igdb::resolve(&client, title, region)?,
+            Provider::Custom => Lookup::Image(key.clone()),
+        };
+        check_cancel(cancel)?;
+        match result {
+            Lookup::Missing => Ok(None),
+            Lookup::Http(response) => Ok(Some(response)),
+            Lookup::Image(image) if provider == Provider::ScreenScraper => {
+                screenscraper::fetch_image(&client, image)
+            }
+            Lookup::Image(image) => http_client(reqwest::redirect::Policy::limited(5))?
+                .get(image)
+                .send()
+                .map(Some)
+                .map_err(|e| e.without_url().to_string()),
+        }
     })
+}
+
+fn http_client(redirect: reqwest::redirect::Policy) -> Result<Client, String> {
+    Client::builder()
+        .https_only(true)
+        .referer(false)
+        .redirect(redirect)
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(25))
+        .user_agent(concat!("Eidoryn/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+// The database key identifies the public source and edition, never a signed media URL.
+fn provider_key(
+    provider: Provider,
+    template: &str,
+    serial: &str,
+    title: &str,
+    region: &str,
+) -> Result<Url, String> {
+    let base = match provider {
+        Provider::Libretro => libretro::BOXART,
+        Provider::ScreenScraper => "https://api.screenscraper.fr/api2/jeuInfos.php",
+        Provider::Igdb => "https://api.igdb.com/v4/games",
+        Provider::Custom => return cover_url(template, serial),
+    };
+    let mut url = Url::parse(base).map_err(|e| e.to_string())?;
+    let mut query = url.query_pairs_mut();
+    query
+        .append_pair("serial", serial)
+        .append_pair("region", region);
+    if provider == Provider::Igdb {
+        query.append_pair("title", title);
+    }
+    drop(query);
+    Ok(url)
 }
 
 fn fetch_url(
@@ -397,7 +483,7 @@ fn fetch_url(
     art: Remote<'_>,
     url: &Url,
     cancel: &AtomicBool,
-    request: impl FnOnce() -> Result<reqwest::blocking::Response, String>,
+    request: impl FnOnce() -> Result<Option<reqwest::blocking::Response>, String>,
 ) -> Result<String, String> {
     let serial = art.serial();
     let conn = lib.connect()?;
@@ -433,8 +519,22 @@ fn fetch_url(
         return Ok("retry".into());
     }
     check_cancel(cancel)?;
-    let result =
-        request().and_then(|response| download(lib, id, art, url, response, cancel, &conn));
+    let result = request().and_then(|resolved| {
+        if let Some(response) = resolved {
+            download(lib, id, art, url, response, cancel, &conn)
+        } else {
+            record(
+                &conn,
+                id,
+                serial,
+                url.as_str(),
+                "not_found",
+                now + NOT_FOUND_SECONDS,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok("not_found".into())
+        }
+    });
     if result.is_err() && !cancel.load(Ordering::Relaxed) {
         record(
             &conn,
@@ -487,8 +587,10 @@ fn download(
             record(conn, id, serial, url.as_str(), "retry", until).map_err(|e| e.to_string())?;
             Ok("retry".into())
         }
+        status if !(200..300).contains(&status) => {
+            Err(format!("Cover source returned HTTP {status}"))
+        }
         _ => {
-            let response = response.error_for_status().map_err(|e| e.to_string())?;
             if response
                 .content_length()
                 .is_some_and(|n| n > MAX_BYTES as u64)

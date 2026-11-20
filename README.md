@@ -53,7 +53,11 @@ This UI redesign branch produces temporary test releases for Linux x86-64 Waylan
 
 Open **Game library** in the sidebar to add disc images or scan a folder offline. Pick the CUE file for a multi-track game. Double-click a card or press Enter to start the selected disc. For a normal boot, the library prompts for a BIOS if needed.
 
-Game details let you relocate an image, group discs, correct a release match, and override individual fields or the cover. Cover downloads are opt-in. The library keeps its SQLite index and artwork in the user's application data directory. Playtime follows the runner's forward intervals, including cutscenes and input-free menus. A normal exit saves the final interval.
+The library uses a bundled release catalog and stays offline by default. In **Details**, choose **Fetch from Wikidata** to look up the disc serial and update its release details. If several editions match, select yours. You can relocate an image, group discs, or edit individual fields and the cover. Refreshing preserves manual edits.
+
+Choose **Get cover** to download artwork for one game. The default source, Libretro, downloads its PlayStation Redump DAT on first use to match disc serials, then fetches the selected game's box art. **Cover settings** lets you enable **Fetch missing covers automatically** or switch to ScreenScraper, IGDB or a custom HTTPS template. For ScreenScraper and IGDB, set the credential environment variables shown there before starting Eidoryn.
+
+The user data directory contains `library.sqlite3` and a `covers/` folder with the original images and PNG thumbnails. On Linux it is `$XDG_DATA_HOME/eidoryn` (default `~/.local/share/eidoryn`), on Windows `%LOCALAPPDATA%\eidoryn`, and on macOS `~/Library/Application Support/eidoryn`. Playtime counts time spent running forward, including cutscenes and input-free menus. A normal exit saves the final interval.
 
 ### Build and launch
 

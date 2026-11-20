@@ -84,14 +84,18 @@ impl Library {
     fn migrate(&self) -> IndexResult<()> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        match tx.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))? {
-            0 => {
-                tx.execute_batch(SCHEMA)?;
-                tx.execute_batch(metadata::SCHEMA)?;
-                tx.pragma_update(None, "user_version", 1)?;
-            }
-            1 => {}
-            version => return Err(format!("Unsupported library schema version {version}").into()),
+        let version = tx.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))?;
+        if version > 2 {
+            return Err(format!("Unsupported library schema version {version}").into());
+        }
+        if version == 0 {
+            tx.execute_batch(SCHEMA)?;
+            tx.execute_batch(metadata::SCHEMA)?;
+        }
+        if version < 2 {
+            tx.execute_batch(include_str!("metadata/online.sql"))?;
+            tx.execute_batch(include_str!("covers/libretro.sql"))?;
+            tx.pragma_update(None, "user_version", 2)?;
         }
         tx.commit()?;
         db.pragma_update(None, "journal_mode", "WAL")?;

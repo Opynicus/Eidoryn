@@ -1,6 +1,6 @@
 use super::{
-    Confirm, Desktop, Edit, Editor, Entry, Field, Text, TextInput, button, card, div, label,
-    tasks::Picker,
+    Confirm, Desktop, Edit, Editor, Entry, Field, MetadataLookup, Text, TextInput, button, card,
+    div, label, tasks::Picker,
 };
 use crate::desktop::components::pair;
 use eidoryn_psx::library::{covers, metadata};
@@ -49,6 +49,63 @@ impl Desktop {
         .detach();
     }
 
+    fn fetch_metadata(&mut self, id: i64, window: &Window, cx: &mut Context<Self>) {
+        let Some(store) = self.library.store.clone() else {
+            return;
+        };
+        if matches!(
+            self.library.metadata_lookups.get(&id),
+            Some(MetadataLookup::Fetching)
+        ) {
+            return;
+        }
+        let generation = self.library.match_generation;
+        self.library
+            .metadata_lookups
+            .insert(id, MetadataLookup::Fetching);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { metadata::refresh_online(&store, id) })
+                .await;
+            let _ = this.update_in(cx, |v, window, cx| {
+                use metadata::RefreshOutcome;
+                let status = match result {
+                    Ok(RefreshOutcome::Candidates) => {
+                        if v.page == crate::desktop::WorkspacePage::Library
+                            && v.library.details
+                            && v.library.selected == Some(id)
+                            && v.library.editor.is_none()
+                            && v.library.confirmation.is_none()
+                            && !v.library.settings
+                            && !v.graphics.open
+                            && !v.presentation.shows_video()
+                            && generation == v.library.match_generation
+                        {
+                            v.edit_library(Edit::Match(id), String::new(), window, cx);
+                        }
+                        MetadataLookup::Finished(Text::LibraryMetadataCandidates)
+                    }
+                    Ok(RefreshOutcome::Updated) => {
+                        MetadataLookup::Finished(Text::LibraryMetadataFetched)
+                    }
+                    Ok(RefreshOutcome::NotFound) => {
+                        MetadataLookup::Finished(Text::LibraryMetadataNotFound)
+                    }
+                    Ok(RefreshOutcome::NoSerial) => {
+                        MetadataLookup::Finished(Text::LibraryMetadataNoSerial)
+                    }
+                    Err(error) => MetadataLookup::Failed(error),
+                };
+                v.library.metadata_lookups.insert(id, status);
+                v.reload_library(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn save_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.library.editor.as_ref() else {
             return;
@@ -67,8 +124,7 @@ impl Desktop {
                     return;
                 }
                 self.preferences.library.cover_template = value;
-                self.library.auto_attempted.clear();
-                self.save_preferences();
+                self.cover_preferences_changed(cx);
             }
             Edit::Match(id) => {
                 self.find_releases(id, value, cx);
@@ -144,6 +200,17 @@ impl Desktop {
         self.match_or_group_choices(panel, edit, cx)
     }
 
+    fn select_release(&mut self, id: i64, release: String, cx: &mut Context<Self>) {
+        self.library.close_editor();
+        if !matches!(
+            self.library.metadata_lookups.get(&id),
+            Some(MetadataLookup::Fetching)
+        ) {
+            self.library.metadata_lookups.remove(&id);
+        }
+        self.library_write(cx, move |s| metadata::select(s, id, &release));
+    }
+
     fn match_or_group_choices(&self, mut panel: Div, edit: &Editor, cx: &Context<Self>) -> Div {
         let p = self.themes.active().palette;
         match edit.purpose {
@@ -153,12 +220,12 @@ impl Desktop {
                         s.child(label(&p, self.tr(Text::LibraryNoResults)))
                     })
                     .children(self.library.matches.iter().enumerate().map(|(i, r)| {
-                        let key = r.id;
-                        let release = *r;
+                        let key = r.id.clone();
+                        let release = r.clone();
                         let date = if r.date.is_empty() {
                             self.tr(Text::LibraryUnknown)
                         } else {
-                            r.date
+                            r.date.as_str()
                         };
                         let summary = format!("{} · {} · {} · {date}", r.title, r.serial, r.region);
                         div()
@@ -171,10 +238,7 @@ impl Desktop {
                                 Text::LibrarySelectRelease,
                                 false,
                                 cx,
-                                move |v, _, cx| {
-                                    v.library.close_editor();
-                                    v.library_write(cx, move |s| metadata::select(s, id, key));
-                                },
+                                move |v, _, cx| v.select_release(id, key.clone(), cx),
                             ))
                             .child(self.library_button(
                                 ("lib-edition-cover", i),
@@ -182,7 +246,7 @@ impl Desktop {
                                 false,
                                 cx,
                                 move |v, _, cx| {
-                                    v.fetch_cover_editions(vec![id], Some(release), cx);
+                                    v.fetch_cover_editions(vec![id], Some(release.clone()), cx);
                                 },
                             ))
                     }));
@@ -363,13 +427,22 @@ impl Desktop {
                     })
                 }),
             )
-            .child(self.library_button(
-                "lib-refresh",
-                Text::LibraryRefresh,
-                false,
-                cx,
-                move |v, _, cx| v.library_write(cx, move |s| metadata::refresh(s, id)),
-            ))
+            .when_else(
+                matches!(
+                    self.library.metadata_lookups.get(&id),
+                    Some(MetadataLookup::Fetching)
+                ),
+                |s| s.child(label(&p, self.tr(Text::LibraryFetchingMetadata))),
+                |s| {
+                    s.child(self.library_button(
+                        "lib-refresh",
+                        Text::LibraryRefresh,
+                        false,
+                        cx,
+                        move |v, window, cx| v.fetch_metadata(id, window, cx),
+                    ))
+                },
+            )
             .child(self.library_button(
                 "lib-match",
                 Text::LibraryMatch,
@@ -377,7 +450,15 @@ impl Desktop {
                 cx,
                 move |v, w, cx| v.edit_library(Edit::Match(id), String::new(), w, cx),
             ));
-        summary.child(edit_controls)
+        summary = summary.child(edit_controls);
+        match self.library.metadata_lookups.get(&id) {
+            Some(MetadataLookup::Finished(text)) => summary.child(label(&p, self.tr(*text))),
+            Some(MetadataLookup::Failed(error)) => summary.child(label(
+                &p,
+                format!("{} {error}", self.tr(Text::LibraryMetadataError)),
+            )),
+            _ => summary,
+        }
     }
 
     fn locations_card(&self, entry: &Entry, cx: &Context<Self>) -> Div {
@@ -602,8 +683,26 @@ impl Desktop {
         body
     }
 
+    fn cover_preferences_changed(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = &self.library.cover {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.library.auto_attempted.clear();
+        self.save_preferences();
+        self.auto_covers(cx);
+        cx.notify();
+    }
+
     pub(super) fn cover_settings(&self, cx: &Context<Self>) -> Div {
+        use covers::Provider;
         let p = self.themes.active().palette;
+        let provider = self.preferences.library.cover_provider;
+        let choices = [
+            (Provider::Libretro, Text::LibraryLibretro),
+            (Provider::ScreenScraper, Text::LibraryScreenScraper),
+            (Provider::Igdb, Text::LibraryIgdb),
+            (Provider::Custom, Text::LibraryCustomCoverSource),
+        ];
         let mut block = card(&p)
             .p_4()
             .gap_3()
@@ -619,39 +718,61 @@ impl Desktop {
                 },
             ))
             .child(self.tr(Text::LibraryCoverSource))
-            .child(label(&p, self.preferences.library.cover_template.clone()))
-            .child(self.library_button(
-                "lib-template",
-                Text::LibraryTemplate,
-                false,
-                cx,
-                |v, w, cx| {
-                    v.edit_library(
-                        Edit::Source,
-                        v.preferences.library.cover_template.clone(),
-                        w,
-                        cx,
-                    );
-                },
-            ))
-            .child(self.library_button(
-                "lib-auto",
-                Text::LibraryAutoCovers,
-                self.preferences.library.auto_covers,
-                cx,
-                |v, _, cx| {
-                    v.preferences.library.auto_covers = !v.preferences.library.auto_covers;
-                    if !v.preferences.library.auto_covers
-                        && let Some(cancel) = &v.library.cover
-                    {
-                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    v.library.auto_attempted.clear();
-                    v.save_preferences();
-                    v.auto_covers(cx);
-                    cx.notify();
-                },
-            ));
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(choices.map(|(choice, name)| {
+                        self.library_button(
+                            name.id(),
+                            name,
+                            choice == provider,
+                            cx,
+                            move |v, w, cx| {
+                                if v.preferences.library.cover_provider != choice {
+                                    v.library.close_editor();
+                                    w.focus(&v.focus, cx);
+                                    v.preferences.library.cover_provider = choice;
+                                    v.cover_preferences_changed(cx);
+                                }
+                            },
+                        )
+                    })),
+            );
+        block = match provider {
+            Provider::Custom => block
+                .child(label(&p, self.preferences.library.cover_template.clone()))
+                .child(self.library_button(
+                    "lib-template",
+                    Text::LibraryTemplate,
+                    false,
+                    cx,
+                    |v, w, cx| {
+                        v.edit_library(
+                            Edit::Source,
+                            v.preferences.library.cover_template.clone(),
+                            w,
+                            cx,
+                        );
+                    },
+                )),
+            Provider::ScreenScraper => {
+                block.child(label(&p, self.tr(Text::LibraryScreenScraperCredentials)))
+            }
+            Provider::Igdb => block.child(label(&p, self.tr(Text::LibraryIgdbCredentials))),
+            Provider::Libretro => block,
+        };
+        block = block.child(self.library_button(
+            "lib-auto",
+            Text::LibraryAutoCovers,
+            self.preferences.library.auto_covers,
+            cx,
+            |v, _, cx| {
+                v.preferences.library.auto_covers = !v.preferences.library.auto_covers;
+                v.cover_preferences_changed(cx);
+            },
+        ));
         if self.library.editor.is_some() {
             block = block.child(self.library_editor(cx));
         }

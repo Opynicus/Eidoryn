@@ -24,18 +24,26 @@ A second check read six locally supplied images through the actual PS1 probe. Th
 | Resident Evil 2, disc 2 CHD | SLUS-00592 | Missing |
 | Tekken 3, CUE | SLUS-00402 | Missing |
 
+## On-demand refresh
+
+**Fetch from Wikidata** queries the current release by disc serial. Successful responses and ambiguous candidates are stored in the user's SQLite library. Tests cover reopening the library offline, a slow response arriving after a newer request, a manual correction during a lookup, and preserving existing data on a miss or network failure. A live query for the US Crash Bandicoot serial returned its title and release date of 1996-09-09.
+
 ## Covers
 
-The optional HTTPS template follows the PSX Covers project's documented serial-based downloader. Its README describes personal downloader use. It provides no general redistribution grant for the artwork. Eidoryn ships the template with network retrieval disabled by default; cover files enter the user's cache on request. The metadata snapshot uses Wikidata independently. [PSX Covers downloader and coverage](https://github.com/xlenore/psx-covers/blob/main/README.md)
+Import and browsing work offline. **Get cover** contacts the selected provider. **Fetch missing covers automatically** enables background retrieval. Both paths use the same cache. The first Libretro lookup downloads the upstream PS1 Redump DAT and indexes playlist names by serial and region in the user's SQLite database. The index is refreshed on demand after 30 days. A unique matching playlist name identifies the regional front cover in Libretro's official PlayStation thumbnail repository. [Libretro catalog](https://github.com/libretro/libretro-database/tree/master/metadat/redump) · [Libretro thumbnails](https://github.com/libretro-thumbnails/Sony_-_PlayStation)
 
-Tests verified JPEG and PNG decoding, thumbnail dimensions, atomic replacement, local-image precedence, cross-region cover selection, late downloads overtaken by local selection or reset, recovery of a missing thumbnail, 24-hour 404 caching, host-wide HTTP 429 backoff, disconnected transport, damaged data, cancellation and compressed-byte/decoded-pixel limits. The controlled loopback server returned a real HTTP 429 and the cache suppressed the second request. An opt-in HTTPS smoke test downloaded and decoded the default source's SCUS-94900 JPEG. This is a one-image availability sample.
+ScreenScraper uses the PS1 serial and regional front-cover media. It requires developer credentials and the account may need authorization for serial-only requests. IGDB uses a catalog title, an exact PS1 match and an explicitly regional cover. It requires a client ID and access token. The custom HTTPS template accepts a serial placeholder and supports existing PSX Covers settings. [ScreenScraper API](https://www.screenscraper.fr/webapi2.php) · [IGDB API](https://api-docs.igdb.com/) · [PSX Covers downloader](https://github.com/xlenore/psx-covers/blob/main/README.md)
+
+Tests verified regional and ambiguous matches, JPEG and PNG decoding, atomic replacement, manual cover precedence, offline thumbnail recovery, cancellation, response limits, negative caching and host-wide backoff. Live Libretro validation downloaded the catalog and a PNG into a temporary user library, then checked the original and its generated thumbnail. ScreenScraper and IGDB were tested with synthetic responses. Live validation for those two services requires credentials.
 
 ```sh
 cargo test --locked --lib --all-features library::metadata::
 cargo test --locked --lib --all-features library::covers::
 cargo test --locked --lib --all-features local_ps1_image_sample -- --ignored --nocapture
 cargo test --locked --lib --all-features loopback_http_response -- --ignored
+cargo test --locked --lib --all-features live_wikidata_serial_metadata -- --ignored
+cargo test --locked --lib --all-features live_libretro_cover_smoke -- --ignored
 cargo test --locked --lib --all-features live_psx_covers_smoke -- --ignored
 ```
 
-The local image sample requires the files named in the test under `tests/`. The last two commands require socket access. Live inventory and availability outside the sampled releases and artwork have not been measured.
+The local disc test requires the images named in its fixture under `tests/`. The loopback test requires a local socket. The three live tests require internet access and sample individual releases.

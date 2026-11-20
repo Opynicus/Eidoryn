@@ -203,7 +203,12 @@ fn library_edit_title_survives_refresh_and_can_restore_automatic_title(cx: &mut 
     press_keys(cx, "ctrl-a");
     cx.simulate_input("My release");
     click_control(cx, "lib-save-edit");
+    assert!(view.read_with(cx, |v, _| v.library.metadata_lookups.is_empty()));
     click_control(cx, "lib-refresh");
+    assert!(view.read_with(cx, |v, _| matches!(
+        v.library.metadata_lookups.get(&1),
+        Some(MetadataLookup::Finished(Text::LibraryMetadataNoSerial))
+    )));
     assert_eq!(
         view.read_with(cx, |v, _| v.library.entries[0].title.clone()),
         "My release"
@@ -214,6 +219,49 @@ fn library_edit_title_survives_refresh_and_can_restore_automatic_title(cx: &mut 
         view.read_with(cx, |v, _| v.library.entries[0].title.clone()),
         "Original"
     );
+}
+
+#[gpui::test]
+fn cover_settings_persist_provider_and_keep_custom_template(cx: &mut TestAppContext) {
+    use eidoryn_psx::{library::covers::Provider, preferences::Preferences};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let settings = tmp.path().join("preferences.json");
+    let db = Library::open(&tmp.path().join("library.db")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    view.update(cx, |v, _| {
+        v.preferences_path = Some(settings.clone());
+        v.library = Workspace::new(Some(db));
+    });
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    cx.run_until_parked();
+    click_control(cx, "nav-library");
+    click_control(cx, "lib-settings");
+    assert_eq!(
+        view.read_with(cx, |v, _| v.preferences.library.cover_provider),
+        Provider::Libretro,
+    );
+    assert!(cx.debug_bounds("lib-template").is_none());
+    click_control(cx, Text::LibraryCustomCoverSource.id());
+    click_control(cx, "lib-template");
+    press_keys(cx, "ctrl-a");
+    let template = "https://art.example/${serial}.png";
+    cx.simulate_input(template);
+    view.update(cx, Desktop::reload_library);
+    cx.run_until_parked();
+    click_control(cx, "lib-save-edit");
+    for (label, provider) in [
+        (Text::LibraryScreenScraper, Provider::ScreenScraper),
+        (Text::LibraryIgdb, Provider::Igdb),
+        (Text::LibraryLibretro, Provider::Libretro),
+    ] {
+        click_control(cx, label.id());
+        let saved = Preferences::load(&settings).unwrap().library;
+        assert_eq!(saved.cover_provider, provider);
+        assert_eq!(saved.cover_template, template);
+        assert!(!saved.auto_covers);
+        assert!(cx.debug_bounds("lib-template").is_none());
+    }
 }
 
 #[gpui::test]

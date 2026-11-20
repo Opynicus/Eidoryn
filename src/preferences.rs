@@ -2,6 +2,7 @@
 use crate::{
     i18n::Language,
     keybindings::KeyBindings,
+    library::covers::{DEFAULT_TEMPLATE, Provider},
     systems::ps1::{
         bus::BIOS_SIZE,
         gpu::{AntiAliasing, ColorDepth, RenderScale, RendererMode},
@@ -26,20 +27,48 @@ pub struct RecentDisc {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "SavedLibraryPreferences")]
 pub struct LibraryPreferences {
     pub list: bool,
     pub auto_covers: bool,
+    pub cover_provider: Provider,
     pub cover_template: String,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct SavedLibraryPreferences {
+    list: bool,
+    auto_covers: bool,
+    cover_provider: Option<Provider>,
+    cover_template: Option<String>,
+}
+
+impl From<SavedLibraryPreferences> for LibraryPreferences {
+    fn from(saved: SavedLibraryPreferences) -> Self {
+        let template = saved
+            .cover_template
+            .unwrap_or_else(|| DEFAULT_TEMPLATE.to_owned());
+        // Before providers were selectable, a non-default template was a user choice.
+        let provider = saved
+            .cover_provider
+            .unwrap_or(if template == DEFAULT_TEMPLATE {
+                Provider::Libretro
+            } else {
+                Provider::Custom
+            });
+        Self {
+            list: saved.list,
+            auto_covers: saved.auto_covers,
+            cover_provider: provider,
+            cover_template: template,
+        }
+    }
 }
 
 impl Default for LibraryPreferences {
     fn default() -> Self {
-        Self {
-            list: false,
-            auto_covers: false,
-            cover_template: crate::library::covers::DEFAULT_TEMPLATE.to_owned(),
-        }
+        SavedLibraryPreferences::default().into()
     }
 }
 
@@ -261,6 +290,35 @@ pub fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cover_provider_migration_preserves_existing_custom_templates() {
+        let custom = "https://art.example/${serial}.png";
+        for (template, expected) in [
+            (DEFAULT_TEMPLATE, Provider::Libretro),
+            (custom, Provider::Custom),
+        ] {
+            let saved = serde_json::json!({"list": true, "cover_template": template});
+            let migrated: LibraryPreferences = serde_json::from_value(saved).unwrap();
+            assert!(migrated.list);
+            assert_eq!(migrated.cover_provider, expected);
+            assert_eq!(migrated.cover_template, template);
+        }
+        assert_eq!(
+            LibraryPreferences::default().cover_provider,
+            Provider::Libretro
+        );
+        let selected = LibraryPreferences {
+            cover_provider: Provider::Igdb,
+            cover_template: custom.to_owned(),
+            ..Default::default()
+        };
+        let saved = serde_json::to_value(&selected).unwrap();
+        assert_eq!(
+            serde_json::from_value::<LibraryPreferences>(saved).unwrap(),
+            selected
+        );
+    }
 
     #[test]
     fn unavailable_language_survives_loading_and_saving_other_preferences() {

@@ -20,7 +20,7 @@ use eidoryn_psx::{
 use gpui::{Context, Div, Entity, Focusable, Window, div, prelude::*, px, rgb, uniform_list};
 use std::{
     cmp::Ordering,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -133,6 +133,13 @@ enum Confirm {
     Clear(i64),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum MetadataLookup {
+    Fetching,
+    Finished(Text),
+    Failed(String),
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "Independent view, scan and asynchronous refresh states"
@@ -167,6 +174,7 @@ pub(super) struct Workspace {
     editor: Option<Editor>,
     matches: Vec<Release>,
     match_generation: u64,
+    metadata_lookups: HashMap<i64, MetadataLookup>,
     confirmation: Option<Confirm>,
     settings: bool,
 }
@@ -203,6 +211,7 @@ impl Workspace {
             editor: None,
             matches: vec![],
             match_generation: 0,
+            metadata_lookups: HashMap::new(),
             confirmation: None,
             settings: false,
         }

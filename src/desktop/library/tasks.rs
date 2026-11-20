@@ -210,11 +210,8 @@ impl Desktop {
                         v.library.loaded = true;
                         v.library.entries = entries;
                         v.library.roots = roots;
-                        if !v
-                            .library
-                            .entries
-                            .iter()
-                            .any(|e| Some(e.game.id) == v.library.selected)
+                        if let Some(selected) = v.library.selected
+                            && !v.library.entries.iter().any(|e| e.game.id == selected)
                         {
                             v.library.selected = None;
                             v.library.details = false;
@@ -499,6 +496,7 @@ impl Desktop {
         };
         let cancel = Arc::new(AtomicBool::new(false));
         self.library.cover = Some(cancel.clone());
+        let provider = self.preferences.library.cover_provider;
         let template = self.preferences.library.cover_template.clone();
         cx.spawn(async move |this, cx| {
             let errors = cx
@@ -510,12 +508,13 @@ impl Desktop {
                             break;
                         }
                         let result = match &edition {
-                            Some(release) => {
-                                covers::fetch_release(&store, id, &template, release, &cancel)
-                            }
-                            None => covers::fetch(&store, id, &template, &cancel),
+                            Some(release) => covers::fetch_release(
+                                &store, id, provider, &template, release, &cancel,
+                            ),
+                            None => covers::fetch(&store, id, provider, &template, &cancel),
                         };
-                        if let Err(error) = result
+                        if !cancel.load(Ordering::Relaxed)
+                            && let Err(error) = result
                             && !errors.contains(&error)
                             && errors.len() < 8
                         {

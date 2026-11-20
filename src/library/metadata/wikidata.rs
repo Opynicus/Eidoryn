@@ -1,0 +1,310 @@
+//! Query the source catalog for one identified PS1 edition on explicit request.
+use super::{Release, valid_date};
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Read,
+    time::Duration,
+};
+
+const ENDPOINT: &str = "https://query.wikidata.org/sparql";
+const MAX_RESPONSE: u64 = 1024 * 1024;
+
+// The serial and all substitutions below come from checked identifiers and fixed tables.
+// Start with the indexed P2606 literal. Work-level platform alone is ambiguous for ports.
+const QUERY: &str = r#"
+SELECT DISTINCT ?game ?title ?local ?alias ?date ?precision ?firstDate ?firstPrecision WHERE {
+  ?game wdt:P2606 "$SERIAL"; wdt:P400 wd:Q10677; p:P2606 ?id; rdfs:label ?title.
+  FILTER(LANG(?title) = "en")
+  ?id ps:P2606 "$SERIAL"; a wikibase:BestRank.
+  FILTER NOT EXISTS { ?id pq:P400 ?foreign. FILTER(?foreign != wd:Q10677) }
+  FILTER(EXISTS { ?id pq:P400 wd:Q10677 } || ?game = $REVIEWED ||
+         NOT EXISTS { ?game wdt:P400 ?otherPlatform. FILTER(?otherPlatform != wd:Q10677) })
+  OPTIONAL { ?game rdfs:label ?local. FILTER(LANG(?local) = "ja") }
+  OPTIONAL { ?game skos:altLabel ?alias. FILTER(LANG(?alias) = "en") }
+  OPTIONAL {
+    ?game p:P577 ?edition. ?edition pq:P291 ?place; psv:P577 ?time.
+    FILTER(?place IN ($PLACES))
+    FILTER NOT EXISTS { ?edition wikibase:rank wikibase:DeprecatedRank }
+    FILTER(EXISTS { ?edition pq:P400 wd:Q10677 } ||
+           (NOT EXISTS { ?edition pq:P400 ?p } &&
+            (?game = wd:Q719176 ||
+             NOT EXISTS { ?game wdt:P400 ?other. FILTER(?other != wd:Q10677) })))
+    FILTER NOT EXISTS {
+      ?game wdt:P2606 ?otherSerial.
+      FILTER(?otherSerial != "$SERIAL" && REGEX(?otherSerial, "$TERRITORY"))
+    }
+    ?time wikibase:timeValue ?date; wikibase:timePrecision ?precision.
+  }
+  OPTIONAL {
+    ?game p:P577 ?first. ?first psv:P577 ?firstTime.
+    FILTER NOT EXISTS { ?first wikibase:rank wikibase:DeprecatedRank }
+    FILTER NOT EXISTS { ?first pq:P291 ?firstPlace }
+    FILTER NOT EXISTS { ?first pq:P400 ?firstPlatform }
+    FILTER NOT EXISTS { ?game wdt:P400 ?platform. FILTER(?platform != wd:Q10677) }
+    FILTER NOT EXISTS { ?game p:P577 ?different. FILTER(?different != ?first) }
+    ?firstTime wikibase:timeValue ?firstDate; wikibase:timePrecision ?firstPrecision.
+  }
+}
+"#;
+
+struct Territory {
+    region: &'static str,
+    places: &'static str,
+    serial_pattern: &'static str,
+}
+
+fn territory(serial: &str) -> Result<Territory, String> {
+    let Some((prefix, number)) = serial.split_once('-') else {
+        return Err("Expected a PS1 serial such as SLUS-00067".into());
+    };
+    if number.len() != 5 || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Expected a PS1 serial such as SLUS-00067".into());
+    }
+    let (region, places, serial_pattern) = match prefix {
+        "SCUS" | "SLUS" => ("USA", "wd:Q30, wd:Q49", "^(SCUS|SLUS)-"),
+        "SCES" | "SLES" => ("Europe", "wd:Q46", "^(SCES|SLES)-"),
+        "SCPS" | "SLPS" | "SLPM" | "SIPS" if !serial.starts_with("SCPS-45") => {
+            ("Japan", "wd:Q17", "^(SCPS|SLPS|SLPM|SIPS)-")
+        }
+        _ => return Err("Unknown PS1 release territory for this serial".into()),
+    };
+    Ok(Territory {
+        region,
+        places,
+        serial_pattern,
+    })
+}
+
+fn query(serial: &str, territory: &Territory) -> String {
+    // Individually reviewed unqualified identifiers from the bundled catalog generator.
+    let reviewed = match serial {
+        "SCES-00344" | "SCPS-10031" | "SCUS-94900" => "wd:Q719176",
+        "SCES-00001" | "SLPS-00001" | "SCUS-94300" => "wd:Q15087581",
+        "SLPS-01776" => "wd:Q7642406",
+        _ => "wd:Q0", // no reviewed item
+    };
+    QUERY
+        .replace("$SERIAL", serial)
+        .replace("$PLACES", territory.places)
+        .replace("$TERRITORY", territory.serial_pattern)
+        .replace("$REVIEWED", reviewed)
+}
+
+#[derive(Deserialize)]
+struct Value {
+    value: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Row {
+    game: Value,
+    title: Value,
+    local: Option<Value>,
+    alias: Option<Value>,
+    date: Option<Value>,
+    precision: Option<Value>,
+    first_date: Option<Value>,
+    first_precision: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct Response {
+    results: Results,
+}
+
+#[derive(Deserialize)]
+struct Results {
+    bindings: Vec<Row>,
+}
+
+fn date(value: Option<&Value>, precision: Option<&Value>) -> Option<String> {
+    let width = match precision?.value.as_str() {
+        "9" => 4,
+        "10" => 7,
+        "11" => 10,
+        _ => return None,
+    };
+    let date = value?.value.trim_start_matches('+').get(..width)?;
+    valid_date(date).then(|| date.to_owned())
+}
+
+#[derive(Default)]
+struct Edition {
+    title: String,
+    aliases: BTreeSet<String>,
+    dates: BTreeSet<String>,
+    work_date: String,
+}
+
+fn parse(bytes: &[u8], serial: &str, region: &str) -> Result<Vec<Release>, String> {
+    let response: Response =
+        serde_json::from_slice(bytes).map_err(|e| format!("Invalid Wikidata response: {e}"))?;
+    let mut editions: BTreeMap<String, Edition> = BTreeMap::new();
+    for row in response.results.bindings {
+        let qid = row
+            .game
+            .value
+            .strip_prefix("http://www.wikidata.org/entity/")
+            .or_else(|| {
+                row.game
+                    .value
+                    .strip_prefix("https://www.wikidata.org/entity/")
+            })
+            .filter(|id| {
+                id.strip_prefix('Q')
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .ok_or("Invalid Wikidata item identifier")?;
+        if row.title.value.trim().is_empty() {
+            return Err("Missing Wikidata title".into());
+        }
+        let edition = editions.entry(qid.to_owned()).or_default();
+        let english = row.title.value;
+        edition.title = if region == "Japan" {
+            row.local.map_or_else(|| english.clone(), |l| l.value)
+        } else {
+            english.clone()
+        };
+        edition.aliases.insert(english);
+        if let Some(alias) = row.alias {
+            edition.aliases.insert(alias.value);
+        }
+        if let Some(date) = date(row.date.as_ref(), row.precision.as_ref()) {
+            edition.dates.insert(date);
+        }
+        if let Some(first) = date(row.first_date.as_ref(), row.first_precision.as_ref()) {
+            edition.work_date = first;
+        }
+    }
+    let mut releases = Vec::new();
+    for (qid, mut edition) in editions {
+        edition.aliases.remove(&edition.title);
+        let aliases = edition.aliases.into_iter().collect::<Vec<_>>().join("|");
+        if edition.dates.is_empty() {
+            edition.dates.insert(String::new());
+        }
+        let conflict = edition.dates.len() > 1;
+        for date in edition.dates {
+            let id = if conflict {
+                format!("{qid}/{serial}/{date}")
+            } else {
+                format!("{qid}/{serial}")
+            };
+            releases.push(Release {
+                id,
+                serial: serial.to_owned(),
+                region: region.to_owned(),
+                title: edition.title.clone(),
+                date,
+                aliases: aliases.clone(),
+                work_date: edition.work_date.clone(),
+            });
+        }
+    }
+    Ok(releases)
+}
+
+pub(super) fn fetch(serial: &str) -> Result<Vec<Release>, String> {
+    let territory = territory(serial)?;
+    let response = Client::builder()
+        .https_only(true)
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(25))
+        .user_agent(concat!(
+            "Eidoryn/",
+            env!("CARGO_PKG_VERSION"),
+            " (https://github.com/Opynicus/Eidoryn)"
+        ))
+        .build()
+        .and_then(|client| {
+            client
+                .get(ENDPOINT)
+                .query(&[
+                    ("query", query(serial, &territory).as_str()),
+                    ("format", "json"),
+                ])
+                .header("Accept", "application/sparql-results+json")
+                .send()
+        })
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|e| format!("Wikidata request failed: {}", e.without_url()))?;
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_RESPONSE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Wikidata download failed: {e}"))?;
+    if bytes.len() as u64 > MAX_RESPONSE {
+        return Err("Wikidata response exceeded 1 MiB".into());
+    }
+    parse(&bytes, serial, territory.region)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn filters_to_valid_identifiers_before_network_access() {
+        for invalid in [
+            "SCUS-94900; DROP",
+            "PS2",
+            "SCPS-45001",
+            "SLES-12３45",
+            "/tmp/test.iso",
+        ] {
+            assert!(territory(invalid).is_err(), "{invalid}");
+        }
+        let t = territory("SCUS-94900").unwrap();
+        assert_eq!(t.region, "USA");
+        let text = query("SCUS-94900", &t);
+        assert!(text.contains("wdt:P2606 \"SCUS-94900\""));
+        assert!(!text.contains("$SERIAL"));
+    }
+
+    #[test]
+    fn preserves_source_precision_and_conflicting_editions() {
+        fn bind(value: &str) -> serde_json::Value {
+            json!({"value":value})
+        }
+        let mut a = json!({"game":bind("http://www.wikidata.org/entity/Q1"),
+                          "title":bind("Example"),"alias":bind("Demo"),"local":bind("例"),
+                          "date":bind("1999-01-01T00:00:00Z"),"precision":bind("9")});
+        let mut rows = vec![a.clone()];
+        a["date"] = bind("2000-02-01T00:00:00Z");
+        a["precision"] = bind("10");
+        rows.push(a);
+        let result = parse(
+            json!({"results":{"bindings":rows}}).to_string().as_bytes(),
+            "SLPS-00001",
+            "Japan",
+        )
+        .unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].date, "1999");
+        assert_eq!(result[1].id, "Q1/SLPS-00001/2000-02");
+        assert_eq!(result[0].title, "例");
+        assert_eq!(result[0].aliases, "Demo|Example");
+        assert!(parse(b"{}", "SLUS-12345", "USA").is_err());
+        assert!(
+            parse(br#"{"results":{"bindings":[]}}"#, "SLUS-12345", "USA")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the public Wikidata Query Service"]
+    fn live_wikidata_serial_metadata() {
+        let releases = fetch("SCUS-94900").unwrap();
+        let crash = releases
+            .iter()
+            .find(|r| r.id == "Q719176/SCUS-94900")
+            .unwrap();
+        assert_eq!(crash.title, "Crash Bandicoot");
+        assert_eq!(crash.date, "1996-09-09");
+    }
+}
