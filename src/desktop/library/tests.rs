@@ -438,7 +438,10 @@ fn library_folder_import_confirms_recursion_without_starting_game(cx: &mut TestA
         }
     }
     assert_eq!(view.read_with(cx, |v, _| v.library.entries.len()), 1);
-    assert_eq!(library.roots().unwrap()[0].path, folder);
+    assert_eq!(
+        library.roots().unwrap()[0].path,
+        folder.canonicalize().unwrap()
+    );
     assert!(
         view.read_with(cx, |v, _| v.preferences.recent_discs.is_empty()
             && v.snapshot.media_revision == 0)
@@ -862,7 +865,7 @@ fn dropping_a_single_image_on_the_library_imports_without_booting(cx: &mut TestA
     cx.run_until_parked();
     let games = store.games().unwrap();
     assert_eq!(games.len(), 1);
-    assert_eq!(games[0].locations[0].path, path);
+    assert_eq!(games[0].locations[0].path, path.canonicalize().unwrap());
     assert!(view.read_with(cx, |v, _| v.page == WorkspacePage::Library
         && v.snapshot.media_revision == 0
         && v.library.pending_bios.is_none()));

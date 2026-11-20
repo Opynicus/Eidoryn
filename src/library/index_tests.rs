@@ -29,7 +29,7 @@ impl Fixture {
     fn image(&self, name: &str, byte: u8) -> PathBuf {
         let path = self.media.join(name);
         fs::write(&path, [byte; 2048 * 5]).unwrap();
-        path
+        path.canonicalize().unwrap()
     }
     fn scan(&self) -> super::ScanReport {
         self.db
@@ -117,7 +117,9 @@ fn verified_images_keep_their_history_across_timestamp_changes_and_moves() {
     let game = f.db.associate_opened(&path, &id, true).unwrap();
     f.session(game, 95);
     let location = f.db.games().unwrap()[0].locations[0].id;
-    File::open(&path)
+    File::options()
+        .write(true)
+        .open(&path)
         .unwrap()
         .set_modified(SystemTime::now() + Duration::from_secs(5))
         .unwrap();
@@ -131,6 +133,7 @@ fn verified_images_keep_their_history_across_timestamp_changes_and_moves() {
     assert!(same[0].locations[0].fast_boot);
     let next = f.media.join("moved.iso");
     fs::rename(path, &next).unwrap();
+    let next = next.canonicalize().unwrap();
     f.scan();
     let moved = f.db.games().unwrap();
     assert_eq!(moved.len(), 1);
@@ -181,7 +184,9 @@ fn rename_offline_remove_and_explicit_readd_preserve_game() {
     let unplugged = f.media.with_extension("offline");
     fs::rename(&f.media, &unplugged).unwrap();
     assert_eq!(f.scan().failed, 1);
-    assert!(!f.db.roots().unwrap()[0].available);
+    let roots = f.db.roots().unwrap();
+    assert_eq!(roots.len(), 1);
+    assert!(!roots[0].available);
     assert!(!f.db.games().unwrap()[0].locations[0].available);
     fs::rename(unplugged, &f.media).unwrap();
     assert_eq!(f.scan().existing, 1);
@@ -194,6 +199,27 @@ fn rename_offline_remove_and_explicit_readd_preserve_game() {
         .unwrap();
     let restored = reloaded.games().unwrap().remove(0);
     assert_eq!((restored.id, restored.seconds), (g.id, 67));
+}
+
+#[test]
+#[cfg(unix)]
+fn offline_scan_through_a_directory_alias_updates_the_registered_root() {
+    let f = Fixture::new();
+    let alias = f.root.path().join("alias");
+    std::os::unix::fs::symlink(f.root.path(), &alias).unwrap();
+    let root = alias.join("media");
+    f.image("Disc.iso", 1);
+    let scan = || {
+        f.db.scan_directory(&root, false, &AtomicBool::default(), |_| {})
+            .unwrap()
+    };
+    assert_eq!(scan().added, 1);
+    fs::rename(&f.media, f.root.path().join("offline")).unwrap();
+    assert_eq!(scan().failed, 1);
+    let roots = f.db.roots().unwrap();
+    assert_eq!(roots.len(), 1);
+    assert!(!roots[0].available);
+    assert!(!f.db.games().unwrap()[0].locations[0].available);
 }
 
 #[test]
@@ -220,7 +246,7 @@ fn relocate_after_rescan_retains_both_session_streams_and_original_metadata() {
     assert_eq!(games.len(), 1);
     assert_eq!((games[0].id, games[0].seconds), (original.id, 420));
     assert_eq!(games[0].locations.len(), 1);
-    assert_eq!(games[0].locations[0].path, moved);
+    assert_eq!(games[0].locations[0].path, moved.canonicalize().unwrap());
     assert_eq!(
         super::metadata::list(&f.db).unwrap()[&original.id]
             .title
@@ -311,7 +337,12 @@ fn confirming_copies_preserves_prior_hashes_if_a_replacement_keeps_its_timestamp
     f.db.associate_opened(&path, &identity, true).unwrap();
     let stamp = fs::metadata(&path).unwrap().modified().unwrap();
     fs::copy(&other.path, &path).unwrap();
-    File::open(&path).unwrap().set_modified(stamp).unwrap();
+    File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
     for (a, b) in [(original, other), (other, original)] {
         assert!(f.db.confirm_copy(a.id, b.id).is_err());
     }
@@ -386,7 +417,7 @@ fn finding_a_cue_after_its_track_hides_the_standalone_card() {
     assert_eq!(f.scan().added, 1);
     let shown = f.db.games().unwrap();
     assert_eq!(shown.len(), 1);
-    assert_eq!(shown[0].locations[0].path, cue);
+    assert_eq!(shown[0].locations[0].path, cue.canonicalize().unwrap());
     fs::remove_file(&cue).unwrap();
     f.scan();
     assert!(
@@ -855,7 +886,10 @@ fn parent_cue_claims_nested_bin_without_creating_a_second_game_or_scrape_jobs() 
     .unwrap();
     let report = f.scan();
     assert_eq!((report.added, report.failed, report.processed), (1, 0, 2));
-    assert_eq!(f.db.games().unwrap()[0].locations[0].path, cue);
+    assert_eq!(
+        f.db.games().unwrap()[0].locations[0].path,
+        cue.canonicalize().unwrap()
+    );
     let counts: (i64, i64) =
         f.db.connect()
             .unwrap()
@@ -930,7 +964,7 @@ fn relocating_after_missing_file_check_keeps_the_new_path_available() {
     assert!(relocated);
     let games = f.db.games().unwrap();
     let location = &games[0].locations[0];
-    assert_eq!(location.path, new);
+    assert_eq!(location.path, new.canonicalize().unwrap());
     assert!(location.available);
 }
 

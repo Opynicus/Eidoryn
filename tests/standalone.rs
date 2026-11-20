@@ -1184,7 +1184,7 @@ fn library_disc_launch_shutdown_and_failed_switch_follow_runner_receipts() {
     let games = Library::open(&db).unwrap().games().unwrap();
     assert_eq!(games.len(), 1);
     assert!(games[0].last_played.is_some());
-    assert_eq!(games[0].locations[0].path, path);
+    assert_eq!(games[0].locations[0].path, path.canonicalize().unwrap());
 }
 
 /// Opt-in field check using the operator's multi-track CUE and CHD alongside

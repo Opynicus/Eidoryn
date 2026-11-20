@@ -49,6 +49,41 @@ fn ext(path: &Path, kind: &str) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case(kind))
 }
+
+fn scan_path(path: &Path) -> std::io::Result<PathBuf> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Ok(canonical);
+    }
+    let absolute = std::path::absolute(path)?;
+    // An unavailable image or directory must still match its stored path,
+    // including when the caller reached it through a symlink or a junction.
+    for parent in absolute.ancestors().skip(1) {
+        if let Ok(canonical) = parent.canonicalize()
+            && let Ok(suffix) = absolute.strip_prefix(parent)
+        {
+            return Ok(canonical.join(suffix));
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Even the drive or network share is offline. Keep the verbatim path
+        // form returned by Windows when the same volume was available.
+        use std::path::{Component, Prefix};
+        let mut parts = absolute.components();
+        if let Some(Component::Prefix(prefix)) = parts.next() {
+            let root = match prefix.kind() {
+                Prefix::Disk(drive) => PathBuf::from(format!(r"\\?\{}:\", char::from(drive))),
+                Prefix::UNC(server, share) => Path::new(r"\\?\UNC").join(server).join(share),
+                _ => return Ok(absolute),
+            };
+            if parts.next() == Some(Component::RootDir) {
+                return Ok(root.join(parts.as_path()));
+            }
+        }
+    }
+    Ok(absolute)
+}
+
 fn cue_references(cue: &Path, track: &Path) -> bool {
     DiscImage::cue_dependencies(cue).is_ok_and(|parts| {
         parts
@@ -409,7 +444,7 @@ impl Library {
         };
         let files = paths
             .iter()
-            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+            .map(|p| scan_path(p).unwrap_or_else(|_| p.clone()))
             .collect::<BTreeSet<_>>();
         scan.report.total = files.len();
         scan.files(&files, Mode::Explicit)
@@ -433,7 +468,7 @@ impl Library {
         cancel: &AtomicBool,
         progress: impl FnMut(&ScanProgress),
     ) -> IndexResult<ScanReport> {
-        let root = path.canonicalize().or_else(|_| std::path::absolute(path))?;
+        let root = scan_path(path)?;
         let key = path_key(&root);
         let mut scan = Scan {
             library: self,

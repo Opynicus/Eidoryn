@@ -1,2 +1,2 @@
-# The release catalog uses empty trailing TSV fields for unknown source values.
-src/library/metadata/ps1.tsv text eol=lf whitespace=-blank-at-eol
+# SQLx hashes query files byte for byte when checking its offline cache.
+*.sql text eol=lf
