@@ -108,6 +108,10 @@ impl Batch {
         cancel: &AtomicBool,
     ) -> Result<Prepared, ProviderError> {
         self.prepare_with(lib, id, mode, cancel, |serial| {
+            #[cfg(feature = "ui-tests")]
+            if let Some(responses) = &lib.scrape_responses {
+                return super::wikidata::recorded_response(responses.metadata.clone(), serial);
+            }
             super::lookup_release(serial, cancel)
         })
     }

@@ -357,7 +357,7 @@ impl Desktop {
                         cx,
                         move |v, w, cx| {
                             w.focus(&v.focus, cx);
-                            v.select_release(id, key.clone(), cx);
+                            v.select_release(id, key.clone(), w, cx);
                         },
                     ))
                     .child(

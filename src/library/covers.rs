@@ -377,7 +377,8 @@ fn fetch_edition(
             full: mode == Mode::Full,
             claim,
         },
-        CoverRequest::Missing | CoverRequest::Explicit => RemoteKind::Matching(Mode::Incremental),
+        CoverRequest::Missing => RemoteKind::Matching(Mode::Incremental),
+        CoverRequest::Explicit => RemoteKind::Matching(Mode::Full),
     };
     let art = Remote {
         serial,
@@ -390,6 +391,10 @@ fn fetch_edition(
         .then(|| SCREENSCRAPER_REQUESTS.acquire(cancel))
         .transpose()?;
     fetch_url(lib, id, art, &key, cancel, || {
+        #[cfg(feature = "ui-tests")]
+        if let Some(responses) = &lib.scrape_responses {
+            return Ok(Some(responses.cover.clone()));
+        }
         let client = transport::api().map_err(|e| e.to_string())?;
         let result = match provider {
             Provider::Libretro => libretro::resolve(lib, client, serial, region, cancel)?,

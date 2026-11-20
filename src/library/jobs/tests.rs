@@ -165,6 +165,83 @@ fn retry_deadline_and_deduplication_survive_reopen() {
 }
 
 #[test]
+fn full_refresh_can_fetch_serial_art_while_release_lookup_is_waiting() {
+    for provider in [
+        Provider::Libretro,
+        Provider::ScreenScraper,
+        Provider::Custom,
+        Provider::Igdb,
+    ] {
+        let (dir, lib) = library();
+        lib.connect()
+            .unwrap()
+            .execute(
+                "UPDATE game_metadata SET disc_serial='SLUS-00067',cache_cleared=1 WHERE game_id=1",
+                [],
+            )
+            .unwrap();
+        enqueue_games(&lib, &[1], Mode::Full, provider).unwrap();
+        let mut db = lib.connect().unwrap();
+        prepare_targets(&mut db, &[1], Mode::Full, provider, true).unwrap();
+        let metadata = claim(&mut db, "worker", Stage::Metadata, 1)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert!(
+            claim(&mut db, "worker", Stage::Cover, 1)
+                .unwrap()
+                .is_empty()
+        );
+        let tx = db.transaction().unwrap();
+        fail(
+            &tx,
+            &metadata,
+            &Failure {
+                code: "rate_limited",
+                message: "Release source unavailable",
+                retry: true,
+                deadline: Some(i64::MAX),
+            },
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            due_games(&lib).unwrap().is_empty(),
+            provider == Provider::Igdb
+        );
+        // Older versions left this dependency attached throughout metadata backoff.
+        db.execute(
+            "UPDATE scrape_jobs SET dependency=? WHERE job_type='cover'",
+            [metadata.id],
+        )
+        .unwrap();
+        drop(db);
+        drop(lib);
+        let reopened = Library::open(&dir.path().join("library.sqlite3")).unwrap();
+        enqueue_games(&reopened, &[1], Mode::Full, provider).unwrap();
+        let mut db = reopened.connect().unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT next_attempt_at FROM scrape_jobs WHERE id=?",
+                [metadata.id],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            i64::MAX
+        );
+        prepare_targets(&mut db, &[1], Mode::Full, provider, true).unwrap();
+        let art = claim(&mut db, "reopened", Stage::Cover, 1).unwrap();
+        if provider == Provider::Igdb {
+            assert!(art.is_empty(), "Title-based lookup needs release metadata");
+        } else {
+            assert_eq!(art.len(), 1, "{provider:?} can look up the disc by serial");
+            assert_eq!(art[0].mode, Mode::Full);
+            art[0].finish_cover(&db).unwrap();
+        }
+    }
+}
+
+#[test]
 fn sqlite_job_and_field_commit_survive_process_exit_together() {
     use std::process::Command;
     const CHILD: &str = "EIDORYN_TEST_JOB_CRASH_DIR";

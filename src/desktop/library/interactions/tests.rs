@@ -39,6 +39,135 @@ fn right_click(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
 }
 
+fn cleared_collection(
+    app: &mut TestAppContext,
+    metadata_status: http::StatusCode,
+) -> (TempDir, Entity<Desktop>, &mut VisualTestContext) {
+    use std::io::Cursor;
+    let (dir, view, cx) = collection(app, 2);
+    let lib = view.read_with(cx, |v, _| v.library.store.clone().unwrap());
+    lib.connect()
+        .unwrap()
+        .execute_batch(
+            "UPDATE game_metadata SET disc_serial=printf('SLUS-%05d', game_id), disc_region='USA';",
+        )
+        .unwrap();
+    lib.clear_metadata_cache(metadata::CacheScope::All).unwrap();
+    let rows = br#"{"results":{"bindings":[{"game":{"value":"https://www.wikidata.org/entity/Q1"},"title":{"value":"Recorded release"},"date":{"value":"+1998-05-01T00:00:00Z"},"precision":{"value":"11"}}]}}"#;
+    let mut png = Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(32, 32, image::Rgb([20, 60, 100]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let lib = lib.with_scrape_responses(
+        http::Response::builder()
+            .status(metadata_status)
+            .body(rows.to_vec())
+            .unwrap(),
+        http::Response::new(png.into_inner()),
+    );
+    view.update(cx, |v, cx| {
+        v.preferences.library.auto_covers = false;
+        v.preferences.library.scrape_new_games = false;
+        v.library = Workspace::new(Some(lib));
+        v.reload_library(cx);
+    });
+    cx.run_until_parked();
+    for selector in ["library-placeholder-1", "library-placeholder-2"] {
+        assert!(cx.debug_bounds(selector).is_some());
+    }
+    (dir, view, cx)
+}
+
+fn assert_card_shows_cover(view: &Entity<Desktop>, cx: &mut VisualTestContext, id: i64) {
+    let path = view.read_with(cx, |v, _| {
+        assert!(!v.preferences.library.auto_covers);
+        let card = v
+            .library
+            .entries
+            .iter()
+            .find(|entry| entry.game.id == id)
+            .unwrap();
+        let path = card
+            .thumbnail
+            .clone()
+            .expect("scraping should publish the thumbnail");
+        assert!(!card.cache_cleared);
+        assert_eq!(
+            card.serial.as_deref(),
+            Some(format!("SLUS-{id:05}").as_str())
+        );
+        assert!(v.library.thumbnails.iter().any(|(key, _)| key == &path));
+        path
+    });
+    assert_eq!(
+        image::open(path).unwrap().to_rgb8().get_pixel(0, 0).0,
+        [20, 60, 100]
+    );
+}
+
+#[gpui::test]
+fn card_and_details_scrapes_restore_only_the_selected_cover(app: &mut TestAppContext) {
+    let (_dir, view, cx) = cleared_collection(app, http::StatusCode::OK);
+    right_click(cx, "library-entry-2");
+    click_control(cx, "lib-card-scrape");
+    assert_card_shows_cover(&view, cx, 2);
+    assert!(cx.debug_bounds("library-placeholder-1").is_some());
+    click_control(cx, "library-entry-1");
+    click_control(cx, "lib-details");
+    click_control(cx, "lib-refresh");
+    click_control(cx, "lib-back");
+    assert_card_shows_cover(&view, cx, 1);
+    view.read_with(cx, |v, _| {
+        assert!(
+            v.library
+                .entries
+                .iter()
+                .all(|e| e.title == "Recorded release")
+        );
+    });
+}
+
+#[gpui::test]
+fn explicit_refreshes_show_covers_even_when_release_lookups_fail(app: &mut TestAppContext) {
+    let (_dir, view, cx) = cleared_collection(app, http::StatusCode::SERVICE_UNAVAILABLE);
+    right_click(cx, "library-entry-1");
+    click_control(cx, "lib-card-scrape");
+    assert_card_shows_cover(&view, cx, 1);
+    assert!(cx.debug_bounds("library-placeholder-2").is_some());
+    click_control(cx, "lib-refresh-all");
+    for id in [1, 2] {
+        assert_card_shows_cover(&view, cx, id);
+    }
+    view.read_with(cx, |v, _| {
+        assert!(v.library.entries.iter().all(|e| e.release_title.is_none()));
+    });
+}
+
+#[gpui::test]
+fn choosing_an_edition_restores_its_cover_with_automatic_art_disabled(app: &mut TestAppContext) {
+    let (_dir, view, cx) = cleared_collection(app, http::StatusCode::OK);
+    let store = view.read_with(cx, |v, _| v.library.store.clone().unwrap());
+    store
+        .connect()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date) VALUES
+            ('Q1/SLUS-00001','SLUS-00001','USA','First edition','1998','',''),
+            ('Q2/SLUS-00001','SLUS-00001','USA','Second edition','2000','','');",
+        )
+        .unwrap();
+    click_control(cx, "library-entry-1");
+    click_control(cx, "lib-details");
+    click_control(cx, "lib-match");
+    click_control(cx, "lib-match-1");
+    click_control(cx, "lib-back");
+    assert_card_shows_cover(&view, cx, 1);
+    view.read_with(cx, |v, _| {
+        let card = v.library.entries.iter().find(|e| e.game.id == 1).unwrap();
+        assert_eq!(card.title, "Second edition");
+    });
+}
+
 #[gpui::test]
 fn context_actions_target_the_right_clicked_game(cx: &mut TestAppContext) {
     let (_dir, view, cx) = collection(cx, 3);

@@ -6,11 +6,59 @@ use super::{
     tasks::{CoverRequest, Picker},
 };
 use eidoryn_psx::{
-    library::{Location, covers, metadata},
+    library::{
+        Library, Location, covers,
+        metadata::{self, RefreshOutcome},
+    },
     theme::Palette,
 };
 use gpui::{Context, Div, SharedString, Window, prelude::*, px, rgb};
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+enum ReleaseRequest {
+    Lookup,
+    Confirm(String),
+}
+
+struct ScrapeResult {
+    release: Result<RefreshOutcome, String>,
+    cover: Option<Result<String, String>>,
+}
+
+impl ReleaseRequest {
+    fn run(
+        self,
+        store: &Library,
+        id: i64,
+        provider: covers::Provider,
+        template: &str,
+        cancel: &AtomicBool,
+    ) -> ScrapeResult {
+        let release = match self {
+            Self::Lookup => metadata::refresh_online_cancellable(store, id, cancel),
+            Self::Confirm(key) => match metadata::select_cancellable(store, id, &key, cancel) {
+                Ok(()) => Ok(RefreshOutcome::Updated),
+                Err(error) => {
+                    return ScrapeResult {
+                        release: Err(error),
+                        cover: None,
+                    };
+                }
+            },
+        };
+        // Serial-based sources can still identify the cover when the release lookup misses.
+        let cover = match (&release, provider) {
+            (Ok(RefreshOutcome::NoSerial), _)
+            | (Ok(RefreshOutcome::Candidates), covers::Provider::Igdb) => None,
+            _ if cancel.load(Ordering::Relaxed) => None,
+            _ => Some(covers::fetch(store, id, provider, template, cancel)),
+        };
+        ScrapeResult { release, cover }
+    }
+}
 
 impl Desktop {
     pub(super) fn find_releases(&mut self, id: i64, query: String, cx: &mut Context<Self>) {
@@ -38,37 +86,54 @@ impl Desktop {
     }
 
     pub(super) fn fetch_metadata(&mut self, id: i64, window: &Window, cx: &mut Context<Self>) {
+        self.scrape_release_and_cover(id, ReleaseRequest::Lookup, window, cx);
+    }
+
+    pub(super) fn select_release(
+        &mut self,
+        id: i64,
+        release: String,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.library.close_editor();
+        self.scrape_release_and_cover(id, ReleaseRequest::Confirm(release), window, cx);
+    }
+
+    fn scrape_release_and_cover(
+        &mut self,
+        id: i64,
+        action: ReleaseRequest,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(store) = self.library.store.clone() else {
             return;
         };
-        if matches!(
-            self.library.metadata_lookups.get(&id),
-            Some(MetadataLookup::Fetching(_))
-        ) {
-            return;
+        if let Some(MetadataLookup::Fetching(previous)) = self.library.metadata_lookups.get(&id) {
+            match action {
+                ReleaseRequest::Lookup => return,
+                ReleaseRequest::Confirm(_) => previous.store(true, Ordering::Relaxed),
+            }
         }
         let generation = self.library.match_generation;
         let request = Arc::new(AtomicBool::new(false));
+        let provider = self.preferences.library.cover_provider;
+        let template = self.preferences.library.cover_template.clone();
         self.library
             .metadata_lookups
             .insert(id, MetadataLookup::Fetching(Arc::clone(&request)));
         cx.spawn_in(window, async move |this, cx| {
             let cancel = Arc::clone(&request);
-            let result = cx
+            let ScrapeResult { release, cover } = cx
                 .background_executor()
-                .spawn(async move { metadata::refresh_online_cancellable(&store, id, &cancel) })
+                .spawn(async move { action.run(&store, id, provider, &template, &cancel) })
                 .await;
             let _ = this.update_in(cx, |v, window, cx| {
-                use metadata::RefreshOutcome;
                 if !matches!(v.library.metadata_lookups.get(&id), Some(MetadataLookup::Fetching(current)) if Arc::ptr_eq(current, &request)) {
                     return;
                 }
-                let restored = matches!(result, Ok(RefreshOutcome::Updated))
-                    && v.library
-                        .entries
-                        .iter()
-                        .any(|e| e.game.id == id && e.cache_cleared);
-                let status = match result {
+                let status = match release {
                     Ok(RefreshOutcome::Candidates) => {
                         if v.page == crate::desktop::WorkspacePage::Library
                             && v.library.details
@@ -97,8 +162,20 @@ impl Desktop {
                     Err(error) => MetadataLookup::Failed(error),
                 };
                 v.library.metadata_lookups.insert(id, status);
-                if restored {
-                    v.library.auto_attempted.retain(|(game, _)| *game != id);
+                if let Some(cover) = cover {
+                    // Browsing should not immediately repeat this explicit request on a miss.
+                    if let Some(serial) = v.library.entries.iter().find(|e| e.game.id == id).and_then(|e| e.serial.as_ref()) {
+                        v.library.auto_attempted.insert((id, serial.clone()));
+                    }
+                    let message = match cover.as_deref() {
+                        Ok("not_found") => Some(v.tr(Text::LibraryNotFound).to_owned()),
+                        Ok("retry") => Some(v.tr(Text::LibraryCoverDeferred).to_owned()),
+                        Err(error) => Some(format!("{} {error}", v.tr(Text::LibraryCoverError))),
+                        _ => None,
+                    };
+                    if let Some(message) = message {
+                        v.notice = Some(message);
+                    }
                 }
                 v.update_library_games([id], cx);
                 cx.notify();
@@ -106,17 +183,6 @@ impl Desktop {
         })
         .detach();
         cx.notify();
-    }
-
-    pub(super) fn select_release(&mut self, id: i64, release: String, cx: &mut Context<Self>) {
-        self.library.close_editor();
-        if !matches!(
-            self.library.metadata_lookups.get(&id),
-            Some(MetadataLookup::Fetching(_))
-        ) {
-            self.library.metadata_lookups.remove(&id);
-        }
-        self.library_write(cx, move |s| metadata::select(s, id, &release));
     }
 
     pub(in crate::desktop) fn close_detail_dialog(&mut self) -> bool {

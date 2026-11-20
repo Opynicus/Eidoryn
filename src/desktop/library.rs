@@ -68,10 +68,11 @@ struct Entry {
 }
 
 impl Entry {
-    fn new(game: Game, metadata: Option<metadata::Metadata>) -> Self {
+    fn new(game: Game, mut metadata: Option<metadata::Metadata>) -> Self {
         let cache_cleared = metadata.as_ref().is_some_and(|m| m.cache_cleared);
         let pending = metadata.as_ref().is_some_and(|m| m.pending);
         let scrape_active = metadata.as_ref().is_some_and(|m| m.scrape_active);
+        let cover_status = metadata.as_mut().and_then(|m| m.status.take());
         // Manual overrides and confirmed editions survive a clear for future edits.
         // A cleared card presents only its local disc identity until explicitly restored.
         let metadata = metadata.filter(|m| !m.cache_cleared);
@@ -119,7 +120,7 @@ impl Entry {
             manual_fields: metadata.as_ref().map_or([false; 3], |m| m.manual_fields),
             manual_cover: metadata.as_ref().is_some_and(|m| m.manual_cover),
             cover_source: metadata.as_ref().and_then(|m| m.cover_source.clone()),
-            cover_status: metadata.and_then(|m| m.status),
+            cover_status,
             game,
         }
     }

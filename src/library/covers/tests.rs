@@ -160,6 +160,29 @@ fn negative_cache_and_server_backoff_apply_across_requests() {
 }
 
 #[test]
+fn explicit_fetch_retries_a_cached_miss_and_observes_provider_backoff() {
+    let (_dir, lib) = fixture();
+    let cancel = AtomicBool::new(false);
+    let template = "https://covers.example/${serial}.png";
+    let key = provider_key(Provider::Custom, template, SERIAL, "", "USA").unwrap();
+    let db = lib.connect().unwrap();
+    record(&db, 1, MATCHING, key.as_str(), "not_found", i64::MAX).unwrap();
+    db.execute(
+        "INSERT INTO cover_rate_limits(host,retry_after) VALUES('covers.example',?)",
+        [i64::MAX],
+    )
+    .unwrap();
+    assert_eq!(
+        fetch_missing(&lib, 1, Provider::Custom, template, &cancel).unwrap(),
+        "not_found"
+    );
+    assert_eq!(
+        fetch(&lib, 1, Provider::Custom, template, &cancel).unwrap(),
+        "retry"
+    );
+}
+
+#[test]
 fn rejects_oversize_invalid_and_cancelled_work_before_committing() {
     let (_dir, lib) = fixture();
     let cancel = AtomicBool::new(false);
@@ -226,15 +249,37 @@ fn live_libretro_cover_smoke() {
     let (dir, lib) = fixture();
     assert!(!dir.path().join("covers").exists());
     let cancel = AtomicBool::new(false);
-    assert_eq!(
-        fetch(&lib, 1, Provider::Libretro, "", &cancel).unwrap(),
-        "ready"
-    );
-    let thumb = metadata::list(&lib).unwrap()[&1].thumbnail.clone().unwrap();
-    assert!(thumb.starts_with(dir.path().join("covers/objects")));
-    assert!(thumb.with_file_name("original.png").is_file());
-    let (w, h) = image::image_dimensions(thumb).unwrap();
-    assert!(w > 0 && h > 0 && w.max(h) <= THUMB_SIZE);
+    let mut db = lib.connect().unwrap();
+    let tx = db.transaction().unwrap();
+    for (id, serial) in [
+        (2, "SLUS-00402"),
+        (3, "SLUS-00067"),
+        (4, "SLUS-00421"),
+        (5, "SLUS-00592"),
+    ] {
+        tx.execute(
+            "INSERT INTO games(id,fallback_title) VALUES(?,'Test')",
+            [id],
+        )
+        .unwrap();
+        metadata::identify(&tx, id, Some(serial), Some("USA"), "Test").unwrap();
+    }
+    tx.commit().unwrap();
+    for id in 1..=5 {
+        assert_eq!(
+            fetch(&lib, id, Provider::Libretro, "", &cancel).unwrap(),
+            "ready",
+            "cover for fixture {id}"
+        );
+        let thumb = metadata::list(&lib).unwrap()[&id]
+            .thumbnail
+            .clone()
+            .unwrap();
+        assert!(thumb.starts_with(dir.path().join("covers/objects")));
+        assert!(thumb.with_file_name("original.png").is_file());
+        let (w, h) = image::image_dimensions(thumb).unwrap();
+        assert!(w > 0 && h > 0 && w.max(h) <= THUMB_SIZE);
+    }
 }
 
 #[test]

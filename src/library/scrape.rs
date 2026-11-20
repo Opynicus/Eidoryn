@@ -449,8 +449,14 @@ fn commit_result(
     let finished = match result {
         Work::Metadata(prepared) => match prepared.commit_claim(tx, claim.game)? {
             Some(metadata::RefreshOutcome::Updated) => "updated",
-            Some(metadata::RefreshOutcome::Candidates | metadata::RefreshOutcome::NoSerial)
-            | None => "skip_cover",
+            Some(metadata::RefreshOutcome::Candidates) => {
+                if claim.mode == Mode::Full {
+                    jobs::release_serial_covers(tx, claim.id).map_err(|e| e.to_string())?;
+                }
+                // The completion trigger skips the providers still waiting for an edition.
+                "skip_cover"
+            }
+            Some(metadata::RefreshOutcome::NoSerial) | None => "skip_cover",
             Some(metadata::RefreshOutcome::NotFound) => "not_found",
         },
         Work::Cover(ref outcome) => outcome,
@@ -466,6 +472,58 @@ fn commit_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "ui-tests")]
+    #[test]
+    fn full_refresh_restores_serial_art_without_assigning_an_ambiguous_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let lib = Library::open(&path).unwrap();
+        let mut db = lib.connect().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO games(id,fallback_title) VALUES(1,'Local disc')",
+            [],
+        )
+        .unwrap();
+        metadata::identify(&tx, 1, Some("SCUS-94900"), Some("USA"), "Local disc").unwrap();
+        tx.commit().unwrap();
+        lib.clear_metadata_cache(metadata::CacheScope::All).unwrap();
+        let rows = ["Q100", "Q101"].map(|qid| {
+            serde_json::json!({
+                "game": {"value": format!("http://www.wikidata.org/entity/{qid}")},
+                "title": {"value": "Two possible editions"}
+            })
+        });
+        let metadata = serde_json::json!({"results":{"bindings": rows}});
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(32, 24)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let lib = lib.with_scrape_responses(
+            http::Response::new(metadata.to_string().into_bytes()),
+            http::Response::new(png.into_inner()),
+        );
+        let report = run(
+            &lib,
+            &[1],
+            Mode::Full,
+            covers::Provider::Custom,
+            "https://example.invalid/${serial}.png",
+            &AtomicBool::default(),
+            |_, _| {},
+        );
+        assert_eq!((report.finished, report.failed), (1, 0));
+        let reopened = Library::open(&path).unwrap();
+        let rows = metadata::list_by_id(&reopened, &[1]).unwrap();
+        let card = &rows[&1];
+        assert!(card.pending);
+        assert!(card.release_id.is_none());
+        assert!(!card.cache_cleared);
+        assert_eq!(card.serial.as_deref(), Some("SCUS-94900"));
+        let cover = image::open(card.thumbnail.as_ref().unwrap()).unwrap();
+        assert_eq!(cover.width() * 3, cover.height() * 4);
+    }
 
     #[test]
     fn incremental_run_reuses_metadata_and_cover_cache_only_for_given_games() {

@@ -256,6 +256,15 @@ fn query_source(
     transport::request(request, MAX_RESPONSE, cancel)
 }
 
+#[cfg(feature = "ui-tests")]
+pub(super) fn recorded_response(
+    response: http::Response<Vec<u8>>,
+    serial: &str,
+) -> Result<SourceResponse, ProviderError> {
+    let territory = territory(serial).map_err(ProviderError::Invalid)?;
+    decode_response(response, serial, &territory)
+}
+
 fn decode_response(
     response: http::Response<Vec<u8>>,
     serial: &str,

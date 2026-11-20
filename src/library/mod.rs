@@ -24,6 +24,8 @@ type IndexResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 #[derive(Debug, Clone)]
 pub struct Library {
     path: PathBuf,
+    #[cfg(feature = "ui-tests")]
+    scrape_responses: Option<Arc<ScrapeResponses>>,
     pool: Arc<OnceLock<Result<sqlx::SqlitePool, String>>>,
     worker_connections: Option<Arc<Mutex<Vec<Connection>>>>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
@@ -32,6 +34,13 @@ pub struct Library {
         mpsc::SyncSender<i64>,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
     )>,
+}
+
+#[cfg(feature = "ui-tests")]
+#[derive(Debug)]
+struct ScrapeResponses {
+    metadata: http::Response<Vec<u8>>,
+    cover: http::Response<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,12 +110,27 @@ impl Library {
     pub fn deferred(path: &Path) -> Self {
         Self {
             path: path.to_owned(),
+            #[cfg(feature = "ui-tests")]
+            scrape_responses: None,
             pool: Arc::default(),
             worker_connections: None,
             shutdown: Arc::default(),
             import_provider: Arc::default(),
             additions: None,
         }
+    }
+
+    /// Supply recorded provider responses for desktop interaction tests on this library.
+    #[cfg(feature = "ui-tests")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_scrape_responses(
+        mut self,
+        metadata: http::Response<Vec<u8>>,
+        cover: http::Response<Vec<u8>>,
+    ) -> Self {
+        self.scrape_responses = Some(Arc::new(ScrapeResponses { metadata, cover }));
+        self
     }
 
     /// Initialize a deferred library on a worker and report any startup error.

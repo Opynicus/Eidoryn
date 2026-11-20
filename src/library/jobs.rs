@@ -318,6 +318,20 @@ pub(super) struct Failure {
     pub deadline: Option<i64>,
 }
 
+/// Serial-based sources can proceed on a manual refresh even when the release
+/// provider cannot choose an edition or asks us to retry later.
+pub(super) fn release_serial_covers(db: &Connection, metadata_job: i64) -> rusqlite::Result<()> {
+    db.prepare_cached(
+        "UPDATE scrape_jobs SET dependency=NULL, updated_at=unixepoch()
+         WHERE dependency=?1 AND mode='full' AND status IN ('pending','retry_wait')
+           AND provider IN ('libretro','screenscraper','custom')
+           AND EXISTS(SELECT 1 FROM game_metadata m WHERE m.game_id=scrape_jobs.game_id
+                      AND COALESCE(m.release_serial,m.disc_serial,'')<>'')",
+    )?
+    .execute([metadata_job])?;
+    Ok(())
+}
+
 impl Failure {
     pub fn cover(error: &str) -> Self {
         let lower = error.to_ascii_lowercase();
@@ -412,7 +426,7 @@ pub(super) fn fail(
         };
         due = due.max(provider_deadline.unwrap_or(0));
     }
-    tx.execute(
+    let changed = tx.execute(
         "UPDATE scrape_jobs SET status=?1,last_error_code=?2,last_error_message=?3,
          next_attempt_at=?4,owner=NULL,lease_until=NULL,updated_at=unixepoch()
          WHERE id=?5 AND owner=?6 AND attempt_count=?7 AND status='running' AND lease_until>unixepoch()",
@@ -426,6 +440,9 @@ pub(super) fn fail(
             claim.attempt
         ],
     )?;
+    if changed == 1 && retry && claim.stage == Stage::Metadata && claim.mode == Mode::Full {
+        release_serial_covers(tx, claim.id)?;
+    }
     Ok(())
 }
 

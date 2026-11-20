@@ -315,10 +315,23 @@ fn search_with(
 }
 
 pub fn select(lib: &Library, id: i64, release_id: &str) -> Result<(), String> {
+    select_cancellable(lib, id, release_id, &AtomicBool::new(false))
+}
+
+/// Confirm an edition unless a later clear or selection has superseded the request.
+pub fn select_cancellable(
+    lib: &Library,
+    id: i64,
+    release_id: &str,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
     let mut conn = lib.connect()?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(ProviderError::Cancelled.to_string());
+    }
     if assign(&tx, id, release_id, true).map_err(|e| e.to_string())? == 0 {
         return Err("Unknown game or cached release".into());
     }
