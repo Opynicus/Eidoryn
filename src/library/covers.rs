@@ -211,6 +211,11 @@ fn restore_thumbnail(
     Ok(())
 }
 
+/// Check a user-supplied template with the same URL rules as a cover download.
+pub fn valid_template(template: &str) -> bool {
+    cover_url(template, "SLUS-00000").is_ok()
+}
+
 fn cover_url(template: &str, serial: &str) -> Result<Url, String> {
     if !template.contains("${serial}")
         || serial.is_empty()

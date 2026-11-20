@@ -61,6 +61,10 @@ pub struct Metadata {
     pub date: Option<String>,
     pub aliases: Vec<String>,
     pub release_id: Option<String>,
+    pub release_title: Option<String>,
+    /// Overrides in title, region, release date order.
+    pub manual_fields: [bool; 3],
+    pub manual_cover: bool,
     pub serial: Option<String>,
     pub thumbnail: Option<PathBuf>,
     pub cover_source: Option<String>,
@@ -327,27 +331,47 @@ pub fn set_override(
     field: Field,
     value: Option<&str>,
 ) -> Result<(), String> {
-    let value = value.map(str::trim);
-    if let Some(value) = value {
-        if value.is_empty() || value.len() > 1024 {
-            return Err("Enter 1 to 1024 bytes".into());
-        }
-        if matches!(field, Field::Date) && !valid_date(value) {
-            return Err("Use YYYY, YYYY-MM or YYYY-MM-DD".into());
-        }
+    set_overrides(lib, id, &[(field, value)])
+}
+
+impl Field {
+    pub fn accepts(self, value: &str) -> bool {
+        let value = value.trim();
+        !value.is_empty()
+            && value.len() <= 1024
+            && (!matches!(self, Self::Date) || valid_date(value))
     }
-    let column = match field {
-        Field::Title => "user_title",
-        Field::Region => "user_region",
-        Field::Date => "user_date",
-    };
-    lib.connect()?
-        .execute(
+}
+
+/// Commit just the edited fields together, retaining automatic updates to untouched fields.
+pub fn set_overrides(
+    lib: &Library,
+    id: i64,
+    changes: &[(Field, Option<&str>)],
+) -> Result<(), String> {
+    let mut conn = lib.connect()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for &(field, value) in changes {
+        let value = value.map(str::trim);
+        if value.is_some_and(|v| !field.accepts(v)) {
+            return Err(match field {
+                Field::Date => "Use YYYY, YYYY-MM or YYYY-MM-DD",
+                _ => "Enter 1 to 1024 bytes",
+            }
+            .into());
+        }
+        let column = match field {
+            Field::Title => "user_title",
+            Field::Region => "user_region",
+            Field::Date => "user_date",
+        };
+        tx.execute(
             &format!("UPDATE game_metadata SET {column}=?2 WHERE game_id=?1"),
             params![id, value],
         )
         .map_err(|e| e.to_string())?;
-    Ok(())
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 pub fn list(lib: &Library) -> Result<HashMap<i64, Metadata>, String> {
@@ -370,7 +394,9 @@ fn read_metadata(lib: &Library, ids: Option<&str>) -> Result<HashMap<i64, Metada
     let mut stmt=conn.prepare(&format!("SELECT m.game_id, COALESCE(user_title,auto_title), COALESCE(user_region,auto_region,disc_region), COALESCE(user_date,auto_date),
         release_id,COALESCE(release_serial,disc_serial),auto_title,aliases,COALESCE(u.thumb,c.thumb),COALESCE(u.source,c.source),
         COALESCE(a.state,CASE WHEN c.thumb IS NOT NULL THEN 'ready' END),m.source,m.refreshed,m.pending,m.work_date,
-        EXISTS(SELECT 1 FROM scrape_jobs j WHERE j.game_id=m.game_id AND j.status IN ('pending','running','retry_wait'))
+        EXISTS(SELECT 1 FROM scrape_jobs j WHERE j.game_id=m.game_id AND j.status IN ('pending','running','retry_wait')),
+        CASE WHEN release_id IS NOT NULL THEN auto_title || COALESCE(' · ' || NULLIF(auto_region,''),'') END,
+        user_title IS NOT NULL,user_region IS NOT NULL,user_date IS NOT NULL,u.game_id IS NOT NULL
         FROM game_metadata m LEFT JOIN cover_assets u ON u.game_id=m.game_id AND u.kind='user'
         LEFT JOIN cover_assets c ON c.game_id=m.game_id AND c.kind='download' AND c.serial=COALESCE(release_serial,disc_serial)
         LEFT JOIN cover_attempts a ON a.game_id=m.game_id AND a.serial=COALESCE(release_serial,disc_serial)
@@ -408,6 +434,9 @@ fn read_metadata(lib: &Library, ids: Option<&str>) -> Result<HashMap<i64, Metada
                 pending: r.get(13)?,
                 work_date: r.get(14)?,
                 scrape_active: r.get(15)?,
+                release_title: r.get(16)?,
+                manual_fields: [r.get(17)?, r.get(18)?, r.get(19)?],
+                manual_cover: r.get(20)?,
             },
         ))
     })

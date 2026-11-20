@@ -1,9 +1,10 @@
-use super::{Desktop, Entry, Text, div, label};
+use super::{Desktop, Entry, Text, div, label, scraping::progress_bar};
+use crate::desktop::{WorkspacePage, graphics::switch, icons::icon};
 use eidoryn_psx::{
     library::{Library, ScanPhase, ScanReport, TrackChoice, covers, metadata},
     systems::ps1::{media::validate_bios_path, runner::Command},
 };
-use gpui::{Context, Div, PathPromptOptions, prelude::*, px};
+use gpui::{Context, Div, PathPromptOptions, prelude::*, px, rgb};
 use std::{
     path::PathBuf,
     sync::{
@@ -43,6 +44,11 @@ pub(super) struct DirectChoice {
     cues: Vec<PathBuf>,
     fast_boot: bool,
     recent: bool,
+}
+
+pub(super) struct FolderImport {
+    pub(super) directories: Vec<PathBuf>,
+    images: Vec<PathBuf>,
 }
 
 enum Source {
@@ -140,21 +146,35 @@ impl Desktop {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        match paths.paths() {
-            [path] if path.is_dir() => {
-                self.show_page(crate::desktop::WorkspacePage::Library, window, cx);
-                self.library.details = false;
-                self.library.settings = false;
-                self.library.pending_directory = Some(path.clone());
-            }
-            [path] => self.load_selected_disc(path.clone(), false, cx),
-            paths if !paths.is_empty() => {
-                self.show_page(crate::desktop::WorkspacePage::Library, window, cx);
-                self.library.details = false;
-                self.library.settings = false;
-                self.scan_sources(vec![Source::Files(paths.to_vec())], cx);
-            }
-            _ => {}
+        let paths = paths.paths();
+        if paths.is_empty() {
+            return;
+        }
+        if let [path] = paths
+            && self.page != WorkspacePage::Library
+            && !path.is_dir()
+        {
+            self.load_selected_disc(path.clone(), false, cx);
+            return;
+        }
+        if self.library.scan.is_some() {
+            self.notice = Some(self.tr(Text::LibraryScanning).to_owned());
+            cx.notify();
+            return;
+        }
+        self.show_page(WorkspacePage::Library, window, cx);
+        self.library.details = false;
+        self.library.settings = false;
+        let (directories, images): (Vec<_>, _) =
+            paths.iter().cloned().partition(|path| path.is_dir());
+        if directories.is_empty() {
+            self.scan_sources(vec![Source::Files(images)], cx);
+        } else {
+            self.library.pending_directory = Some(FolderImport {
+                directories,
+                images,
+            });
+            cx.notify();
         }
     }
 
@@ -436,7 +456,12 @@ impl Desktop {
             let _ = this.update(cx, |v, cx| {
                 match picker {
                     Picker::Images => v.scan_sources(vec![Source::Files(paths)], cx),
-                    Picker::Folder => v.library.pending_directory = Some(first),
+                    Picker::Folder => {
+                        v.library.pending_directory = Some(FolderImport {
+                            directories: vec![first],
+                            images: Vec::new(),
+                        });
+                    }
                     Picker::Cover(id) => {
                         v.library_write(cx, move |s| covers::set_local(s, id, &first));
                     }
@@ -737,221 +762,342 @@ impl Desktop {
         cx.notify();
     }
 
-    pub(super) fn library_scan_status(&self, cx: &Context<Self>) -> Div {
-        let p = self.themes.active().palette;
-        let mut panel = div().flex().flex_col().gap_1();
-        if let Some(path) = &self.library.pending_directory {
-            let path = path.clone();
-            panel = panel.child(
+    pub(super) fn task_banner(
+        &self,
+        symbol: &'static str,
+        title: Text,
+        description: String,
+    ) -> Div {
+        let p = self.library_palette();
+        div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .px_4()
+            .py_3()
+            .bg(rgb(p.tonal))
+            .border_1()
+            .border_color(rgb(p.border))
+            .rounded(px(9.))
+            .child(
                 div()
+                    .min_w_0()
+                    .flex_1()
                     .flex()
-                    .flex_wrap()
-                    .gap_2()
                     .items_center()
-                    .child(label(
-                        &p,
-                        format!("{} · {}", self.tr(Text::LibraryFolder), path.display()),
-                    ))
-                    .child(self.library_button(
-                        "lib-recursive",
-                        Text::LibraryRecursive,
-                        self.library.recursive,
-                        cx,
-                        |v, _, cx| {
-                            v.library.recursive = !v.library.recursive;
-                            cx.notify();
-                        },
-                    ))
-                    .child(self.library_button(
-                        "lib-confirm-folder",
-                        Text::LibraryScan,
-                        true,
-                        cx,
-                        move |v, _, cx| {
-                            if v.library.scan.is_none() {
-                                v.library.pending_directory = None;
-                                v.scan_sources(
-                                    vec![Source::Directory(path.clone(), v.library.recursive)],
-                                    cx,
-                                );
-                            }
-                        },
-                    ))
-                    .child(self.library_button(
-                        "lib-cancel-folder",
-                        Text::LibraryCancel,
-                        false,
-                        cx,
-                        |v, _, cx| {
-                            v.library.pending_directory = None;
-                            cx.notify();
-                        },
-                    )),
-            );
-        }
-        if let Some(choice) = &self.library.direct {
-            let (recent, fast) = (choice.recent, choice.fast_boot);
-            panel = panel
-                .child(label(&p, self.tr(Text::LibraryTrackChoice)))
-                .children(choice.cues.iter().enumerate().map(|(i, path)| {
-                    let path = path.clone();
-                    super::button(
-                        &self.fonts,
-                        &p,
-                        ("lib-open-cue", i),
-                        path.display().to_string(),
-                        false,
+                    .gap_3()
+                    .child(
+                        div()
+                            .size(px(34.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(rgb(p.success))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(symbol, p.on_success)),
                     )
-                    .on_click(cx.listener(move |v, _, _, cx| {
-                        v.library.direct = None;
-                        v.direct_disc(path.clone(), fast, recent, cx);
-                    }))
-                }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font(self.fonts.semibold())
+                                    .child(self.tr(title)),
+                            )
+                            .child(label(&p, description).text_size(px(12.))),
+                    ),
+            )
+    }
+
+    pub(super) fn library_scan_status(&self, cx: &Context<Self>) -> Div {
+        let p = self.library_palette();
+        let mut panel = div().flex().flex_col().gap_2();
+        if let Some(cancel) = self.library.scan.clone() {
+            let scan = &self.library.report;
+            let mut detail = self.scan_counts();
+            if let Some(current) = &scan.current {
+                detail.push_str(" · ");
+                detail.push_str(current);
+            }
+            let row = self
+                .task_banner(
+                    "folder",
+                    scan.status.unwrap_or(Text::LibraryScanning),
+                    detail,
+                )
+                .when(scan.total > 0, |row| {
+                    row.child(progress_bar(&p, scan.processed as f32 / scan.total as f32))
+                })
                 .child(self.library_button(
+                    "lib-cancel-scan",
+                    Text::LibraryCancel,
+                    false,
+                    cx,
+                    move |_, _, _| cancel.store(true, Ordering::Relaxed),
+                ));
+            panel = panel.child(row);
+        }
+        if self.library.cover.is_some() {
+            panel = panel.child(self.cover_progress(cx));
+        }
+        if self.library.scraping.busy()
+            || (self.library.scan.is_none() && self.library.cover.is_none())
+        {
+            panel = panel.child(self.scrape_status(cx));
+        }
+        panel
+    }
+
+    pub(in crate::desktop) fn close_task_dialog(&mut self) -> bool {
+        if self.library.pending_directory.take().is_some() || self.library.direct.take().is_some() {
+            return true;
+        }
+        if !self.library.choices.is_empty() && self.library.scan.is_none() {
+            self.library.choices.remove(0);
+            return true;
+        }
+        std::mem::take(&mut self.library.task_history_open)
+    }
+
+    pub(in crate::desktop) fn task_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if let Some(import) = &self.library.pending_directory {
+            return Some(self.folder_dialog(import, cx));
+        }
+        self.cue_dialog(cx).or_else(|| {
+            self.library
+                .task_history_open
+                .then(|| self.task_history_dialog(cx))
+        })
+    }
+
+    fn folder_dialog(&self, import: &FolderImport, cx: &mut Context<Self>) -> Div {
+        let p = self.library_palette();
+        let list = div()
+            .id("lib-import-paths")
+            .max_h(px(175.))
+            .overflow_y_scroll()
+            .children(import.directories.iter().map(|dir| {
+                div()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icon("folder", p.muted))
+                    .child(label(&p, dir.display().to_string()))
+            }))
+            .children(import.images.iter().map(|image| {
+                div()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icon("file", p.muted))
+                    .child(label(&p, image.display().to_string()))
+            }));
+        let action = div()
+            .flex()
+            .justify_end()
+            .gap_2()
+            .child(self.library_button(
+                "lib-cancel-folder",
+                Text::LibraryCancel,
+                false,
+                cx,
+                |v, _, cx| {
+                    v.library.pending_directory = None;
+                    cx.notify();
+                },
+            ))
+            .child(self.library_button(
+                "lib-confirm-folder",
+                Text::LibraryScan,
+                true,
+                cx,
+                |v, _, cx| {
+                    if v.library.scan.is_none()
+                        && let Some(import) = v.library.pending_directory.take()
+                    {
+                        let mut sources = import
+                            .directories
+                            .into_iter()
+                            .map(|dir| Source::Directory(dir, v.library.recursive))
+                            .collect::<Vec<_>>();
+                        if !import.images.is_empty() {
+                            sources.push(Source::Files(import.images));
+                        }
+                        v.scan_sources(sources, cx);
+                    }
+                },
+            ));
+        let recursive = switch(
+            &self.fonts,
+            &p,
+            "lib-recursive",
+            self.tr(Text::LibraryRecursive),
+            self.tr(Text::LibraryScanSubfoldersHint),
+            self.library.recursive,
+            true,
+        )
+        .role(gpui::Role::Switch)
+        .aria_label(self.tr(Text::LibraryRecursive))
+        .aria_toggled(self.library.recursive.into())
+        .debug_selector(|| "lib-recursive".into())
+        .on_click(cx.listener(|v, _, _, cx| {
+            v.library.recursive = !v.library.recursive;
+            cx.notify();
+        }));
+        self.library_modal(
+            self.tr(Text::LibraryAddFolder),
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(list)
+                .child(recursive)
+                .child(action),
+            cx,
+        )
+    }
+
+    fn cue_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let p = self.library_palette();
+        let direct = self.library.direct.as_ref();
+        let choice = self
+            .library
+            .choices
+            .first()
+            .filter(|_| self.library.scan.is_none());
+        if let Some(cues) = direct.map(|c| &c.cues).or_else(|| choice.map(|c| &c.cues)) {
+            let direct = direct.map(|c| (c.fast_boot, c.recent));
+            let mut body = div().flex().flex_col().gap_3();
+            if direct.is_none()
+                && let Some(choice) = choice
+            {
+                body = body.child(label(&p, choice.track.display().to_string()));
+            }
+            body = body
+                .child(
+                    div()
+                        .id("lib-cue-options")
+                        .max_h(px(224.))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .children(cues.iter().enumerate().map(|(i, path)| {
+                            let path = path.clone();
+                            super::button(
+                                &self.fonts,
+                                &p,
+                                ("lib-open-cue", i),
+                                path.display().to_string(),
+                                false,
+                            )
+                            .role(gpui::Role::Button)
+                            .debug_selector(move || format!("lib-open-cue-{i}"))
+                            .on_click(cx.listener(
+                                move |v, _, _, cx| match direct {
+                                    Some((fast, recent)) => {
+                                        v.library.direct = None;
+                                        v.direct_disc(path.clone(), fast, recent, cx);
+                                    }
+                                    None => {
+                                        if v.library.scan.is_none() {
+                                            v.library.choices.remove(0);
+                                            v.scan_sources(
+                                                vec![Source::Files(vec![path.clone()])],
+                                                cx,
+                                            );
+                                        }
+                                    }
+                                },
+                            ))
+                        })),
+                )
+                .child(div().flex().justify_end().child(self.library_button(
                     "lib-cancel-track",
                     Text::LibraryCancel,
                     false,
                     cx,
                     |v, _, cx| {
-                        v.library.direct = None;
+                        v.close_task_dialog();
                         cx.notify();
                     },
-                ));
+                )));
+            return Some(self.library_modal(self.tr(Text::LibraryTrackChoice), body, cx));
         }
-        let panel = self.scan_report_panel(panel, cx);
-        if self.library.scraping.busy()
-            || self.library.scraping.last.is_some()
-            || self.library.scraping.has_failures()
-        {
-            panel.child(self.scrape_status(cx))
-        } else {
-            panel
-        }
+        None
     }
-    fn scan_report_panel(&self, mut panel: Div, cx: &Context<Self>) -> Div {
-        let p = self.themes.active().palette;
-        if let Some(status) = self.library.report.status {
-            let titles = [
+
+    fn scan_counts(&self) -> String {
+        let scan = &self.library.report;
+        let mut counts = vec![format!("{}/{}", scan.processed, scan.total)];
+        counts.extend(
+            [
                 Text::LibraryAdded,
                 Text::LibraryExisting,
                 Text::LibraryPending,
                 Text::LibraryFailed,
-            ];
-            let counts = titles
-                .into_iter()
-                .zip(self.library.report.counts)
-                .map(|(key, n)| format!("{} {n}", self.tr(key)))
-                .collect::<Vec<_>>()
-                .join(" · ");
-            let scan = &self.library.report;
-            let current = scan.current.as_deref().unwrap_or("");
-            panel = panel.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .child(label(
-                        &p,
-                        format!(
-                            "{} {}/{} · {counts}  {current}",
-                            self.tr(status),
-                            scan.processed,
-                            scan.total
-                        ),
-                    ))
-                    .when_some(self.library.scan.clone(), |s, cancel| {
-                        s.child(self.library_button(
-                            "lib-cancel-scan",
-                            Text::LibraryCancel,
-                            false,
-                            cx,
-                            move |_, _, _| cancel.store(true, Ordering::Relaxed),
-                        ))
-                    }),
-            );
-        }
-        if self.library.cover.is_some() {
-            panel = panel.child(self.cover_progress(cx));
-        }
-        if !self.library.report.errors.is_empty()
-            || !self.library.choices.is_empty()
-            || self.library.roots.iter().any(|r| !r.available)
-        {
-            panel = panel.child(
-                div()
-                    .id("library-scan-issues")
-                    .max_h(px(100.))
-                    .overflow_y_scroll()
-                    .children(
-                        self.library
-                            .report
-                            .errors
-                            .iter()
-                            .map(|e| label(&p, e.clone())),
-                    )
-                    .children(self.library.roots.iter().filter(|r| !r.available).map(|r| {
-                        label(
-                            &p,
-                            format!("{} · {}", self.tr(Text::LibraryOffline), r.path.display()),
-                        )
-                    }))
-                    .children(self.library.choices.iter().enumerate().map(|(i, choice)| {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(label(
-                                &p,
-                                format!(
-                                    "{} · {}",
-                                    self.tr(Text::LibraryTrackChoice),
-                                    choice.track.display()
-                                ),
-                            ))
-                            .children(choice.cues.iter().enumerate().map(|(j, path)| {
-                                let path = path.clone();
-                                let track = choice.track.clone();
-                                super::button(
-                                    &self.fonts,
-                                    &p,
-                                    (gpui::SharedString::from(format!("library-cue-{i}")), j),
-                                    path.display().to_string(),
-                                    false,
-                                )
-                                .on_click(cx.listener(
-                                    move |v, _, _, cx| {
-                                        v.library.choices.retain(|choice| choice.track != track);
-                                        v.scan_sources(vec![Source::Files(vec![path.clone()])], cx);
-                                    },
-                                ))
-                            }))
-                    })),
-            );
+            ]
+            .into_iter()
+            .zip(scan.counts)
+            .map(|(key, n)| format!("{} {n}", self.tr(key))),
+        );
+        counts.join(" · ")
+    }
+
+    pub(super) fn scan_report_panel(&self) -> Div {
+        let mut panel = div().flex().flex_col().gap_1();
+        let p = self.library_palette();
+        if let Some(status) = self.library.report.status {
+            panel = panel.child(label(
+                &p,
+                format!("{} · {}", self.tr(status), self.scan_counts()),
+            ));
         }
         panel
+            .children(
+                self.library
+                    .report
+                    .errors
+                    .iter()
+                    .map(|error| label(&p, error.clone()).text_color(rgb(p.on_error))),
+            )
+            .children(self.library.roots.iter().filter(|r| !r.available).map(|r| {
+                label(
+                    &p,
+                    format!("{} · {}", self.tr(Text::LibraryOffline), r.path.display()),
+                )
+            }))
     }
 
     pub(super) fn cover_progress(&self, cx: &Context<Self>) -> Div {
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(label(
-                &self.themes.active().palette,
-                self.tr(Text::LibraryDownloading),
-            ))
-            .when_some(
-                self.library.cover.as_ref().map(|task| task.cancel.clone()),
-                |s, flag| {
-                    s.child(self.library_button(
-                        "lib-stop-cover",
-                        Text::LibraryCancel,
-                        false,
-                        cx,
-                        move |_, _, _| flag.store(true, Ordering::Relaxed),
-                    ))
-                },
-            )
+        self.task_banner(
+            "reset",
+            Text::LibraryDownloading,
+            self.tr(Text::LibraryCover).to_owned(),
+        )
+        .when_some(
+            self.library.cover.as_ref().map(|task| task.cancel.clone()),
+            |row, cancel| {
+                row.child(self.library_button(
+                    "lib-stop-cover",
+                    Text::LibraryCancel,
+                    false,
+                    cx,
+                    move |_, _, _| cancel.store(true, Ordering::Relaxed),
+                ))
+            },
+        )
     }
 }
 

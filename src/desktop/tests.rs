@@ -873,6 +873,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
         preferences_path: Some(test_config_path()),
         theme_paths: std::collections::HashMap::new(),
         settings_focus: cx.focus_handle(),
+        library_dialog_focus: super::library_ui::DialogFocus::new(cx.focus_handle()),
         runner: Runner::with_snapshot_mode(
             machine,
             false,

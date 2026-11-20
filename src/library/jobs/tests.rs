@@ -15,6 +15,46 @@ fn library() -> (tempfile::TempDir, Library) {
 }
 
 #[test]
+fn task_history_survives_reopen_and_keeps_only_recent_visible_stages() {
+    let (dir, lib) = library();
+    let db = lib.connect().unwrap();
+    db.execute(
+        "UPDATE game_metadata SET user_title='My disc' WHERE game_id=1",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO games(id,fallback_title,hidden) VALUES(2,'Removed',1)",
+        [],
+    )
+    .unwrap();
+    for index in 0..22 {
+        db.execute(
+            "INSERT INTO scrape_jobs(game_id,provider,job_type,mode,status,updated_at,outcome)
+             VALUES(1,'libretro','cover','full','succeeded',?,'skipped')",
+            [index],
+        )
+        .unwrap();
+    }
+    db.execute(
+        "INSERT INTO scrape_jobs(game_id,provider,job_type,mode,status)
+         VALUES(2,'wikidata','metadata','incremental','failed')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    drop(lib);
+    let reopened = Library::open(&dir.path().join("library.sqlite3")).unwrap();
+    let rows = recent_jobs(&reopened).unwrap();
+    assert_eq!(rows.len(), 20);
+    assert_eq!((rows[0].updated_at, rows[19].updated_at), (21, 2));
+    assert!(rows.iter().all(|row| row.title == "My disc"
+        && row.cover
+        && row.skipped
+        && row.status == JobStatus::Succeeded));
+}
+
+#[test]
 fn expired_lease_is_reclaimed_and_stale_results_cannot_commit() {
     let (_dir, lib) = library();
     let mut first = lib.connect().unwrap();

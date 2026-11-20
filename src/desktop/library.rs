@@ -1,13 +1,18 @@
 //! Desktop library browsing. File reads, media inspection and database writes run off the UI thread.
 mod detail;
+mod overview;
 mod scraping;
+mod settings;
 mod tasks;
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
+mod tiles;
 
+use self::detail::editor::Editor;
+use self::overview::OverviewMenu;
 use super::{
     Desktop,
-    components::{button, card, icon_button, label},
+    components::{action, button, card, label},
     icons::icon,
     text_input::TextInput,
 };
@@ -15,10 +20,10 @@ use eidoryn_psx::{
     i18n::Text,
     library::{
         Game, Library, ScanRoot,
-        metadata::{self, Field, Release},
+        metadata::{self, Release},
     },
 };
-use gpui::{Context, Div, Entity, Focusable, Window, div, prelude::*, px, rgb, uniform_list};
+use gpui::{Context, Div, Entity, Focusable, Window, div, prelude::*, px, rgb};
 use std::{
     cmp::Ordering,
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
@@ -45,9 +50,12 @@ struct Entry {
     region: Option<String>,
     thumbnail: Option<PathBuf>,
     serial: Option<String>,
-    release: Option<String>,
+    release_title: Option<String>,
+    manual_fields: [bool; 3],
+    manual_cover: bool,
     cover_source: Option<String>,
     cover_status: Option<String>,
+    discs: usize,
 }
 
 impl Entry {
@@ -59,11 +67,20 @@ impl Entry {
         let mut terms = vec![title.clone(), game.title.clone()];
         if let Some(meta) = &metadata {
             terms.extend(meta.aliases.iter().cloned());
+            terms.extend(meta.region.clone());
         }
         terms.extend(game.locations.iter().filter_map(|loc| loc.serial.clone()));
         terms.extend(game.serial.clone());
+        terms.extend(game.region.clone());
         terms.extend(metadata.as_ref().and_then(|m| m.serial.clone()));
+        let discs = game
+            .locations
+            .iter()
+            .map(|loc| loc.disc_number)
+            .collect::<HashSet<_>>()
+            .len();
         Self {
+            discs,
             sort_title: title.to_lowercase(),
             pending: metadata.as_ref().is_some_and(|m| m.pending),
             scrape_active: metadata.as_ref().is_some_and(|m| m.scrape_active),
@@ -82,7 +99,9 @@ impl Entry {
                 .as_ref()
                 .and_then(|m| m.serial.clone())
                 .or_else(|| game.serial.clone()),
-            release: metadata.as_ref().and_then(|m| m.release_id.clone()),
+            release_title: metadata.as_ref().and_then(|m| m.release_title.clone()),
+            manual_fields: metadata.as_ref().map_or([false; 3], |m| m.manual_fields),
+            manual_cover: metadata.as_ref().is_some_and(|m| m.manual_cover),
             cover_source: metadata.as_ref().and_then(|m| m.cover_source.clone()),
             cover_status: metadata.and_then(|m| m.status),
             game,
@@ -90,12 +109,7 @@ impl Entry {
     }
 
     fn disc_count(&self) -> usize {
-        self.game
-            .locations
-            .iter()
-            .map(|loc| loc.disc_number)
-            .collect::<HashSet<_>>()
-            .len()
+        self.discs
     }
 }
 
@@ -115,19 +129,6 @@ impl Sort {
         (Self::Played, Text::LibraryPlayed),
         (Self::Time, Text::LibraryTime),
     ];
-}
-
-#[derive(Clone, Copy)]
-enum Edit {
-    Field(i64, Field),
-    Source,
-    Match(i64),
-    Group { disc: i64, location: i64, game: i64 },
-}
-
-struct Editor {
-    purpose: Edit,
-    input: Entity<TextInput>,
 }
 
 #[derive(Clone, Copy)]
@@ -153,6 +154,10 @@ pub(super) struct Workspace {
     roots: Vec<ScanRoot>,
     order: Vec<usize>,
     sort: Sort,
+    menu: Option<OverviewMenu>,
+    source_menu_open: bool,
+    template_field: Option<settings::TemplateField>,
+    task_history_open: bool,
     search: Option<Entity<TextInput>>,
     search_subscription: Option<gpui::Subscription>,
     query: String,
@@ -168,7 +173,7 @@ pub(super) struct Workspace {
     details: bool,
     location: Option<i64>,
     pending_bios: Option<(PathBuf, bool)>,
-    pending_directory: Option<PathBuf>,
+    pending_directory: Option<tasks::FolderImport>,
     recursive: bool,
     scan: Option<Arc<AtomicBool>>,
     cover: Option<tasks::CoverTask>,
@@ -195,6 +200,10 @@ impl Workspace {
             roots: vec![],
             order: vec![],
             sort: Sort::Title,
+            menu: None,
+            source_menu_open: false,
+            template_field: None,
+            task_history_open: false,
             search: None,
             search_subscription: None,
             query: String::new(),
@@ -225,6 +234,14 @@ impl Workspace {
             metadata_lookups: HashMap::new(),
             confirmation: None,
             settings: false,
+        }
+    }
+
+    pub(super) fn subpage_title(&self) -> Option<Text> {
+        if self.settings {
+            Some(Text::LibrarySettings)
+        } else {
+            self.details.then_some(Text::LibraryDetails)
         }
     }
 
@@ -289,6 +306,21 @@ impl Workspace {
         });
     }
 
+    fn visible_selection(&mut self) -> Option<usize> {
+        let id = self.selected?;
+        let index = self
+            .order
+            .iter()
+            .copied()
+            .find(|&index| self.entries[index].game.id == id);
+        if index.is_none() {
+            self.selected = None;
+            self.location = None;
+            self.pending_bios = None;
+        }
+        index
+    }
+
     fn select(&mut self, id: i64) {
         if self.selected != Some(id) {
             self.location = None;
@@ -324,14 +356,29 @@ impl Desktop {
         cx: &Context<Self>,
         callback: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> gpui::Stateful<Div> {
+        self.library_action(id, key, None, primary, cx, callback)
+    }
+
+    fn library_action(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        key: Text,
+        symbol: Option<&'static str>,
+        primary: bool,
+        cx: &Context<Self>,
+        callback: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> gpui::Stateful<Div> {
         let id = id.into();
-        button(
+        action(
             &self.fonts,
-            &self.themes.active().palette,
+            &self.library_palette(),
             id.clone(),
             self.tr(key),
+            symbol,
             primary,
         )
+        .role(gpui::Role::Button)
+        .aria_label(self.tr(key))
         .debug_selector(move || id.to_string())
         .on_click(cx.listener(move |view, _, window, cx| {
             callback(view, window, cx);
@@ -340,6 +387,13 @@ impl Desktop {
     }
 
     pub(super) fn enter_library(&mut self, cx: &mut Context<Self>) {
+        self.library.details = false;
+        self.library.settings = false;
+        self.library.menu = None;
+        self.library.task_history_open = false;
+        self.library.source_menu_open = false;
+        self.library.template_field = None;
+        self.library.close_editor();
         // A new visit can retry elapsed download backoffs or an explicitly canceled batch.
         if self.library.cover.is_none() && !self.library.scraping.busy() {
             self.library.auto_attempted.clear();
@@ -350,30 +404,39 @@ impl Desktop {
     pub(super) fn library_input_focused(&self, window: &Window, cx: &Context<Self>) -> bool {
         self.library
             .search
-            .iter()
-            .chain(self.library.editor.iter().map(|e| &e.input))
-            .any(|input| input.read(cx).focus_handle(cx).is_focused(window))
+            .as_ref()
+            .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window))
+            || self.library_editor_focused(window, cx)
+            || self.library.template_field.as_ref().is_some_and(|field| {
+                self.library.settings && field.input.read(cx).focus_handle(cx).is_focused(window)
+            })
+    }
+
+    pub(super) fn library_editor_focused(&self, window: &Window, cx: &Context<Self>) -> bool {
+        self.library
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.is_focused(window, cx))
     }
 
     fn library_search(&mut self, cx: &mut Context<Self>) -> Entity<TextInput> {
+        let p = self.library_palette();
+        let hint = self.tr(Text::LibrarySearch);
         if let Some(input) = &self.library.search {
+            if !input.read(cx).matches_search_style(p, hint) {
+                input.update(cx, |input, cx| input.set_search_style(p, hint, cx));
+            }
             return input.clone();
         }
-        let p = self.themes.active().palette;
-        let input = cx.new(|cx| TextInput::named("library-search", String::new(), p, cx));
+        let input = cx.new(|cx| {
+            TextInput::named("library-search", String::new(), p, cx).with_search_hint(hint)
+        });
         self.library.search_subscription = Some(cx.observe(&input, |view, input, cx| {
             let query = input.read(cx).value().trim().to_lowercase();
             if query != view.library.query {
                 view.library.query = query;
                 view.library.reorder();
-                if !view
-                    .library
-                    .order
-                    .iter()
-                    .any(|&i| Some(view.library.entries[i].game.id) == view.library.selected)
-                {
-                    view.library.selected = None;
-                }
+
                 cx.notify();
             }
         }));
@@ -391,11 +454,16 @@ impl Desktop {
             .flex()
             .flex_wrap()
             .gap_2()
-            .child(
-                self.library_button(button_id, Text::LibraryStart, true, cx, move |v, _, cx| {
+            .child(self.library_action(
+                button_id,
+                Text::LibraryStart,
+                Some("play"),
+                true,
+                cx,
+                move |v, _, cx| {
                     v.launch_library(game_id, cx);
-                }),
-            )
+                },
+            ))
             .when_some(
                 self.library.pending_bios.clone(),
                 |row, (path, fast_boot)| {
@@ -412,343 +480,6 @@ impl Desktop {
             )
     }
 
-    pub(super) fn library_page(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let p = self.themes.active().palette;
-        let mut page = div()
-            .debug_selector(|| "library-page".into())
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap_3();
-        if self.library.store.is_none() {
-            return page.child(label(&p, self.tr(Text::LibraryUnavailable)));
-        }
-        if self.library.details
-            && let Some(index) = self
-                .library
-                .entries
-                .iter()
-                .position(|e| Some(e.game.id) == self.library.selected)
-        {
-            return page.child(self.library_details(index, cx));
-        }
-        if self.library.settings {
-            return page.child(self.cover_settings(cx));
-        }
-        page = page
-            .child(self.library_toolbar(cx))
-            .child(self.library_scan_status(cx))
-            .child(self.library_sort_controls(cx));
-        if let Some(id) = self.library.selected {
-            page = page.child(self.library_launch_controls("lib-start", id, cx).child(
-                self.library_button(
-                    "lib-details",
-                    Text::LibraryDetails,
-                    false,
-                    cx,
-                    |v, _, cx| {
-                        v.library.details = true;
-                        cx.notify();
-                    },
-                ),
-            ));
-        } else if !self.library.order.is_empty() {
-            // Keep cards under the pointer between the first and second clicks.
-            page = page.child(
-                div()
-                    .h(crate::desktop::components::ACTION_HEIGHT)
-                    .flex_shrink_0(),
-            );
-        }
-        if self.library.order.is_empty() {
-            let key = if !self.library.loaded {
-                Text::LibraryLoading
-            } else if self.library.entries.is_empty() {
-                Text::LibraryEmpty
-            } else {
-                Text::LibraryNoResults
-            };
-            return page.child(card(&p).p_6().child(self.tr(key)));
-        }
-        page.child(self.library_results(window, cx))
-    }
-
-    fn library_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
-        let p = self.themes.active().palette;
-        let input = self.library_search(cx);
-        div()
-            .flex()
-            .flex_wrap()
-            .items_end()
-            .gap_2()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(180.))
-                    .child(label(&p, self.tr(Text::LibrarySearch)))
-                    .child(input),
-            )
-            .child(
-                self.library_button("lib-files", Text::LibraryAddImages, true, cx, |v, _, cx| {
-                    v.library_picker(tasks::Picker::Images, cx);
-                })
-                .debug_selector(|| "library-add-images".into()),
-            )
-            .child(
-                self.library_button(
-                    "lib-folder",
-                    Text::LibraryAddFolder,
-                    false,
-                    cx,
-                    |v, _, cx| v.library_picker(tasks::Picker::Folder, cx),
-                )
-                .debug_selector(|| "library-add-folder".into()),
-            )
-            .when(!self.library.entries.is_empty(), |s| {
-                let hint = self.tr(Text::LibraryRefreshAllHint);
-                s.child(
-                    icon_button(&p, "lib-refresh-all", "reset", hint)
-                        .debug_selector(|| "lib-refresh-all".into())
-                        .role(gpui::Role::Button)
-                        .aria_label(hint)
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.refresh_library_data(cx);
-                            cx.stop_propagation();
-                        }))
-                        .opacity(if self.library.scraping.full_requested() {
-                            0.5
-                        } else {
-                            1.0
-                        }),
-                )
-            })
-            .when(!self.library.roots.is_empty(), |s| {
-                s.child(self.library_button(
-                    "lib-rescan",
-                    Text::LibraryRescan,
-                    false,
-                    cx,
-                    |v, _, cx| v.scan_roots(cx),
-                ))
-            })
-            .child(self.library_button(
-                "lib-settings",
-                Text::LibrarySettings,
-                false,
-                cx,
-                |v, _, cx| {
-                    v.library.settings = true;
-                    v.library.close_editor();
-                    cx.notify();
-                },
-            ))
-    }
-
-    fn library_sort_controls(&self, cx: &Context<Self>) -> Div {
-        let p = self.themes.active().palette;
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .child(label(&p, self.tr(Text::LibrarySort)))
-            .children(Sort::ALL.map(|(sort, key)| {
-                self.library_button(
-                    key.id(),
-                    key,
-                    self.library.sort == sort,
-                    cx,
-                    move |v, _, cx| {
-                        v.library.sort = sort;
-                        v.library.reorder();
-                        cx.notify();
-                    },
-                )
-            }))
-            .child(div().flex_1())
-            .child(self.library_button(
-                "lib-layout",
-                if self.preferences.library.list {
-                    Text::LibraryGrid
-                } else {
-                    Text::LibraryList
-                },
-                false,
-                cx,
-                |v, _, cx| {
-                    v.preferences.library.list = !v.preferences.library.list;
-                    v.save_preferences();
-                    cx.notify();
-                },
-            ))
-    }
-
-    fn library_results(&self, window: &Window, cx: &Context<Self>) -> gpui::UniformList {
-        let columns = if self.preferences.library.list {
-            1
-        } else if self.content_width(window) >= px(1150.) {
-            6
-        } else if self.content_width(window) >= px(850.) {
-            5
-        } else {
-            4
-        };
-        let rows = self.library.order.len().div_ceil(columns);
-        uniform_list(
-            "library-results",
-            rows,
-            cx.processor(move |v, range: std::ops::Range<usize>, _, cx| {
-                #[cfg(all(test, feature = "ui-tests"))]
-                {
-                    v.library.rendered_cells =
-                        (range.start * columns)..(range.end * columns).min(v.library.order.len());
-                }
-                range
-                    .map(|row| {
-                        let mut line = div().flex().items_stretch().gap_2().pb_2().h(
-                            if v.preferences.library.list {
-                                px(61.)
-                            } else {
-                                px(182.)
-                            },
-                        );
-                        for cell in row * columns..(row + 1) * columns {
-                            if let Some(&i) = v.library.order.get(cell) {
-                                let cache = if v.preferences.library.list {
-                                    None
-                                } else {
-                                    v.library.thumbnail_cache(i, cx)
-                                };
-                                line = line.child(v.library_cell(&v.library.entries[i], cache, cx));
-                            } else {
-                                line = line.child(div().flex_1().min_w_0());
-                            }
-                        }
-                        line
-                    })
-                    .collect()
-            }),
-        )
-        .flex_1()
-        .min_h_0()
-        .w_full()
-    }
-
-    fn library_tags(&self, entry: &Entry) -> String {
-        let discs = entry.disc_count();
-        let mut tags = entry.region.iter().cloned().collect::<Vec<_>>();
-        if discs > 1 {
-            tags.push(format!("{} {discs}", self.tr(Text::LibraryDiscs)));
-        }
-        if entry.scrape_active {
-            tags.push(self.tr(Text::LibraryScrapePending).into());
-        }
-        if entry.pending {
-            tags.push(self.tr(Text::LibraryPending).into());
-        }
-        tags.join(" · ")
-    }
-
-    fn library_cell(
-        &self,
-        entry: &Entry,
-        cache: Option<Entity<gpui::RetainAllImageCache>>,
-        cx: &Context<Self>,
-    ) -> gpui::Stateful<Div> {
-        let p = self.themes.active().palette;
-        let id = entry.game.id;
-        let title = div()
-            .truncate()
-            .font(self.fonts.medium())
-            .text_sm()
-            .child(entry.title.clone());
-        let subtitle = label(&p, self.library_tags(entry)).truncate();
-        let mut cell = div()
-            .id(("library-entry", id as u64))
-            .debug_selector(move || format!("library-entry-{id}"))
-            .tab_index(0)
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .rounded_md()
-            .border_1()
-            .bg(rgb(p.surface))
-            .border_color(rgb(if self.library.selected == Some(id) {
-                p.primary
-            } else {
-                p.border
-            }))
-            .focus(move |s| s.border_color(rgb(p.primary)))
-            .hover(move |s| s.bg(rgb(p.tonal_hover)))
-            .cursor_pointer()
-            .on_click(cx.listener(move |v, event: &gpui::ClickEvent, _, cx| {
-                v.library.select(id);
-                if event.is_keyboard() || event.click_count() >= 2 {
-                    v.launch_library(id, cx);
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }));
-        if self.preferences.library.list {
-            cell = cell
-                .items_center()
-                .gap_3()
-                .px_3()
-                .child(div().flex_1().min_w_0().child(title).child(subtitle))
-                .child(
-                    div()
-                        .w(px(100.))
-                        .child(label(&p, self.tr(Text::LibraryDate)))
-                        .child(
-                            entry
-                                .date
-                                .clone()
-                                .unwrap_or_else(|| self.tr(Text::LibraryUnknown).into()),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(px(145.))
-                        .child(label(&p, self.tr(Text::LibraryPlayed)))
-                        .child(self.played_at(entry.game.last_played)),
-                )
-                .child(
-                    div()
-                        .w(px(90.))
-                        .child(label(&p, self.tr(Text::LibraryTime)))
-                        .child(self.play_minutes(entry.game.seconds)),
-                );
-        } else {
-            let cover = div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .justify_center()
-                .items_center()
-                .rounded_md()
-                .overflow_hidden()
-                .bg(rgb(p.inset_surface()));
-            let cover = if let (Some(path), Some(cache)) = (&entry.thumbnail, cache) {
-                cover.image_cache(cache).child(
-                    gpui::img(path.clone())
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Contain),
-                )
-            } else {
-                cover.child(icon("disc", p.muted).size(px(38.)))
-            };
-            cell = cell
-                .flex_col()
-                .p_2()
-                .gap_1()
-                .child(cover)
-                .child(title)
-                .child(subtitle);
-        }
-        cell
-    }
-
     fn played_at(&self, timestamp: Option<i64>) -> String {
         timestamp
             .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
@@ -762,7 +493,21 @@ impl Desktop {
             )
     }
 
-    fn play_minutes(&self, seconds: u64) -> String {
-        format!("{} {}", seconds / 60, self.tr(Text::LibraryMinutes))
+    fn library_duration(&self, entry: &Entry) -> String {
+        if entry.game.last_played.is_none() && entry.game.seconds == 0 {
+            return self.tr(Text::LibraryNever).to_owned();
+        }
+        let minutes = entry.game.seconds / 60;
+        if minutes < 60 {
+            format!("{minutes} {}", self.tr(Text::LibraryMinutes))
+        } else {
+            format!(
+                "{} {} {} {}",
+                minutes / 60,
+                self.tr(Text::LibraryHours),
+                minutes % 60,
+                self.tr(Text::LibraryMinutes)
+            )
+        }
     }
 }

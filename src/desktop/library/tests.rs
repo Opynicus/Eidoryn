@@ -255,7 +255,7 @@ fn library_edit_title_survives_refresh_and_can_restore_automatic_title(cx: &mut 
     click_control(cx, "nav-library");
     click_control(cx, "library-entry-1");
     click_control(cx, "lib-details");
-    click_control(cx, Text::LibraryEditTitle.id());
+    click_control(cx, "lib-edit-info");
     press_keys(cx, "ctrl-a");
     cx.simulate_input("My release");
     click_control(cx, "lib-save-edit");
@@ -269,7 +269,7 @@ fn library_edit_title_survives_refresh_and_can_restore_automatic_title(cx: &mut 
         view.read_with(cx, |v, _| v.library.entries[0].title.clone()),
         "My release"
     );
-    click_control(cx, Text::LibraryEditTitle.id());
+    click_control(cx, "lib-edit-info");
     click_control(cx, "lib-reset-edit");
     assert_eq!(
         view.read_with(cx, |v, _| v.library.entries[0].title.clone()),
@@ -333,7 +333,17 @@ fn cover_settings_persist_provider_and_keep_custom_template(cx: &mut TestAppCont
             .scrape_new_games
     );
     assert!(cx.debug_bounds("lib-template").is_none());
+    click_control(cx, "lib-source-menu");
     click_control(cx, Text::LibraryCustomCoverSource.id());
+    click_control(cx, "lib-template");
+    press_keys(cx, "ctrl-a");
+    let saved_template = Preferences::load(&settings).unwrap().library.cover_template;
+    cx.simulate_input("http://example.com/cover");
+    click_control(cx, "lib-save-edit");
+    assert_eq!(
+        Preferences::load(&settings).unwrap().library.cover_template,
+        saved_template
+    );
     click_control(cx, "lib-template");
     press_keys(cx, "ctrl-a");
     let template = "https://art.example/${serial}.png";
@@ -346,6 +356,7 @@ fn cover_settings_persist_provider_and_keep_custom_template(cx: &mut TestAppCont
         (Text::LibraryIgdb, Provider::Igdb),
         (Text::LibraryLibretro, Provider::Libretro),
     ] {
+        click_control(cx, "lib-source-menu");
         click_control(cx, label.id());
         let saved = Preferences::load(&settings).unwrap().library;
         assert_eq!(saved.cover_provider, provider);
@@ -368,6 +379,7 @@ fn library_folder_import_confirms_recursion_without_starting_game(cx: &mut TestA
     cx.simulate_resize(size(px(1280.), px(900.)));
     cx.run_until_parked();
     click_control(cx, "nav-library");
+    click_control(cx, "lib-add-game");
     click_control(cx, "library-add-folder");
     cx.simulate_path_prompt_response(|options| {
         assert!(options.directories);
@@ -375,8 +387,12 @@ fn library_folder_import_confirms_recursion_without_starting_game(cx: &mut TestA
     });
     cx.run_until_parked();
     assert_eq!(
-        view.read_with(cx, |v, _| v.library.pending_directory.clone()),
-        Some(folder.clone())
+        view.read_with(cx, |v, _| v
+            .library
+            .pending_directory
+            .as_ref()
+            .map(|request| request.directories.clone())),
+        Some(vec![folder.clone()])
     );
     assert_eq!(library.games().unwrap().len(), 0);
     click_control(cx, "lib-confirm-folder");
@@ -528,6 +544,7 @@ fn recovered_import_jobs_can_be_retried_after_reopening_library(cx: &mut TestApp
         v.enter_library(cx);
     });
     cx.run_until_parked();
+    click_control(cx, "lib-task-history");
     assert!(cx.debug_bounds("lib-retry-failed").is_some());
     click_control(cx, "lib-retry-failed");
     cx.run_until_parked();
@@ -584,7 +601,7 @@ fn first_window_paints_while_library_migration_waits_for_the_database_writer(
         view
     });
     cx.run_until_parked();
-    assert!(cx.debug_bounds("library-add-images").is_some());
+    assert!(cx.debug_bounds("lib-add-game").is_some());
     assert!(!initialization.is_finished());
     lock.commit().unwrap();
     initialization.join().unwrap().unwrap();
@@ -612,4 +629,175 @@ fn failed_deferred_open_reports_the_library_path_in_the_workspace(cx: &mut TestA
         assert!(v.library.store.is_none());
         assert!(v.notice.as_ref().unwrap().contains(path.to_str().unwrap()));
     });
+}
+
+#[gpui::test]
+fn library_sort_search_and_layout_keep_the_selected_game_visible(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Library::open(&temp.path().join("library.db")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    cx.simulate_resize(size(px(980.), px(680.)));
+    let mut entries = thumbnail_entries(temp.path(), 3);
+    entries[1].game.seconds = 1800;
+    view.update(cx, |v, cx| {
+        v.preferences_path = Some(temp.path().join("preferences.json"));
+        v.library = Workspace::new(Some(store));
+        v.library.entries = entries;
+        v.library.loaded = true;
+        v.library.reorder();
+        v.page = WorkspacePage::Library;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    click_control(cx, "lib-sort");
+    click_control(cx, Text::LibraryTime.id());
+    assert_eq!(view.read_with(cx, |v, _| v.library.order[0]), 1);
+    click_control(cx, "library-entry-2");
+    click_control(cx, "lib-layout");
+    assert!(view.read_with(cx, |v, _| v.preferences.library.list
+        && v.library.selected == Some(2)));
+    click_control(cx, "lib-grid");
+    click_control(cx, "library-search");
+    cx.simulate_input("not in this collection");
+    assert!(view.read_with(cx, |v, _| v.library.order.is_empty()
+        && v.library.selected.is_none()));
+    click_control(cx, "lib-clear-search");
+    assert_eq!(view.read_with(cx, |v, _| v.library.order.len()), 3);
+}
+
+#[gpui::test]
+fn library_add_dialog_traps_keyboard_and_dismisses_without_importing(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Library::open(&temp.path().join("library.db")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    view.update(cx, |v, _| v.library = Workspace::new(Some(store.clone())));
+    click_control(cx, "nav-library");
+    click_control(cx, "lib-add-game");
+    assert!(cx.debug_bounds("library-add-images").is_some());
+    for keys in ["tab tab tab tab", "shift-tab shift-tab", "f8"] {
+        press_keys(cx, keys);
+        cx.update(|window, cx| {
+            let v = view.read(cx);
+            assert!(v.library_dialog_focus.scope.contains_focused(window, cx));
+            assert!(!v.graphics.open);
+        });
+    }
+    press_keys(cx, "escape");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("library-dialog").is_none());
+    press_keys(cx, "enter");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("library-add-folder").is_some());
+    click_control(cx, "lib-close-dialog");
+    assert!(cx.debug_bounds("library-dialog").is_none());
+    assert!(store.games().unwrap().is_empty());
+}
+
+#[gpui::test]
+fn library_grid_fits_the_window_and_list_rows_match_the_header(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Library::open(&temp.path().join("library.db")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    let mut entries = thumbnail_entries(temp.path(), 12);
+    // Measure both downloaded art and the typographic fallback.
+    for entry in entries.iter_mut().step_by(2) {
+        entry.thumbnail = None;
+    }
+    view.update(cx, |v, cx| {
+        v.preferences_path = Some(temp.path().join("preferences.json"));
+        v.library = Workspace::new(Some(store));
+        v.library.entries = entries;
+        v.library.loaded = true;
+        v.library.reorder();
+        v.page = WorkspacePage::Library;
+        cx.notify();
+    });
+    for (width, last_tile) in [
+        (1440., "library-entry-6"),
+        (1280., "library-entry-5"),
+        (980., "library-entry-4"),
+    ] {
+        cx.simulate_resize(size(px(width), px(900.)));
+        cx.run_until_parked();
+        let page = cx.debug_bounds("library-page").unwrap();
+        let first = cx.debug_bounds("library-entry-1").unwrap();
+        let last = cx.debug_bounds(last_tile).unwrap();
+        assert_eq!(first.top(), last.top());
+        assert!((last.right() - page.right()).abs() <= px(1.));
+        for (cover, tags) in [
+            ("library-art-1", "library-badges-1"),
+            ("library-art-2", "library-badges-2"),
+        ] {
+            let art = cx.debug_bounds(cover).unwrap();
+            let badges = cx.debug_bounds(tags).unwrap();
+            assert!((art.size.width - art.size.height).abs() <= px(1.));
+            assert!(badges.top() >= art.bottom() && badges.bottom() <= first.bottom());
+        }
+        click_control(cx, "lib-layout");
+        let header = cx.debug_bounds("library-list-header").unwrap();
+        let row = cx.debug_bounds("library-entry-2").unwrap();
+        assert!((header.left() - row.left()).abs() <= px(1.));
+        assert!((header.right() - row.right()).abs() <= px(1.));
+        click_control(cx, "lib-grid");
+    }
+}
+
+#[gpui::test]
+fn dropping_a_single_image_on_the_library_imports_without_booting(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Dropped.iso");
+    std::fs::write(&path, vec![0; 2048 * 32]).unwrap();
+    let store = Library::open(&temp.path().join("library.db")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    view.update(cx, |v, _| v.library = Workspace::new(Some(store.clone())));
+    click_control(cx, "nav-library");
+    cx.update(|window, cx| {
+        let files = gpui::ExternalPaths([path.clone()].into_iter().collect());
+        view.update(cx, |v, cx| v.drop_discs(&files, window, cx));
+    });
+    cx.run_until_parked();
+    let games = store.games().unwrap();
+    assert_eq!(games.len(), 1);
+    assert_eq!(games[0].locations[0].path, path);
+    assert!(view.read_with(cx, |v, _| v.page == WorkspacePage::Library
+        && v.snapshot.media_revision == 0
+        && v.library.pending_bios.is_none()));
+}
+
+#[gpui::test]
+fn library_details_reflow_and_removal_requires_confirmation(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("Original.iso");
+    std::fs::write(&path, vec![0; 2048 * 32]).unwrap();
+    let db = Library::open(&temp.path().join("library.db")).unwrap();
+    db.scan_files(std::slice::from_ref(&path), &AtomicBool::default(), |_| {})
+        .unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    view.update(cx, |v, _| v.library = Workspace::new(Some(db.clone())));
+    cx.simulate_resize(size(px(1440.), px(1100.)));
+    cx.run_until_parked();
+    for control in ["nav-library", "library-entry-1", "lib-details"] {
+        click_control(cx, control);
+    }
+    let edition = cx.debug_bounds("library-edition-panels").unwrap();
+    let management = cx.debug_bounds("library-management-panels").unwrap();
+    assert!(management.left() >= edition.right());
+    click_control(cx, "lib-remove");
+    assert!(cx.debug_bounds("lib-confirm").is_some());
+    press_keys(cx, "escape");
+    assert!(cx.debug_bounds("lib-confirm").is_none());
+    assert_eq!(db.games().unwrap().len(), 1);
+    cx.simulate_resize(size(px(980.), px(900.)));
+    cx.run_until_parked();
+    let edition = cx.debug_bounds("library-edition-panels").unwrap();
+    let management = cx.debug_bounds("library-management-panels").unwrap();
+    assert_eq!(edition.left(), management.left());
+    assert!(management.top() >= edition.bottom());
+    cx.simulate_resize(size(px(1440.), px(1100.)));
+    cx.run_until_parked();
+    click_control(cx, "lib-remove");
+    click_control(cx, "lib-confirm");
+    assert!(db.games().unwrap().is_empty());
+    assert!(path.is_file());
+    assert!(cx.debug_bounds("library-details").is_none());
 }

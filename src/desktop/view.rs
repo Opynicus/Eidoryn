@@ -19,7 +19,7 @@ impl Render for Desktop {
             self.library.shutdown();
             window.remove_window();
         }
-        let p = self.themes.active().palette;
+        let p = self.workspace_palette();
         self.sync_presentation(window, cx);
         let video_only = self.presentation.shows_video();
         let body = if video_only {
@@ -27,7 +27,7 @@ impl Render for Desktop {
         } else {
             self.workspace(window, cx)
         };
-        let mut root = div()
+        let root = div()
             .id("desktop-root")
             .tab_group()
             .relative()
@@ -45,7 +45,13 @@ impl Render for Desktop {
                     || self.snapshot.success_message.is_some(),
                 |root| root.font(self.fonts.normal()),
             )
-            .on_drop(cx.listener(Self::drop_discs))
+            .on_drop(
+                cx.listener(|view, paths: &gpui::ExternalPaths, window, cx| {
+                    if !view.library_dialog_focus.open && !view.graphics.open {
+                        view.drop_discs(paths, window, cx);
+                    }
+                }),
+            )
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::capture_binding))
             .on_key_down(cx.listener(Self::key))
@@ -78,6 +84,29 @@ impl Render for Desktop {
                 }
             }))
             .child(body);
+        self.workspace_overlays(root, window, cx)
+    }
+}
+
+impl Desktop {
+    fn workspace_overlays(
+        &mut self,
+        root: gpui::Stateful<gpui::Div>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let library_dialog = if self.page == WorkspacePage::Library
+            && !self.presentation.shows_video()
+            && !self.graphics.open
+        {
+            self.detail_dialog(cx)
+                .or_else(|| self.task_dialog(cx))
+                .or_else(|| self.overview_dialog(cx))
+        } else {
+            None
+        };
+        self.sync_library_dialog_focus(library_dialog.is_some(), window, cx);
+        let mut root = root.children(library_dialog);
         if self.graphics.open {
             if !self.settings_focus.contains_focused(window, cx) {
                 window.focus(&self.settings_focus, cx);
@@ -104,9 +133,7 @@ impl Render for Desktop {
         }
         root.children(self.delete_snapshot_dialog(cx))
     }
-}
 
-impl Desktop {
     fn sync_presentation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let fullscreen = window.is_fullscreen();
         let fullscreen_changed = fullscreen != self.presentation.native_fullscreen;
@@ -207,7 +234,14 @@ impl Desktop {
         })
     }
 
-    fn content_padding(window: &Window) -> gpui::Pixels {
+    fn content_padding(&self, window: &Window) -> gpui::Pixels {
+        if self.page == WorkspacePage::Library {
+            return if window.viewport_size().width <= px(1050.) {
+                px(28.)
+            } else {
+                px(40.)
+            };
+        }
         if window.viewport_size().width <= px(1100.) {
             px(24.)
         } else {
@@ -218,12 +252,11 @@ impl Desktop {
     pub(super) fn content_width(&self, window: &Window) -> gpui::Pixels {
         (window.viewport_size().width
             - self.navigation.width(window)
-            - Self::content_padding(window) * 2.)
+            - self.content_padding(window) * 2.)
             .min(px(1500.))
     }
 
     fn workspace(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let p = self.themes.active().palette;
         let page = match self.page {
             WorkspacePage::Console => self.console_page(window, cx),
             WorkspacePage::Game => self.game_page(window, cx),
@@ -256,10 +289,12 @@ impl Desktop {
                             .when(self.page != WorkspacePage::Library, |s| {
                                 s.overflow_y_scroll()
                             })
-                            .px(Self::content_padding(window))
+                            .px(self.content_padding(window))
                             .pt(
                                 if window.is_fullscreen() && self.page == WorkspacePage::Game {
                                     px(2.)
+                                } else if self.page == WorkspacePage::Library {
+                                    px(28.)
                                 } else {
                                     px(22.)
                                 },
@@ -280,46 +315,64 @@ impl Desktop {
                                     .child(page),
                             ),
                     )
-                    .child(
-                        div()
-                            .h(px(28.))
-                            .flex_shrink_0()
-                            .px(Self::content_padding(window))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .border_t_1()
-                            .border_color(rgb(p.border))
-                            .text_size(px(11.))
-                            .text_color(rgb(p.muted))
-                            .child(format!(
-                                "{:.1} / {:.1} FPS  ·  {:.0}% {}  ·  {}",
-                                self.snapshot.video_fps,
-                                self.snapshot.target_fps,
-                                100. * self.snapshot.video_fps / self.snapshot.target_fps,
-                                self.tr(Text::Speed),
-                                self.renderer_label()
-                            ))
-                            .when(window.viewport_size().width >= px(1100.), |bar| {
-                                bar.child(self.tr(Text::Shortcuts))
-                            }),
-                    ),
+                    .when(self.page != WorkspacePage::Library, |column| {
+                        column.child(self.emulation_status(window))
+                    }),
             )
             .when(!self.navigation.hidden, |row| {
                 row.child(self.sidebar_handle(width, cx))
             })
     }
 
+    fn emulation_status(&self, window: &Window) -> gpui::Div {
+        let p = self.themes.active().palette;
+        div()
+            .h(px(28.))
+            .flex_shrink_0()
+            .px(self.content_padding(window))
+            .flex()
+            .items_center()
+            .justify_between()
+            .border_t_1()
+            .border_color(rgb(p.border))
+            .text_size(px(11.))
+            .text_color(rgb(p.muted))
+            .child(format!(
+                "{:.1} / {:.1} FPS  ·  {:.0}% {}  ·  {}",
+                self.snapshot.video_fps,
+                self.snapshot.target_fps,
+                100. * self.snapshot.video_fps / self.snapshot.target_fps,
+                self.tr(Text::Speed),
+                self.renderer_label()
+            ))
+            .when(window.viewport_size().width >= px(1100.), |bar| {
+                bar.child(self.tr(Text::Shortcuts))
+            })
+    }
+
     fn topbar(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
+        let p = &self.workspace_palette();
+        let library = self.page == WorkspacePage::Library;
+        let breadcrumb = if library {
+            self.library.subpage_title().map_or_else(
+                || self.tr(Text::Library).to_owned(),
+                |page| format!("{}  /  {}", self.tr(Text::Library), self.tr(page)),
+            )
+        } else {
+            format!(
+                "{}  /  {}",
+                self.tr(Text::Workspace),
+                self.workspace_title()
+            )
+        };
         let toggle = self.tr(if self.navigation.hidden {
             Text::ShowSidebar
         } else {
             Text::HideSidebar
         });
         div()
-            .h(px(64.))
-            .px(Self::content_padding(window))
+            .h(px(if library { 70. } else { 64. }))
+            .px(self.content_padding(window))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -335,18 +388,11 @@ impl Desktop {
                         cx.notify();
                     })),
             )
-            .child(
-                label(
-                    p,
-                    format!(
-                        "{}  /  {}",
-                        self.tr(Text::Workspace),
-                        self.workspace_title()
-                    ),
-                )
-                .text_size(px(13.)),
-            )
+            .child(label(p, breadcrumb).text_size(px(13.)))
             .child(div().flex_1())
+            .when(library, |bar| {
+                bar.child(label(p, "PS1 LIBRARY").text_size(px(11.)).mr_2())
+            })
             .when(window.is_fullscreen(), |bar| {
                 bar.child(self.enlargement_button(window, cx))
             })

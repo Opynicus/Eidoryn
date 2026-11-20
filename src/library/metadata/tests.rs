@@ -20,6 +20,47 @@ fn response(releases: Vec<Release>) -> SourceResponse {
 }
 
 #[test]
+fn release_form_changes_are_atomic_and_keep_untouched_fields_automatic() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    refresh_with(&lib, 1, |_| {
+        Ok(response(vec![downloaded("Q1", "Original")]))
+    })
+    .unwrap();
+    assert!(
+        set_overrides(
+            &lib,
+            1,
+            &[
+                (Field::Title, Some("Mine")),
+                (Field::Date, Some("1997-02-30"))
+            ]
+        )
+        .is_err()
+    );
+    assert_eq!(list(&lib).unwrap()[&1].manual_fields, [false; 3]);
+    set_overrides(
+        &lib,
+        1,
+        &[(Field::Title, Some("Mine")), (Field::Date, Some("1997"))],
+    )
+    .unwrap();
+    let rows = list(&lib).unwrap();
+    assert_eq!(rows[&1].manual_fields, [true, false, true]);
+    assert!(
+        rows[&1]
+            .release_title
+            .as_deref()
+            .unwrap()
+            .starts_with("Original")
+    );
+    assert_eq!(rows[&1].title.as_deref(), Some("Mine"));
+    set_overrides(&lib, 1, &[(Field::Date, None)]).unwrap();
+    assert_eq!(list(&lib).unwrap()[&1].manual_fields, [true, false, false]);
+}
+
+#[test]
 fn import_uses_only_local_release_data_and_names_are_suggestions() {
     let tmp = tempfile::tempdir().unwrap();
     let lib = Library::open(&tmp.path().join("index.db")).unwrap();

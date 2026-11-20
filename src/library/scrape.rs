@@ -12,7 +12,8 @@ use std::{
 };
 
 pub use super::jobs::{
-    CoverClaim, cancel_games, due_games, enqueue_games, failed_games, recent_failures,
+    CoverClaim, JobRecord, JobStatus, cancel_games, due_games, enqueue_games, failed_games,
+    recent_failures, recent_jobs,
 };
 use super::{
     Library, covers,

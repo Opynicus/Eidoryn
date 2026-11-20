@@ -471,6 +471,44 @@ pub(super) fn state(db: &Connection, id: i64) -> rusqlite::Result<State> {
     })
 }
 
+/// Persisted scrape-stage state shown in the library task log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::Type)]
+#[sqlx(rename_all = "snake_case")]
+pub enum JobStatus {
+    Pending,
+    Running,
+    Succeeded,
+    RetryWait,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+pub struct JobRecord {
+    pub title: String,
+    pub provider: String,
+    pub cover: bool,
+    pub status: JobStatus,
+    pub skipped: bool,
+    pub updated_at: i64,
+}
+
+/// Newest queued stages for games still in the library, including finished jobs.
+pub fn recent_jobs(lib: &Library) -> Result<Vec<JobRecord>, String> {
+    let pool = lib.pool()?;
+    let query = sqlx::query_as(
+        "SELECT COALESCE(m.user_title,m.auto_title,g.fallback_title) AS title,
+                j.provider,j.job_type='cover' AS cover,j.status,
+                COALESCE(j.outcome='skipped',0) AS skipped,j.updated_at
+         FROM scrape_jobs j JOIN games g ON g.id=j.game_id
+         LEFT JOIN game_metadata m ON m.game_id=g.id
+         WHERE NOT g.hidden ORDER BY j.id DESC LIMIT 20",
+    );
+    runtime()?
+        .block_on(query.fetch_all(pool))
+        .map_err(|e| e.to_string())
+}
+
 /// Most recent failed stages, with bounded, credential-free diagnostics.
 pub fn recent_failures(lib: &Library) -> Result<Vec<(i64, String)>, String> {
     let pool = lib.pool()?;

@@ -10,6 +10,7 @@ mod fonts;
 mod graphics;
 mod icons;
 mod library;
+mod library_ui;
 mod probe;
 mod ps1_inspector;
 mod recent_games;
@@ -240,6 +241,7 @@ fn open_window(
                             theme_paths: startup.theme_paths,
                             clean_fullscreen: startup.clean_fullscreen,
                             settings_focus: cx.focus_handle(),
+                            library_dialog_focus: library_ui::DialogFocus::new(cx.focus_handle()),
                             runner,
                             snapshot_mode: snapshot.mode,
                             snapshot,
@@ -306,6 +308,7 @@ struct Desktop {
     theme_paths: std::collections::HashMap<String, std::path::PathBuf>,
     clean_fullscreen: bool,
     settings_focus: FocusHandle,
+    library_dialog_focus: library_ui::DialogFocus,
     runner: Runner,
     snapshot: Snapshot,
     image: Option<VideoImage>,

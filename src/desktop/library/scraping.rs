@@ -1,10 +1,11 @@
 //! Schedule manual refreshes and newly committed imports on the background executor.
 use super::{Desktop, Text, div, label};
+use crate::desktop::components::ghost_button;
 use eidoryn_psx::library::{
     Library,
     scrape::{self, Mode, Report},
 };
-use gpui::{Context, Div, prelude::*};
+use gpui::{Context, Div, prelude::*, px, rgb};
 use std::{
     collections::BTreeSet,
     sync::{
@@ -57,6 +58,7 @@ pub(super) struct Scraping {
     incremental: BTreeSet<i64>,
     full: BTreeSet<i64>,
     diagnostics: Vec<String>,
+    history: Option<Result<Vec<scrape::JobRecord>, String>>,
     failed: BTreeSet<i64>,
     reading_queue: bool,
     queue_revision: u64,
@@ -74,6 +76,7 @@ impl Scraping {
             incremental: BTreeSet::new(),
             full: BTreeSet::new(),
             diagnostics: Vec::new(),
+            history: None,
             failed: BTreeSet::new(),
             reading_queue: false,
             queue_revision: 0,
@@ -187,6 +190,7 @@ impl Desktop {
         }
         state.reading_queue = true;
         let revision = state.queue_revision;
+        let load_history = self.library.task_history_open;
         state.next_recovery = Instant::now() + Duration::from_secs(3);
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -196,6 +200,7 @@ impl Desktop {
                         scrape::due_games(&store)?,
                         scrape::failed_games(&store)?,
                         scrape::recent_failures(&store)?,
+                        load_history.then(|| scrape::recent_jobs(&store)),
                     ))
                 })
                 .await;
@@ -207,7 +212,11 @@ impl Desktop {
                     return;
                 }
                 match result {
-                    Ok((due, failed, diagnostics)) => {
+                    Ok((due, failed, diagnostics, history)) => {
+                        if history.is_some() && state.history != history {
+                            state.history = history;
+                            cx.notify();
+                        }
                         let diagnostics = diagnostics
                             .into_iter()
                             .map(|(id, error)| {
@@ -245,6 +254,9 @@ impl Desktop {
                         v.poll_library_scrape(cx);
                     }
                     Err(error) if v.notice.as_ref() != Some(&error) => {
+                        if load_history {
+                            state.history = Some(Err(error.clone()));
+                        }
                         v.notice = Some(error);
                         cx.notify();
                     }
@@ -464,80 +476,217 @@ impl Desktop {
         items.join(" · ")
     }
 
+    fn scrape_title(&self, mode: Mode) -> &'static str {
+        self.tr(match mode {
+            Mode::Full => Text::LibraryRefreshAll,
+            Mode::Incremental => Text::LibraryScrapeNew,
+        })
+    }
+
     pub(super) fn scrape_status(&self, cx: &Context<Self>) -> Div {
+        let p = self.library_palette();
         let state = &self.library.scraping;
-        let palette = self.themes.active().palette;
-        let title = |mode| {
-            self.tr(match mode {
-                Mode::Full => Text::LibraryRefreshAll,
-                Mode::Incremental => Text::LibraryScrapeNew,
-            })
+        if let Some(active) = &state.active {
+            let cancel = active.cancel.clone();
+            let mut detail = format!(
+                "{} · {} {}/{} · {} {}",
+                self.scrape_title(active.mode),
+                self.tr(Text::LibraryScrapeFinished),
+                active.displayed,
+                active.ids.len(),
+                self.tr(Text::LibraryFailed),
+                active.failed
+            );
+            if let Some(game) = active
+                .current
+                .and_then(|id| self.library.entries.iter().find(|e| e.game.id == id))
+            {
+                detail.push_str(" · ");
+                detail.push_str(&game.title);
+            }
+            let progress = active.displayed as f32 / active.ids.len().max(1) as f32;
+            return self
+                .task_banner("reset", Text::LibraryRefreshRunning, detail)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(progress_bar(&p, progress))
+                        .child(self.library_button(
+                            "lib-cancel-scrape",
+                            Text::LibraryCancelRefresh,
+                            false,
+                            cx,
+                            move |_, _, _| cancel.store(true, Ordering::Relaxed),
+                        )),
+                );
+        }
+        let (icon, title, description) = if state.full_requested() {
+            (
+                "reset",
+                Text::LibraryRefreshRunning,
+                self.tr(Text::LibraryRefreshQueued).to_owned(),
+            )
+        } else if !state.incremental.is_empty() {
+            (
+                "reset",
+                Text::LibraryScrapeNew,
+                format!(
+                    "{} · {}",
+                    self.tr(Text::LibraryScrapePending),
+                    state.incremental.len()
+                ),
+            )
+        } else {
+            (
+                "check",
+                Text::LibraryStatusReady,
+                self.tr(Text::LibraryStatusReadyHint).to_owned(),
+            )
         };
-        let row = div().flex().flex_wrap().items_center().gap_2();
-        let row = row.when(state.has_failures(), |row| {
-            row.child(self.library_button(
+        self.task_banner(icon, title, description).child(
+            ghost_button(
+                &self.fonts,
+                &p,
+                "lib-task-history",
+                self.tr(Text::LibraryViewHistory),
+                None,
+            )
+            .role(gpui::Role::Button)
+            .aria_label(self.tr(Text::LibraryTaskHistory))
+            .debug_selector(|| "lib-task-history".into())
+            .on_click(cx.listener(|v, _, _, cx| {
+                v.library.task_history_open = true;
+                v.library.scraping.next_recovery = Instant::now();
+                v.read_scrape_queue(cx);
+                cx.notify();
+            })),
+        )
+    }
+
+    pub(super) fn task_history_dialog(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.library_palette();
+        let state = &self.library.scraping;
+        let mut content = div()
+            .id("lib-task-history-body")
+            .max_h(px(388.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_2();
+        if let Some((mode, report, cancelled)) = &state.last {
+            content = content.child(label(
+                &p,
+                self.scrape_summary(self.scrape_title(*mode), report, *cancelled),
+            ));
+        }
+        content = content.child(self.scan_report_panel());
+        let errors = if state.diagnostics.is_empty() {
+            state
+                .last
+                .as_ref()
+                .map_or(&[][..], |(_, report, _)| report.errors.as_slice())
+        } else {
+            &state.diagnostics
+        };
+        content = content.children(
+            errors
+                .iter()
+                .map(|error| label(&p, error.clone()).text_color(rgb(p.on_error))),
+        );
+        if state.has_failures() {
+            content = content.child(div().flex().child(self.library_button(
                 "lib-retry-failed",
                 Text::LibraryRetryFailed,
                 false,
                 cx,
                 |v, _, cx| {
                     let ids = v.library.scraping.failed.iter().copied().collect();
+                    v.library.task_history_open = false;
                     v.enqueue_library_jobs(Some(ids), cx);
                 },
-            ))
-        });
-        let mut errors = state.diagnostics.as_slice();
-        let row = if let Some(active) = &state.active {
-            let cancel = active.cancel.clone();
-            let current = active
-                .current
-                .and_then(|id| self.library.entries.iter().find(|e| e.game.id == id));
-            row.when_some(current, |row, entry| {
-                row.child(label(&palette, entry.title.clone()).truncate())
-            })
-            .child(label(
-                &palette,
-                format!(
-                    "{} · {}/{} · {} {}",
-                    title(active.mode),
-                    active.displayed,
-                    active.ids.len(),
-                    self.tr(Text::LibraryFailed),
-                    active.failed
-                ),
-            ))
-            .child(self.library_button(
-                "lib-cancel-scrape",
-                Text::LibraryCancel,
-                false,
-                cx,
-                move |_, _, _| cancel.store(true, Ordering::Relaxed),
-            ))
-        } else if state.full_requested() {
-            row.child(label(&palette, self.tr(Text::LibraryRefreshQueued)))
-        } else if let Some((mode, report, cancelled)) = &state.last {
-            if errors.is_empty() {
-                errors = &report.errors;
+            )));
+        }
+        content = content.child(
+            div()
+                .font(self.fonts.semibold())
+                .text_sm()
+                .child(self.tr(Text::LibraryRecentJobs)),
+        );
+        content = match &state.history {
+            Some(Err(error)) => content.child(label(&p, error.clone()).text_color(rgb(p.on_error))),
+            None => content.child(label(&p, self.tr(Text::LibraryLoading))),
+            Some(Ok(rows)) if rows.is_empty() => {
+                content.child(label(&p, self.tr(Text::LibraryTaskEmpty)))
             }
-            row.child(label(
-                &palette,
-                self.scrape_summary(title(*mode), report, *cancelled),
-            ))
+            Some(Ok(rows)) => content.children(rows.iter().map(|row| self.job_row(row))),
+        };
+        self.library_modal(self.tr(Text::LibraryTaskHistory), div().child(content), cx)
+    }
+
+    fn job_row(&self, row: &scrape::JobRecord) -> Div {
+        use scrape::JobStatus;
+        let p = self.library_palette();
+        let stage = if row.cover {
+            Text::LibraryCover
         } else {
-            row
+            Text::LibraryTaskMetadata
+        };
+        let status = match row.status {
+            JobStatus::Pending => Text::LibraryScrapePending,
+            JobStatus::Running => Text::LibraryProcessing,
+            JobStatus::Succeeded if row.skipped => Text::LibrarySkipped,
+            JobStatus::Succeeded => Text::LibraryScrapeFinished,
+            JobStatus::RetryWait => Text::LibraryRetryWait,
+            JobStatus::Failed => Text::LibraryFailed,
+            JobStatus::Cancelled => Text::LibraryScrapeCancelled,
         };
         div()
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(rgb(p.border))
+            .py_2()
             .flex()
             .flex_col()
-            .child(row)
-            .when(!errors.is_empty(), |panel| {
-                panel.child(
-                    div()
-                        .id("library-scrape-issues")
-                        .max_h(gpui::px(84.))
-                        .overflow_y_scroll()
-                        .children(errors.iter().map(|e| label(&palette, e.clone()))),
-                )
-            })
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font(self.fonts.semibold())
+                            .child(row.title.clone()),
+                    )
+                    .child(label(&p, self.tr(status)).flex_shrink_0()),
+            )
+            .child(label(
+                &p,
+                format!(
+                    "{} · {} · {}",
+                    self.tr(stage),
+                    row.provider,
+                    self.played_at(Some(row.updated_at))
+                ),
+            ))
     }
+}
+
+pub(super) fn progress_bar(p: &eidoryn_psx::theme::Palette, fraction: f32) -> Div {
+    div()
+        .w(px(112.))
+        .h(px(5.))
+        .rounded_full()
+        .bg(rgb(p.border))
+        .child(
+            div()
+                .h_full()
+                .rounded_full()
+                .w(gpui::relative(fraction.clamp(0., 1.)))
+                .bg(rgb(p.primary)),
+        )
 }

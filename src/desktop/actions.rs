@@ -224,6 +224,9 @@ impl Desktop {
             cx.stop_propagation();
             return;
         }
+        if self.library_dialog_key(key, cx) {
+            return;
+        }
         if key == "f12" {
             self.toggle_clean_fullscreen(cx);
             if !self.graphics.open {
@@ -406,7 +409,12 @@ impl Desktop {
             .renaming_state
             .as_ref()
             .map(|state| &state.focus)
-            .or_else(|| self.graphics.open.then_some(&self.settings_focus));
+            .or_else(|| self.graphics.open.then_some(&self.settings_focus))
+            .or_else(|| {
+                self.library_dialog_focus
+                    .open
+                    .then_some(&self.library_dialog_focus.scope)
+            });
         let mut first = None;
         loop {
             if backwards {

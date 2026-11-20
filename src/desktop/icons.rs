@@ -47,6 +47,12 @@ impl AssetSource for Icons {
             "info" => include_bytes!("../../assets/icons/info.svg"),
             "close" => include_bytes!("../../assets/icons/close.svg"),
             "skip" => include_bytes!("../../assets/icons/skip.svg"),
+            "search" => include_bytes!("../../assets/icons/search.svg"),
+            "list" => include_bytes!("../../assets/icons/list.svg"),
+            "folder" => include_bytes!("../../assets/icons/folder.svg"),
+            "check" => include_bytes!("../../assets/icons/check.svg"),
+            "chevron-down" => include_bytes!("../../assets/icons/chevron-down.svg"),
+            "file" => include_bytes!("../../assets/icons/file.svg"),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(bytes)))
