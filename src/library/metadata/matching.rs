@@ -1,7 +1,13 @@
 //! Exact disc identification and user-confirmed matches from the local release index.
-use super::{Library, Release, evidence, wikidata};
+use super::{Library, Release, evidence, is_release_serial};
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashSet;
+
+pub(super) fn region_matches(disc: &str, release_market: &str) -> bool {
+    release_market.split(',').map(str::trim).any(|market| {
+        disc == market || (disc == "Europe" && crate::library::european_market(market))
+    })
+}
 
 pub(super) fn matching_serial<'a>(
     rows: &'a [Release],
@@ -11,7 +17,7 @@ pub(super) fn matching_serial<'a>(
     let serial = serial?;
     let mut exact = rows
         .iter()
-        .filter(|r| r.serial == serial && region.is_none_or(|v| v == r.region));
+        .filter(|r| r.serial == serial && region.is_none_or(|v| region_matches(v, &r.region)));
     let found = exact.next()?;
     exact.next().is_none().then_some(found)
 }
@@ -121,7 +127,7 @@ pub fn candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, S
     {
         result.push(row.map_err(|e| e.to_string())?);
     }
-    if result.is_empty() && !needle.is_empty() && !wikidata::is_supported_serial(&serial) {
+    if result.is_empty() && !needle.is_empty() && !is_release_serial(&serial) {
         return fuzzy_suggestions(&conn, &name).map_err(|e| e.to_string());
     }
     Ok(result)

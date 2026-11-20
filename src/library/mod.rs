@@ -59,6 +59,33 @@ pub struct Location {
     pub fast_boot: bool,
 }
 
+// PAL discs also exist outside Europe. Keep the release market for display
+// while allowing European countries to match a disc identified as Europe.
+fn european_market(market: &str) -> bool {
+    matches!(
+        market,
+        "Europe"
+            | "Austria"
+            | "Belgium"
+            | "Denmark"
+            | "Finland"
+            | "France"
+            | "Germany"
+            | "Greece"
+            | "Ireland"
+            | "Italy"
+            | "Netherlands"
+            | "Norway"
+            | "Poland"
+            | "Portugal"
+            | "Russia"
+            | "Scandinavia"
+            | "Spain"
+            | "Sweden"
+            | "UK"
+    )
+}
+
 const SCHEMA_VERSION: u32 = 6;
 const SCHEMA: &str = include_str!("schema.sql");
 

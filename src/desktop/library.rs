@@ -112,6 +112,19 @@ impl Entry {
         }
     }
 
+    fn publication_date(&self) -> (Text, Option<&str>) {
+        match (self.date.as_deref(), self.work_date.as_deref()) {
+            (None, Some(date)) => (Text::LibraryWorkDate, Some(date)),
+            (edition, _) => (Text::LibraryDate, edition),
+        }
+    }
+
+    fn matched_release<'a>(&'a self, pending_label: &'a str) -> Option<&'a str> {
+        self.pending
+            .then_some(pending_label)
+            .or(self.release_title.as_deref())
+    }
+
     fn disc_count(&self) -> usize {
         self.discs
     }

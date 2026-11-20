@@ -162,27 +162,7 @@ fn replace_index(
 fn matches_region(dat: &str, region: &str) -> bool {
     region.is_empty()
         || dat.split(" / ").any(|part| {
-            part == region
-                || region == "Europe"
-                    && matches!(
-                        part,
-                        "Austria"
-                            | "Belgium"
-                            | "Denmark"
-                            | "Finland"
-                            | "France"
-                            | "Germany"
-                            | "Greece"
-                            | "Ireland"
-                            | "Italy"
-                            | "Netherlands"
-                            | "Norway"
-                            | "Poland"
-                            | "Portugal"
-                            | "Russia"
-                            | "Spain"
-                            | "Sweden"
-                    )
+            part == region || region == "Europe" && crate::library::european_market(part)
         })
 }
 

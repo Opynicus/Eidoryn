@@ -15,26 +15,30 @@ fn bytes_read() -> Option<u64> {
         .find_map(|line| line.strip_prefix("rchar: ")?.parse().ok())
 }
 
+fn sample_entry(id: i64) -> Entry {
+    Entry::new(
+        Game {
+            platform: "PS1".into(),
+            manual_position: None,
+            id,
+            title: format!("Disc {id:04}"),
+            serial: Some(format!("SLUS-{id:05}")),
+            region: None,
+            last_played: None,
+            seconds: 0,
+            locations: Vec::new(),
+        },
+        None,
+    )
+}
+
 fn thumbnail_entries(root: &std::path::Path, games: i64) -> Vec<Entry> {
     let image = image::RgbImage::from_pixel(192, 192, image::Rgb([10, 20, 30]));
     let original = root.join("cover.png");
     image.save(&original).unwrap();
     (1..=games)
         .map(|id| {
-            let mut entry = Entry::new(
-                Game {
-                    platform: "PS1".into(),
-                    manual_position: None,
-                    id,
-                    title: format!("Disc {id:04}"),
-                    serial: Some(format!("SLUS-{id:05}")),
-                    region: None,
-                    last_played: None,
-                    seconds: 0,
-                    locations: Vec::new(),
-                },
-                None,
-            );
+            let mut entry = sample_entry(id);
             let path = root.join(format!("thumb-{id}.png"));
             std::fs::copy(&original, &path).unwrap();
             entry.thumbnail = Some(path);
@@ -237,6 +241,33 @@ fn verified_copies_share_a_disc_number_in_the_card_badge() {
         None,
     );
     assert_eq!(entry.disc_count(), 2);
+}
+
+#[test]
+fn publication_scope_and_match_status_follow_available_release_evidence() {
+    let mut entry = sample_entry(1);
+    let pending = "Needs confirmation";
+
+    assert_eq!(entry.publication_date(), (Text::LibraryDate, None));
+    assert_eq!(entry.matched_release(pending), None);
+    entry.pending = true;
+    assert_eq!(entry.matched_release(pending), Some(pending));
+
+    entry.release_title = Some("Original · Japan".into());
+    assert_eq!(entry.matched_release(pending), Some(pending));
+    entry.pending = false;
+    entry.work_date = Some("1997".into());
+    assert_eq!(
+        entry.publication_date(),
+        (Text::LibraryWorkDate, Some("1997"))
+    );
+    assert_eq!(entry.matched_release(pending), Some("Original · Japan"));
+
+    entry.date = Some("1998-03".into());
+    assert_eq!(
+        entry.publication_date(),
+        (Text::LibraryDate, Some("1998-03"))
+    );
 }
 
 #[gpui::test]
@@ -641,6 +672,8 @@ fn library_sort_search_and_layout_keep_the_selected_game_visible(cx: &mut TestAp
     cx.simulate_resize(size(px(980.), px(680.)));
     let mut entries = thumbnail_entries(temp.path(), 3);
     entries[1].game.seconds = 1800;
+    entries[1].date = Some("1998-03".into());
+    entries[2].work_date = Some("1997".into());
     view.update(cx, |v, cx| {
         v.preferences_path = Some(temp.path().join("preferences.json"));
         v.library = Workspace::new(Some(store));
@@ -651,6 +684,12 @@ fn library_sort_search_and_layout_keep_the_selected_game_visible(cx: &mut TestAp
         cx.notify();
     });
     cx.run_until_parked();
+    click_control(cx, "lib-sort");
+    click_control(cx, Text::LibraryDate.id());
+    assert_eq!(
+        view.read_with(cx, |v, _| v.library.order.clone()),
+        [1, 0, 2]
+    );
     click_control(cx, "lib-sort");
     click_control(cx, Text::LibraryTime.id());
     assert_eq!(view.read_with(cx, |v, _| v.library.order[0]), 1);

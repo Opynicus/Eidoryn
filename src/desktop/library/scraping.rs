@@ -629,9 +629,9 @@ impl Desktop {
         use scrape::JobStatus;
         let p = self.library_palette();
         let stage = if row.cover {
-            Text::LibraryCover
+            format!("{} · {}", self.tr(Text::LibraryCover), row.provider)
         } else {
-            Text::LibraryTaskMetadata
+            self.tr(Text::LibraryTaskMetadata).to_owned()
         };
         let status = match row.status {
             JobStatus::Pending => Text::LibraryScrapePending,
@@ -666,12 +666,7 @@ impl Desktop {
             )
             .child(label(
                 &p,
-                format!(
-                    "{} · {} · {}",
-                    self.tr(stage),
-                    row.provider,
-                    self.played_at(Some(row.updated_at))
-                ),
+                format!("{stage} · {}", self.played_at(Some(row.updated_at))),
             ))
     }
 }

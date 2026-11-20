@@ -1,11 +1,14 @@
 //! PlayStation release metadata in the user library and per-field user corrections.
 use super::transport;
+mod gamedb;
 mod matching;
+mod providers;
 mod refresh;
 mod wikidata;
 pub(crate) use super::transport::ProviderError;
 pub use matching::candidates;
 use matching::{has_title_candidate, index_names, matching_serial, title_hint};
+use providers::{is_release_serial, lookup_release};
 use refresh::download_serial;
 pub(super) use refresh::{Batch, Prepared};
 pub use refresh::{RefreshOutcome, refresh_online};
@@ -106,8 +109,9 @@ impl Release {
 
 fn cached_for(conn: &Connection, serial: &str) -> rusqlite::Result<Vec<Release>> {
     conn.prepare_cached(
-        "SELECT id,serial,region,title,date,aliases,work_date
-                         FROM fetched_releases WHERE serial=? ORDER BY id",
+        "SELECT f.id,f.serial,f.region,f.title,f.date,f.aliases,f.work_date
+         FROM fetched_releases f LEFT JOIN metadata_responses r ON r.serial=f.serial
+         WHERE f.serial=? AND (r.provider IS NULL OR f.source=r.provider) ORDER BY f.id",
     )?
     .query_map([serial], Release::from_row)?
     .collect()
@@ -208,7 +212,13 @@ fn assign(
         "UPDATE game_metadata SET release_id=r.id, release_serial=r.serial,
             auto_title=r.title, auto_region=r.region, auto_date=NULLIF(r.date,''),
             aliases=r.aliases, source=r.source, refreshed=unixepoch(), confirmed=?3,
-            source_revision=(SELECT revision FROM metadata_responses WHERE serial=r.serial AND provider=r.source),
+            source_revision=COALESCE(
+                (SELECT revision FROM metadata_responses WHERE serial=r.serial AND provider=r.source),
+                (SELECT m.source_revision FROM game_metadata m
+                 WHERE m.release_serial=r.serial AND m.release_id=r.id AND m.source=r.source
+                   AND m.auto_title=r.title AND m.auto_region=r.region AND m.auto_date IS NULLIF(r.date,'')
+                   AND m.work_date IS NULLIF(r.work_date,'') AND COALESCE(m.aliases,'')=r.aliases
+                 ORDER BY m.source_revision DESC LIMIT 1)),
             work_date=NULLIF(r.work_date,''), pending=0
          FROM fetched_releases AS r WHERE game_metadata.game_id=?1 AND r.id=?2",
         params![id, release_id, confirmed],
@@ -261,9 +271,11 @@ pub fn refresh(lib: &Library, id: i64) -> Result<(), String> {
     tx.commit().map_err(|e| e.to_string())
 }
 
-/// Search the local release cache, querying Wikidata for an uncached, complete disc serial.
+/// Search cached names locally or query release providers for an uncached PS1 serial.
 pub fn search_candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, String> {
-    search_with(lib, id, query, wikidata::fetch)
+    search_with(lib, id, query, |serial| {
+        lookup_release(serial, &AtomicBool::new(false)).map_err(|err| err.to_string())
+    })
 }
 
 fn search_with(
@@ -273,7 +285,7 @@ fn search_with(
     fetch: impl FnOnce(&str) -> Result<SourceResponse, String>,
 ) -> Result<Vec<Release>, String> {
     let serial = query.trim().to_ascii_uppercase();
-    if wikidata::is_supported_serial(&serial) {
+    if is_release_serial(&serial) {
         let mut conn = lib.connect()?;
         let cached = conn
             .prepare_cached("SELECT 1 FROM fetched_releases WHERE serial=?")

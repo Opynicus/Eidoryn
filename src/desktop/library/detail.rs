@@ -346,7 +346,7 @@ impl Desktop {
         .join(" · ");
         let played = self.played_at(entry.game.last_played);
         let duration = self.library_duration(entry);
-        let mut fields = vec![
+        let fields = [
             (
                 Text::LibraryPlatform,
                 Some(if entry.game.platform == "PS1" {
@@ -357,8 +357,11 @@ impl Desktop {
             ),
             (Text::LibrarySerial, entry.serial.as_deref()),
             (Text::LibraryRegion, entry.region.as_deref()),
-            (Text::LibraryDate, entry.date.as_deref()),
-            (Text::LibraryMatchedRelease, entry.release_title.as_deref()),
+            entry.publication_date(),
+            (
+                Text::LibraryMatchedRelease,
+                entry.matched_release(self.tr(Text::LibraryPending)),
+            ),
             (
                 Text::LibrarySourceUpdated,
                 (!source.is_empty()).then_some(source.as_str()),
@@ -366,11 +369,6 @@ impl Desktop {
             (Text::LibraryPlayed, Some(&played)),
             (Text::LibraryTime, Some(&duration)),
         ];
-        if entry.date.is_none()
-            && let Some(date) = entry.work_date.as_deref()
-        {
-            fields.push((Text::LibraryWorkDate, Some(date)));
-        }
         let actions = actions(&p)
             .when_else(
                 matches!(

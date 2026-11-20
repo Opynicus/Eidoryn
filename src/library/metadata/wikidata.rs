@@ -273,7 +273,8 @@ fn decode_response(
     })
 }
 
-pub(super) fn fetch(serial: &str) -> Result<SourceResponse, String> {
+#[cfg(test)]
+fn fetch(serial: &str) -> Result<SourceResponse, String> {
     Wikidata
         .search(serial, &AtomicBool::new(false))
         .map_err(|error| error.to_string())

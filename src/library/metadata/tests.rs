@@ -639,3 +639,279 @@ fn upgrade_links_only_identifiable_v3_responses() {
     assert_eq!(source(2), (None, 7));
     assert_eq!(list(&lib).unwrap()[&2].title.as_deref(), Some("Older"));
 }
+
+#[test]
+fn incremental_lookup_repairs_an_undated_edition_then_reuses_the_dated_response() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let fallback = Provenance {
+        provider: "GameDB-PSX",
+        payload_version: 1,
+    };
+    let mut partial = downloaded("Q10", "Edition without a regional date");
+    partial.date.clear();
+    partial.work_date = "1996-01-01".into();
+    refresh_with(&lib, 1, |_| Ok(response(vec![partial]))).unwrap();
+    let cancel = AtomicBool::default();
+    let updated = Batch::default()
+        .refresh_with(&lib, 1, Mode::Incremental, &cancel, |_| {
+            let mut found = response(vec![downloaded("gamedb", "Regional edition")]);
+            found.source = fallback;
+            Ok(found)
+        })
+        .unwrap();
+    assert_eq!(updated, RefreshOutcome::Updated);
+    assert_eq!(list(&lib).unwrap()[&1].date.as_deref(), Some("1996"));
+    Batch::default()
+        .refresh_with(&lib, 1, Mode::Incremental, &cancel, |_| {
+            panic!("A complete release from the alternate online source was cached")
+        })
+        .unwrap();
+
+    // Full refresh still calls the provider even when an incremental pass in the same batch hit cache.
+    let batch = Batch::default();
+    batch
+        .refresh_with(&lib, 1, Mode::Incremental, &cancel, |_| {
+            panic!("already cached")
+        })
+        .unwrap();
+    assert_eq!(
+        batch
+            .refresh_with(&lib, 1, Mode::Full, &cancel, |_| Ok(response(vec![])))
+            .unwrap(),
+        RefreshOutcome::NotFound
+    );
+}
+
+#[test]
+fn changing_provider_preserves_a_confirmed_edition_and_its_source_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let chosen = downloaded("Q10", "Chosen edition");
+    let first = response(vec![chosen.clone()]);
+    let first_raw = first.raw.clone();
+    refresh_with(&lib, 1, |_| Ok(first)).unwrap();
+    select(&lib, 1, &chosen.id).unwrap();
+    set_override(&lib, 1, Field::Title, Some("User title")).unwrap();
+    fixture(&lib, 2, Some(TEST_SERIAL));
+    let fallback = || {
+        let mut found = response(vec![downloaded("gamedb", "New catalog edition")]);
+        found.source.provider = "GameDB-PSX";
+        Ok(found)
+    };
+    assert_eq!(
+        refresh_with(&lib, 2, |_| fallback()).unwrap(),
+        RefreshOutcome::Updated
+    );
+    assert_eq!(
+        refresh_with(&lib, 1, |_| fallback()).unwrap(),
+        RefreshOutcome::NotFound
+    );
+    fixture(&lib, 3, Some(TEST_SERIAL));
+    assert_eq!(
+        list(&lib).unwrap()[&3].title.as_deref(),
+        Some("New catalog edition")
+    );
+    assert!(
+        candidates(&lib, 1, "Chosen edition")
+            .unwrap()
+            .iter()
+            .any(|r| r.id == chosen.id)
+    );
+    select(&lib, 1, &chosen.id).unwrap();
+    refresh(&lib, 1).unwrap();
+    let rows = list(&lib).unwrap();
+    assert_eq!(rows[&1].title.as_deref(), Some("User title"));
+    assert_eq!(rows[&1].release_id.as_ref(), Some(&chosen.id));
+    assert!(!rows[&1].pending);
+    let proof: Vec<u8> = lib
+        .connect()
+        .unwrap()
+        .query_row(
+            "SELECT raw_payload FROM metadata_sources WHERE game_id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(proof, first_raw);
+}
+
+#[test]
+fn incremental_cache_requires_an_unambiguous_match_for_the_disc_region() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let mut foreign = downloaded("Q11", "Foreign edition");
+    foreign.region = "Japan".into();
+    let local = downloaded("Q12", "Local edition");
+    let batch = Batch::default();
+    let cancel = AtomicBool::default();
+    refresh_with(&lib, 1, |_| Ok(response(vec![foreign]))).unwrap();
+    assert_eq!(
+        batch
+            .refresh_with(&lib, 1, Mode::Incremental, &cancel, |_| {
+                Ok(response(vec![
+                    local.clone(),
+                    downloaded("Q13", "Another local edition"),
+                ]))
+            })
+            .unwrap(),
+        RefreshOutcome::Candidates
+    );
+    let outcome = Batch::default()
+        .refresh_with(&lib, 1, Mode::Incremental, &cancel, |_| {
+            Ok(response(vec![local.clone()]))
+        })
+        .unwrap();
+    assert_eq!(outcome, RefreshOutcome::Updated);
+    assert_eq!(list(&lib).unwrap()[&1].release_id.as_ref(), Some(&local.id));
+}
+
+#[test]
+fn an_undated_refresh_keeps_the_same_editions_previous_dated_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let mut dated = response(vec![downloaded("Q10", "Matched edition")]);
+    dated.source.provider = "Wikidata + GameDB-PSX";
+    let raw = dated.raw.clone();
+    refresh_with(&lib, 1, |_| Ok(dated)).unwrap();
+
+    let mut incomplete = downloaded("Q10", "Undated response");
+    incomplete.date.clear();
+    assert_eq!(
+        refresh_with(&lib, 1, |_| Ok(response(vec![incomplete]))).unwrap(),
+        RefreshOutcome::Updated
+    );
+    let mut second_source = downloaded("gamedb", "Same serial on another service");
+    second_source.date.clear();
+    let mut secondary = response(vec![second_source]);
+    secondary.source = gamedb::GameDb::SOURCE;
+    refresh_with(&lib, 1, |_| Ok(secondary)).unwrap();
+    let rows = list(&lib).unwrap();
+    assert_eq!(rows[&1].date.as_deref(), Some("1996"));
+    assert_eq!(rows[&1].source.as_deref(), Some("Wikidata + GameDB-PSX"));
+    let bytes: Vec<u8> = lib
+        .connect()
+        .unwrap()
+        .query_row(
+            "SELECT raw_payload FROM metadata_sources WHERE game_id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bytes, raw);
+}
+
+/// Opt in with `cargo test --lib live_disc_editions_survive_reopen -- --ignored`.
+#[test]
+#[ignore = "downloads public PlayStation metadata from Wikidata and GameDB-PSX"]
+fn live_disc_editions_survive_reopen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("library.db");
+    let discs = [
+        ("SLUS-00067", "USA", "Castlevania", "1997"),
+        ("SLUS-00421", "USA", "Resident Evil 2", "1998"),
+        ("SLUS-00592", "USA", "Resident Evil 2", "1998"),
+        ("SLES-04157", "Europe", "Silent Iron", "2003"),
+    ];
+    let lib = Library::open(&path).unwrap();
+    for (id, &(serial, region, _, _)) in (1..).zip(&discs) {
+        let mut db = lib.connect().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO games(id,fallback_title) VALUES(?,'Disc')",
+            [id],
+        )
+        .unwrap();
+        identify(&tx, id, Some(serial), Some(region), "Disc").unwrap();
+        tx.commit().unwrap();
+        let outcome = refresh_online(&lib, id).unwrap_or_else(|error| panic!("{serial}: {error}"));
+        assert_eq!(outcome, RefreshOutcome::Updated, "{serial}");
+    }
+    drop(lib);
+
+    let reopened = Library::open(&path).unwrap();
+    let entries = list(&reopened).unwrap();
+    let db = reopened.connect().unwrap();
+    for (id, &(serial, region, title, year)) in (1..).zip(&discs) {
+        let game = &entries[&id];
+        assert_eq!(game.serial.as_deref(), Some(serial));
+        assert_eq!(game.region.as_deref(), Some(region));
+        assert!(
+            game.release_title.as_deref().unwrap().contains(title),
+            "{serial}"
+        );
+        let (provider, external_id, raw): (String, String, Vec<u8>) = db
+            .query_row(
+                "SELECT provider,external_id,raw_payload FROM metadata_sources WHERE game_id=?",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(game.source.as_deref(), Some(provider.as_str()));
+        assert_eq!(game.release_id.as_deref(), Some(external_id.as_str()));
+        assert_eq!(provider, "GameDB-PSX", "{serial}");
+        assert_eq!(external_id, format!("gamedb/{serial}"));
+        let document: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let record = &document[serial];
+        assert_eq!(record["serial"], serial);
+        let source_date = record["release_date"].as_str().unwrap();
+        assert!(source_date.starts_with(year), "{serial}: {source_date}");
+        // Preserve the catalog's precision, including the year-only Silent Iron record.
+        assert_eq!(game.date.as_deref(), Some(source_date), "{serial}");
+    }
+}
+
+#[test]
+fn european_disc_matches_a_single_local_market_and_reuses_its_dated_cache() {
+    const DISC: &str = "SLES-12345";
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("library.db")).unwrap();
+    fixture(&lib, 1, Some(DISC));
+    lib.connect()
+        .unwrap()
+        .execute(
+            "UPDATE game_metadata SET disc_region='Europe' WHERE game_id=1",
+            [],
+        )
+        .unwrap();
+    let edition = |market: &str| Release {
+        id: format!("gamedb/{market}"),
+        title: "Local edition".into(),
+        serial: DISC.into(),
+        region: market.into(),
+        date: "1996-01".into(),
+        aliases: String::new(),
+        work_date: String::new(),
+    };
+    let mut french = response(vec![edition("France")]);
+    french.source = gamedb::GameDb::SOURCE;
+    refresh_with(&lib, 1, |_| Ok(french)).unwrap();
+    let game = &list(&lib).unwrap()[&1];
+    assert_eq!(game.region.as_deref(), Some("France"));
+    assert_eq!(game.date.as_deref(), Some("1996-01"));
+    assert_eq!(
+        Batch::default()
+            .refresh_with(
+                &lib,
+                1,
+                Mode::Incremental,
+                &AtomicBool::new(false),
+                |_| panic!("already cached")
+            )
+            .unwrap(),
+        RefreshOutcome::Updated
+    );
+    assert!(
+        matching_serial(
+            &[edition("France"), edition("UK")],
+            Some(DISC),
+            Some("Europe")
+        )
+        .is_none()
+    );
+    assert!(matching_serial(&[edition("Australia")], Some(DISC), Some("Europe")).is_none());
+}

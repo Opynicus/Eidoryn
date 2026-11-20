@@ -1,9 +1,7 @@
 //! Acquire source data outside transactions and publish each release with the active job.
 use super::{
-    LIVE, Library, MetadataProvider, ProviderError, Release, SourceResponse, assign, cached_for,
-    evidence,
+    Evidence, LIVE, Library, ProviderError, Release, SourceResponse, assign, cached_for, evidence,
     matching::{index_names, matching_serial},
-    wikidata,
 };
 use crate::library::scrape::Mode;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
@@ -65,7 +63,7 @@ pub(in crate::library) struct Batch {
 enum SerialLookup {
     #[default]
     New,
-    Cached,
+    Retained,
     Missing,
     Failed(ProviderError),
     // Only jobs awaiting the writer hold a strong reference to the HTTP body.
@@ -98,7 +96,7 @@ impl Batch {
         cancel: &AtomicBool,
     ) -> Result<Prepared, ProviderError> {
         self.prepare_with(lib, id, mode, cancel, |serial| {
-            wikidata::Wikidata.search(serial, cancel)
+            super::lookup_release(serial, cancel)
         })
     }
 
@@ -128,10 +126,10 @@ impl Batch {
         fetch: impl FnOnce(&str) -> Result<SourceResponse, ProviderError>,
     ) -> Result<Prepared, ProviderError> {
         let conn = lib.worker_connection().map_err(ProviderError::Database)?;
-        let serial = evidence(&conn, id)?.serial;
-        let Some(key) = serial.as_deref() else {
+        let evidence = evidence(&conn, id)?;
+        let Some(key) = evidence.serial.as_deref() else {
             return Ok(Prepared {
-                serial,
+                serial: None,
                 hit: Hit::Missing,
             });
         };
@@ -150,7 +148,7 @@ impl Batch {
         }
         let hit = match &*current {
             SerialLookup::New => None,
-            SerialLookup::Cached => Some(Hit::Cached),
+            SerialLookup::Retained => Some(Hit::Cached),
             SerialLookup::Missing => Some(Hit::Missing),
             SerialLookup::Failed(error) => return Err(error.clone()),
             SerialLookup::Fetched(revision, weak) => {
@@ -165,12 +163,7 @@ impl Batch {
         };
         let hit = if let Some(hit) = hit {
             hit
-        } else if mode == Mode::Incremental
-            && conn
-                .prepare_cached("SELECT 1 FROM fetched_releases WHERE serial=?1 AND source=?2")?
-                .exists([key, LIVE])?
-        {
-            *current = SerialLookup::Cached;
+        } else if mode == Mode::Incremental && complete_cached_edition(&conn, key, &evidence)? {
             Hit::Cached
         } else {
             let revision = reserve(&conn, key)?;
@@ -182,6 +175,10 @@ impl Batch {
                 Ok(download) if download.releases.is_empty() => {
                     *current = SerialLookup::Missing;
                     Hit::Missing
+                }
+                Ok(download) if retains_dated_edition(&conn, key, &download)? => {
+                    *current = SerialLookup::Retained;
+                    Hit::Cached
                 }
                 Ok(download) => {
                     let fetched = Arc::new(Fetched { revision, download });
@@ -196,8 +193,59 @@ impl Batch {
                 }
             }
         };
-        Ok(Prepared { serial, hit })
+        Ok(Prepared {
+            serial: evidence.serial,
+            hit,
+        })
     }
+}
+
+// A cached work date or a candidate from a different region cannot complete a
+// disc edition. The old cache had no raw response for some online Wikidata rows.
+fn complete_cached_edition(
+    conn: &Connection,
+    serial: &str,
+    evidence: &Evidence,
+) -> rusqlite::Result<bool> {
+    let releases = cached_for(conn, serial)?;
+    let edition = if let Some(id) = &evidence.selected {
+        releases.iter().find(|r| &r.id == id)
+    } else {
+        matching_serial(&releases, Some(serial), evidence.region.as_deref())
+    };
+    let Some(edition) = edition.filter(|r| !r.date.is_empty() && !r.title.is_empty()) else {
+        return Ok(false);
+    };
+    conn.prepare_cached(
+        "SELECT 1 FROM fetched_releases f LEFT JOIN metadata_responses r
+          ON r.serial=f.serial AND r.provider=f.source
+         WHERE f.id=?1 AND (f.source=?2 OR r.serial IS NOT NULL)",
+    )?
+    .exists(params![edition.id, LIVE])
+}
+
+// An online source can temporarily lose the regional date or its fallback
+// can be offline. Retain the complete previous response with its original
+// provenance until this same edition can be refreshed with a date.
+fn retains_dated_edition(
+    conn: &Connection,
+    serial: &str,
+    response: &SourceResponse,
+) -> rusqlite::Result<bool> {
+    let [release] = response.releases.as_slice() else {
+        return Ok(false);
+    };
+    if !release.date.is_empty() || release.serial != serial {
+        return Ok(false);
+    }
+    conn.prepare_cached(
+        "SELECT 1 FROM fetched_releases f JOIN metadata_responses r
+                ON f.serial=r.serial AND f.source=r.provider
+         WHERE f.serial=?1 AND (f.id=?2 OR f.source<>?4) AND f.region=?3 AND f.date<>'' AND f.title<>''
+           AND NOT EXISTS (SELECT 1 FROM fetched_releases other WHERE other.serial=f.serial
+                           AND other.source=f.source AND other.id<>f.id)",
+    )?
+    .exists(params![serial, release.id, release.region, response.source.provider])
 }
 
 fn reserve(conn: &Connection, serial: &str) -> rusqlite::Result<i64> {
@@ -284,6 +332,10 @@ impl Prepared {
         if let Some(release) = release {
             assign(tx, id, &release.id, ev.selected.is_some()).map_err(|e| e.to_string())?;
             Ok(Some(RefreshOutcome::Updated))
+        } else if ev.selected.is_some() {
+            // This source has no update for the edition the user chose. Keep its
+            // fields and source revision, even if the serial now yields another edition.
+            Ok(Some(RefreshOutcome::NotFound))
         } else {
             tx.execute("UPDATE game_metadata SET pending=1 WHERE game_id=?", [id])
                 .map_err(|e| e.to_string())?;
@@ -319,9 +371,15 @@ pub(super) fn cache_releases(
     releases: &[Release],
     provider: &str,
 ) -> rusqlite::Result<()> {
-    tx.execute("DELETE FROM fetched_releases WHERE serial=?", [serial])?;
+    // Another provider can return a different ID for the same disc. Keep any
+    // manually selected editions from the previous provider available offline.
+    tx.execute(
+        "DELETE FROM fetched_releases AS f WHERE serial=?1 AND (source=?2 OR NOT EXISTS(
+            SELECT 1 FROM game_metadata m WHERE m.release_id=f.id AND m.confirmed))",
+        params![serial, provider],
+    )?;
     let mut insert = tx.prepare_cached(
-        "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date,source)
+        "INSERT OR REPLACE INTO fetched_releases(id,serial,region,title,date,aliases,work_date,source)
                                         VALUES(?,?,?,?,?,?,?,?)",
     )?;
     for release in releases {

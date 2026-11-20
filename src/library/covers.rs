@@ -335,9 +335,7 @@ fn fetch_edition(
         .or(serial.as_deref())
         .ok_or("A disc serial or a selected release is needed to get cover art")?;
     if provider == Provider::Igdb && title.is_empty() {
-        return Err(
-            "Choose a release or fetch its title from Wikidata before searching IGDB".into(),
-        );
+        return Err("Choose a release or fetch its release details before searching IGDB".into());
     }
     let art = if chosen.is_some() {
         Remote::Chosen {

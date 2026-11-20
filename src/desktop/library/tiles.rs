@@ -383,6 +383,11 @@ impl Desktop {
                 .text_color(rgb(p.muted))
                 .child(value)
         };
+        let (date_label, date) = entry.publication_date();
+        let release_date = field(date.unwrap_or(self.tr(Text::LibraryUnknown)).to_owned())
+            .when(date_label == Text::LibraryWorkDate, |cell| {
+                cell.flex().flex_col().child(label(&p, self.tr(date_label)))
+            });
         cell.items_center()
             .px_3()
             .gap_3()
@@ -411,12 +416,7 @@ impl Desktop {
                     .overflow_hidden()
                     .child(self.library_badges(entry)),
             )
-            .child(field(
-                entry
-                    .date
-                    .clone()
-                    .unwrap_or_else(|| self.tr(Text::LibraryUnknown).into()),
-            ))
+            .child(release_date)
             .when(!narrow, |row| {
                 row.child(field(self.played_at(entry.game.last_played)))
                     .child(field(self.library_duration(entry)))
