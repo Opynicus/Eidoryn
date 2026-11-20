@@ -860,6 +860,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
     window.focus(&focus, cx);
     let preferences = eidoryn_psx::preferences::Preferences::default();
     Desktop {
+        library: library::Workspace::new(None),
         sidebar: None,
         navigation: sidebar::Navigation::default(),
         bios_details_open: false,
@@ -1194,7 +1195,7 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
     let _cleanup = TestConfig(path.clone());
     cx.simulate_resize(size(px(1280.), px(900.)));
     cx.run_until_parked();
-    press_keys(cx, "tab tab tab tab enter");
+    press_keys(cx, "tab tab tab tab tab enter");
     assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Debug);
     assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
     press_keys(cx, "escape f8 tab tab tab enter");

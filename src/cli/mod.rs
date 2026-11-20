@@ -108,8 +108,8 @@ fn export_executable(path: &Path, export_disc_test: bool) -> Result<(), String> 
 
 fn launch(options: Options) -> Result<(), String> {
     let auto_run = options.auto_run();
-    let mut machine = if let Some(path) = options.disc {
-        load_disc(&path, options.bios_path.as_deref(), options.fast_boot)?
+    let mut machine = if let Some(path) = &options.disc {
+        load_disc(path, options.bios_path.as_deref(), options.fast_boot)?
     } else if let Some(path) = options.source {
         load_path(&path, false)?
     } else if let Some(path) = &options.bios_path {
@@ -145,6 +145,7 @@ fn launch(options: Options) -> Result<(), String> {
                 machine,
                 desktop::Options {
                     debugger: options.debugger,
+                    initial_disc: options.disc.map(|path| (path, options.fast_boot)),
                     language: options.language,
                     muted: options.muted,
                     volume: options.volume,

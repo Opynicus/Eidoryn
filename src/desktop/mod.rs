@@ -9,6 +9,7 @@ mod drawer;
 mod fonts;
 mod graphics;
 mod icons;
+mod library;
 mod probe;
 mod ps1_inspector;
 mod recent_games;
@@ -56,6 +57,7 @@ pub struct Options {
     pub bios: Option<std::path::PathBuf>,
     pub fullscreen: bool,
     pub game_view: bool,
+    pub initial_disc: Option<(std::path::PathBuf, bool)>,
     pub theme: Option<String>,
     pub theme_plugin: Option<std::path::PathBuf>,
     pub crt: Option<eidoryn_psx::video_filter::CrtFilter>,
@@ -97,6 +99,17 @@ pub fn run_with_probe(
     } else {
         SnapshotMode::Display
     };
+    let library = if probe.is_none() {
+        match library::open() {
+            Ok(library) => Some(library),
+            Err(error) => {
+                append_notice(&mut startup.notice, error);
+                None
+            }
+        }
+    } else {
+        None
+    };
     let runner = Runner::with_snapshot_mode(
         machine,
         options.auto_run,
@@ -110,6 +123,12 @@ pub fn run_with_probe(
         .ok_or("Missing initial emulator snapshot")?;
     if let Some(warning) = snapshot.presentation_warning.take() {
         append_notice(&mut startup.notice, warning);
+    }
+    if let Some(library) = &library {
+        runner.send(Command::TrackLibrary {
+            library: library.clone(),
+            initial_disc: options.initial_disc.clone(),
+        })?;
     }
     runner.send(Command::SetTurbo(startup.preferences.turbo()?))?;
     runner.send(Command::SetRewindSeconds(
@@ -125,7 +144,7 @@ pub fn run_with_probe(
         volume: startup.volume,
         dragging: false,
     };
-    open_window(runner, snapshot, options, startup, audio, probe)
+    open_window(runner, snapshot, options, startup, audio, probe, library)
 }
 
 #[allow(clippy::too_many_lines)] // Keep window setup and the Desktop initializer together.
@@ -137,6 +156,7 @@ fn open_window(
     startup: settings::Startup,
     audio: AudioControls,
     probe: Option<probe::Probe>,
+    library: Option<eidoryn_psx::library::Library>,
 ) -> Result<(), String> {
     let startup_error = Rc::new(RefCell::new(None));
     let error_slot = Rc::clone(&startup_error);
@@ -188,7 +208,28 @@ fn open_window(
                             .is_err()
                         });
                         Desktop::start_snapshot_updates(cx);
+                        let library = library::Workspace::new(library);
+                        if let Some(store) = library.store.clone() {
+                            let recent = startup.preferences.recent_discs.clone();
+                            cx.spawn(async move |this, cx| {
+                                let result = cx
+                                    .background_executor()
+                                    .spawn(async move { store.migrate_recents(&recent) })
+                                    .await;
+                                let _ = this.update(cx, |view: &mut Desktop, cx| {
+                                    if let Err(error) = result {
+                                        append_notice(&mut view.notice, error);
+                                    }
+                                    if view.page == WorkspacePage::Library {
+                                        view.reload_library(cx);
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .detach();
+                        }
                         Desktop {
+                            library,
                             sidebar: None,
                             navigation: sidebar::Navigation::default(),
                             bios_details_open: false,
@@ -258,6 +299,7 @@ fn open_window(
 
 #[allow(clippy::struct_excessive_bools)] // Independent view, debugger, and appearance preferences.
 struct Desktop {
+    library: library::Workspace,
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
     navigation: sidebar::Navigation,
     bios_details_open: bool,
@@ -313,6 +355,7 @@ enum SettingsTab {
 enum WorkspacePage {
     #[default]
     Console,
+    Library,
     Game,
     SaveStates,
     Debug,
@@ -411,6 +454,7 @@ impl Desktop {
     }
 
     fn receive_snapshot(&mut self, cx: &mut gpui::Context<Self>) {
+        self.refresh_playing_library(cx);
         if let Some(command) = self.probe.as_mut().and_then(probe::Probe::input) {
             self.command(command, cx);
         }

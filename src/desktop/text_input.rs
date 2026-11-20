@@ -1,4 +1,4 @@
-//! Single-line editor for snapshot names, including native IME composition.
+//! Single-line editor with native IME composition.
 use eidoryn_psx::theme::Palette;
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler,
@@ -9,6 +9,7 @@ use gpui::{
 use std::ops::Range;
 
 pub(super) struct TextInput {
+    id: &'static str,
     focus: FocusHandle,
     text: String,
     anchor: usize,
@@ -23,7 +24,17 @@ pub(super) struct TextInput {
 
 impl TextInput {
     pub(super) fn new(text: String, palette: Palette, cx: &mut Context<Self>) -> Self {
+        Self::named("snapshot-name-input", text, palette, cx)
+    }
+
+    pub(super) fn named(
+        id: &'static str,
+        text: String,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
+            id,
             focus: cx.focus_handle().tab_stop(true),
             cursor: text.len(),
             text,
@@ -290,9 +301,10 @@ impl Render for TextInput {
         let palette = self.palette;
         let prepaint_input = cx.entity();
         let paint_input = cx.entity();
+        let id = self.id;
         div()
-            .id("snapshot-name-input")
-            .debug_selector(|| "snapshot-name-input".into())
+            .id(id)
+            .debug_selector(move || id.into())
             .w_full()
             .px_3()
             .py_2()

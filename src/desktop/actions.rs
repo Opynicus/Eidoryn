@@ -68,6 +68,7 @@ impl Desktop {
                 | Command::Load { .. }
                 | Command::LoadDisc { .. }
                 | Command::ReopenDisc { .. }
+                | Command::LaunchLibraryDisc { .. }
                 | Command::RequestClose
         ) || matches!(command, Command::Toggle) && self.snapshot.running
         {
@@ -231,16 +232,12 @@ impl Desktop {
             return;
         }
         if self.graphics.open {
-            match event.keystroke.key.as_str() {
-                "escape" if self.rewind_disable_origin.is_some() => {
-                    self.dismiss_rewind_confirmation(window, cx);
-                }
-                "escape" | "f8" => {
-                    self.close_settings(window, cx);
-                }
-                "left" | "up" => self.move_focus(true, window, cx),
-                "right" | "down" => self.move_focus(false, window, cx),
-                _ => {}
+            self.settings_key(key, window, cx);
+            return;
+        }
+        if self.page == WorkspacePage::Library && self.library_input_focused(window, cx) {
+            if key == "escape" {
+                window.focus(&self.focus, cx);
             }
             return;
         }
@@ -304,6 +301,19 @@ impl Desktop {
             _ => {}
         }
     }
+    fn settings_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match key {
+            "escape" if self.rewind_disable_origin.is_some() => {
+                self.dismiss_rewind_confirmation(window, cx);
+            }
+            "escape" | "f8" => {
+                self.close_settings(window, cx);
+            }
+            "left" | "up" => self.move_focus(true, window, cx),
+            "right" | "down" => self.move_focus(false, window, cx),
+            _ => {}
+        }
+    }
     pub(super) fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.is_fullscreen() {
             match self.presentation.fullscreen {
@@ -355,6 +365,10 @@ impl Desktop {
         }
         self.presentation.windowed_video = false;
         self.page = page;
+        if page == WorkspacePage::Library {
+            self.release_buttons(cx);
+            self.enter_library(cx);
+        }
         if page == WorkspacePage::SaveStates {
             self.release_buttons(cx);
             self.command(Command::RefreshSaveStates, cx);

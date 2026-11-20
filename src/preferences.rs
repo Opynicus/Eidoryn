@@ -27,6 +27,24 @@ pub struct RecentDisc {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct LibraryPreferences {
+    pub list: bool,
+    pub auto_covers: bool,
+    pub cover_template: String,
+}
+
+impl Default for LibraryPreferences {
+    fn default() -> Self {
+        Self {
+            list: false,
+            auto_covers: false,
+            cover_template: crate::library::covers::DEFAULT_TEMPLATE.to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Preferences {
     /// Keep the saved tag even when this build does not include that catalog.
     pub language: Option<String>,
@@ -48,6 +66,7 @@ pub struct Preferences {
     pub keybindings: KeyBindings,
     pub bios_path: Option<PathBuf>,
     pub recent_discs: Vec<RecentDisc>,
+    pub library: LibraryPreferences,
     pub rewind_enabled: bool,
     pub rewind_seconds: u16,
 }
@@ -71,6 +90,7 @@ impl Default for Preferences {
             keybindings: KeyBindings::default(),
             bios_path: None,
             recent_discs: Vec::new(),
+            library: LibraryPreferences::default(),
             rewind_enabled: false,
             rewind_seconds: DEFAULT_REWIND_SECONDS,
         }

@@ -43,6 +43,8 @@ pub(super) fn run(
                 .running
                 .then(|| worker.pacing.wait_duration(Instant::now()))
         });
+        #[cfg(feature = "desktop")]
+        let wait = wait.or_else(|| worker.playtime.as_ref().map(|_| Duration::from_secs(1)));
         let command = if let Some(wait) = wait {
             match receiver.recv_timeout(wait) {
                 Ok(command) => Some(command),
@@ -55,6 +57,13 @@ pub(super) fn run(
                 Err(_) => break,
             }
         };
+        #[cfg(feature = "desktop")]
+        if command.is_none() && !worker.running && worker.rewind.active.is_none() {
+            if worker.update_statistics_warning() && !worker.publish(output, false) {
+                break;
+            }
+            continue;
+        }
         let view_only = matches!(
             command,
             Some(Command::SetSnapshotMode(_) | Command::SetAntiAliasing(_))
@@ -92,6 +101,11 @@ pub(super) fn run(
             close_ready = false;
             force_publish = true;
         }
+        #[cfg(feature = "desktop")]
+        {
+            worker.sample_playtime();
+            force_publish |= worker.update_statistics_warning();
+        }
         worker.publish_audio();
         if (force_publish
             || !worker.running
@@ -105,6 +119,8 @@ pub(super) fn run(
             break;
         }
     }
+    #[cfg(feature = "desktop")]
+    drop(worker.playtime.take());
     worker.end_rewind();
     if let Err(error) = worker.store.flush(&worker.machine.bus.sio.cards) {
         eprintln!("Eidoryn shutdown: {error}");
@@ -115,6 +131,10 @@ pub(super) fn run(
 }
 
 struct Worker {
+    #[cfg(feature = "desktop")]
+    playtime: Option<super::playtime::Playtime>,
+    #[cfg(feature = "desktop")]
+    statistics_warning: Option<String>,
     snapshot_mode: SnapshotMode,
     unlatched_preview: Option<DisplayFrame>,
     machine: Machine,
@@ -167,6 +187,10 @@ impl Worker {
         let mut input = PadInput::default();
         input.set_buttons(machine.bus.sio.buttons(), machine.bus.elapsed_cycles());
         let mut worker = Self {
+            #[cfg(feature = "desktop")]
+            playtime: None,
+            #[cfg(feature = "desktop")]
+            statistics_warning: None,
             input,
             snapshot_mode,
             unlatched_preview: None,
@@ -208,6 +232,37 @@ impl Worker {
         worker
     }
 
+    #[cfg(feature = "desktop")]
+    fn sample_playtime(&mut self) {
+        if let Some(playtime) = &mut self.playtime {
+            playtime.sample(
+                self.running && self.rewind.active.is_none() && self.machine.halted.is_none(),
+            );
+        }
+    }
+
+    #[cfg(feature = "desktop")]
+    fn update_statistics_warning(&mut self) -> bool {
+        let warning = self
+            .playtime
+            .as_ref()
+            .and_then(super::playtime::Playtime::error);
+        if warning == self.statistics_warning {
+            return false;
+        }
+        self.statistics_warning = warning;
+        true
+    }
+
+    #[cfg(feature = "desktop")]
+    fn track_disc(&mut self) {
+        if let (Some(tracker), Some(path)) = (&mut self.playtime, &self.disc_path)
+            && let Some(identity) = self.machine.bus.cdrom.disc_identity()
+        {
+            tracker.select(path.clone(), identity, self.disc_fast_boot);
+        }
+    }
+
     fn reset_pacing(&mut self) {
         let now = Instant::now();
         self.pacing = FramePacing::new(
@@ -225,7 +280,6 @@ impl Worker {
     fn replace_machine(&mut self, mut machine: Machine) -> bool {
         if let Err(error) = machine.set_cpu_mode(self.cpu_mode) {
             self.message = Some(format!("Cannot start CPU engine: {error}"));
-            self.running = false;
             return false;
         }
         if let Err(error) = machine.bus.gpu.set_renderer_config(
@@ -234,13 +288,16 @@ impl Worker {
             self.hardware_color_depth,
         ) {
             self.message = Some(format!("Cannot start GPU renderer: {error}"));
-            self.running = false;
             return false;
         }
         machine
             .bus
             .gpu
             .set_anti_aliasing(self.hardware_anti_aliasing);
+        if let Some(audio) = &self.audio {
+            audio.clear();
+        }
+        machine.bus.spu.drain_audio().for_each(drop);
         machine.bus.sio.cards = std::mem::take(&mut self.machine.bus.sio.cards);
         machine.bus.sio.deselect_cards();
         self.machine = machine;
@@ -296,11 +353,14 @@ impl Worker {
     }
 
     fn load_image(&mut self, path: PathBuf, bios: bool) {
-        self.running = false;
-        self.release_input();
         match load_path(&path, bios) {
             Ok(loaded) => {
                 if self.replace_machine(loaded) {
+                    self.running = false;
+                    #[cfg(feature = "desktop")]
+                    if let Some(tracker) = &mut self.playtime {
+                        tracker.finish();
+                    }
                     if bios {
                         self.bios_path = Some(path);
                     }
@@ -327,18 +387,18 @@ impl Worker {
         fast_boot: bool,
         selection: SelectedMedia,
     ) {
-        self.running = false;
-        self.release_input();
         match load_disc(&path, bios.as_deref(), fast_boot) {
             Ok(loaded) => {
                 if self.replace_machine(loaded) {
                     if bios.is_some() {
                         self.bios_path = bios;
                     }
-                    self.running = fast_boot;
+                    self.running = fast_boot || selection == SelectedMedia::LibraryDisc;
                     self.disc_path = Some(path);
                     self.disc_fast_boot = fast_boot;
                     self.media_selection = Some(selection);
+                    #[cfg(feature = "desktop")]
+                    self.track_disc();
                     self.media_revision = self.media_revision.wrapping_add(1);
                 }
             }
@@ -451,6 +511,57 @@ impl Worker {
     /// Returns true when the frontend should close after receiving the final snapshot.
     #[allow(clippy::too_many_lines)] // Keep command ordering and persistence guards together.
     fn apply(&mut self, command: Command) -> bool {
+        #[cfg(feature = "desktop")]
+        match &command {
+            Command::ClearLibraryStatistics { game_id, completed } => {
+                if let Some(tracker) = &mut self.playtime {
+                    tracker.clear(*game_id, completed.clone());
+                } else {
+                    let _ = completed.send(Err("Game library is unavailable".into()));
+                }
+                return false;
+            }
+            Command::TrackLibrary {
+                library,
+                initial_disc,
+            } => {
+                if self.playtime.is_none() {
+                    match super::playtime::Playtime::open(library.clone()) {
+                        Ok(tracker) => {
+                            self.playtime = Some(tracker);
+                            if let Some((path, fast_boot)) = initial_disc {
+                                self.disc_path = Some(path.clone());
+                                self.disc_fast_boot = *fast_boot;
+                                self.track_disc();
+                            }
+                            self.sample_playtime();
+                        }
+                        Err(error) => {
+                            self.message =
+                                Some(format!("Cannot start library statistics: {error}"));
+                        }
+                    }
+                }
+                return false;
+            }
+            // Settle before loading or executing a debug command. The main loop
+            // resumes the same interval if the replacement fails.
+            Command::Load { .. }
+            | Command::LoadDisc { .. }
+            | Command::ReopenDisc { .. }
+            | Command::LaunchLibraryDisc { .. }
+            | Command::Demo
+            | Command::Reset
+            | Command::QuickLoad
+            | Command::LoadState { .. }
+            | Command::Step
+            | Command::Slice => {
+                if let Some(tracker) = &mut self.playtime {
+                    tracker.sample(false);
+                }
+            }
+            _ => {}
+        }
         match command {
             Command::SetAntiAliasing(mode) => {
                 self.machine.bus.gpu.set_anti_aliasing(mode);
@@ -555,7 +666,17 @@ impl Worker {
         if !view_only && !input_only && !self.flush_cards(true) {
             return false;
         }
-        if !view_only && !input_only && !matches!(command, Command::FlushCards) {
+        if !view_only
+            && !input_only
+            && !matches!(
+                command,
+                Command::FlushCards
+                    | Command::Load { .. }
+                    | Command::LoadDisc { .. }
+                    | Command::ReopenDisc { .. }
+                    | Command::LaunchLibraryDisc { .. }
+            )
+        {
             if let Some(audio) = &self.audio {
                 audio.clear();
             }
@@ -614,8 +735,12 @@ impl Worker {
                 self.reset_pacing();
             }
             Command::Demo => {
-                self.running = self.replace_machine(Machine::demo());
-                if self.running {
+                if self.replace_machine(Machine::demo()) {
+                    self.running = true;
+                    #[cfg(feature = "desktop")]
+                    if let Some(tracker) = &mut self.playtime {
+                        tracker.finish();
+                    }
                     self.disc_path = None;
                     self.disc_fast_boot = false;
                     self.media_selection = Some(SelectedMedia::Demo);
@@ -638,6 +763,15 @@ impl Worker {
             | Command::RefreshSaveStates => {
                 unreachable!("handled before card persistence")
             }
+            #[cfg(feature = "desktop")]
+            Command::TrackLibrary { .. } | Command::ClearLibraryStatistics { .. } => {
+                unreachable!("handled before card persistence")
+            }
+            Command::LaunchLibraryDisc {
+                path,
+                bios,
+                fast_boot,
+            } => self.load_disc(path, bios, fast_boot, SelectedMedia::LibraryDisc),
             Command::Load { path, bios } => self.load_image(path, bios),
             Command::LoadDisc {
                 path,
@@ -784,6 +918,10 @@ impl Worker {
                 snapshot.anti_aliasing = self.hardware_anti_aliasing;
             }
             snapshot.cpu_mode = self.cpu_mode;
+        }
+        #[cfg(feature = "desktop")]
+        if snapshot.message.is_none() {
+            snapshot.message.clone_from(&self.statistics_warning);
         }
         if snapshot.message.is_none() {
             snapshot.success_message.clone_from(&self.success_message);
@@ -1440,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_loads_preserve_their_distinct_timing_and_clear_audio() {
+    fn failed_loads_keep_the_previous_game_running_with_input_and_audio() {
         for (command, resets) in [
             (
                 Command::Load {
@@ -1488,13 +1626,13 @@ mod tests {
                 .unwrap();
 
             assert!(!worker.apply(command));
-            assert!(!worker.running);
+            assert!(worker.running);
             assert!(worker.message.is_some());
             assert_eq!(worker.machine.cpu.pc, pc);
-            assert_eq!(worker.machine.bus.sio.buttons(), 0);
+            assert_eq!(worker.machine.bus.sio.buttons(), 0x8000);
             assert_eq!(worker.bios_path, Some("previous.bin".into()));
-            assert_eq!(audio.stats().queued_frames, 0);
-            assert_eq!(worker.machine.bus.spu.drain_audio().count(), 0);
+            assert_eq!(audio.stats().queued_frames, 128);
+            assert!(worker.machine.bus.spu.drain_audio().count() > 0);
             if resets {
                 assert_ne!(worker.epoch, previous);
                 assert_eq!(worker.pacing.wait_duration(worker.epoch), Duration::ZERO);
@@ -1595,15 +1733,7 @@ mod tests {
         worker.machine.bus.tick(CPU_CLOCK_HZ / 10).unwrap();
         worker.update_input();
         assert_eq!(worker.machine.bus.sio.buttons(), 0);
-        for command in [
-            Command::Demo,
-            Command::Reset,
-            Command::Load {
-                path: PathBuf::from("missing-turbo-test.exe"),
-                bios: false,
-            },
-            Command::RequestClose,
-        ] {
+        for command in [Command::Demo, Command::Reset, Command::RequestClose] {
             worker.apply(Command::SetButtons(0x8000));
             worker.apply(command);
             worker.machine.bus.tick(CPU_CLOCK_HZ / 10).unwrap();

@@ -44,6 +44,7 @@ impl Render for Desktop {
                     || self.snapshot.success_message.is_some(),
                 |root| root.font(self.fonts.normal()),
             )
+            .on_drop(cx.listener(Self::drop_discs))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::capture_binding))
             .on_key_down(cx.listener(Self::key))
@@ -66,7 +67,8 @@ impl Render for Desktop {
                 )
             })
             .on_click(cx.listener(|view, event, window, cx| {
-                if !view.graphics.open
+                if view.page != WorkspacePage::Library
+                    && !view.graphics.open
                     && view.snapshot_confirmation.is_none()
                     && view.renaming_state.is_none()
                     && matches!(event, gpui::ClickEvent::Mouse(_))
@@ -186,6 +188,7 @@ impl Desktop {
         self.tr(match self.page {
             WorkspacePage::Console => Text::Console,
             WorkspacePage::Game => Text::GameView,
+            WorkspacePage::Library => Text::Library,
             WorkspacePage::SaveStates => Text::SaveStates,
             WorkspacePage::Debug => Text::Debugger,
         })
@@ -223,6 +226,7 @@ impl Desktop {
         let page = match self.page {
             WorkspacePage::Console => self.console_page(window, cx),
             WorkspacePage::Game => self.game_page(window, cx),
+            WorkspacePage::Library => self.library_page(window, cx),
             WorkspacePage::SaveStates => self.save_states_page(window, cx),
             WorkspacePage::Debug => self.debug_page(window, cx),
         };
@@ -247,7 +251,10 @@ impl Desktop {
                             .id(gpui::SharedString::from(self.workspace_title()))
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
+                            .when(self.page == WorkspacePage::Library, |s| s.flex().flex_col())
+                            .when(self.page != WorkspacePage::Library, |s| {
+                                s.overflow_y_scroll()
+                            })
                             .px(Self::content_padding(window))
                             .pt(
                                 if window.is_fullscreen() && self.page == WorkspacePage::Game {
@@ -260,6 +267,9 @@ impl Desktop {
                             .child(
                                 div()
                                     .w_full()
+                                    .when(self.page == WorkspacePage::Library, |s| {
+                                        s.flex_1().min_h_0()
+                                    })
                                     .max_w(px(1500.))
                                     .mx_auto()
                                     .flex()

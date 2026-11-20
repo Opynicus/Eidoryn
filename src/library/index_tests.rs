@@ -1,0 +1,471 @@
+use super::Library;
+use crate::disc::DiscImage;
+use rusqlite::params;
+use std::{
+    fs::{self, File},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, SystemTime},
+};
+
+struct Fixture {
+    root: tempfile::TempDir,
+    media: PathBuf,
+    db: Library,
+}
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Library::open(&temp.path().join("index.sqlite3")).unwrap();
+        let media = temp.path().join("media");
+        fs::create_dir(&media).unwrap();
+        Self {
+            root: temp,
+            db,
+            media,
+        }
+    }
+    fn image(&self, name: &str, byte: u8) -> PathBuf {
+        let path = self.media.join(name);
+        fs::write(&path, [byte; 2048 * 5]).unwrap();
+        path
+    }
+    fn scan(&self) -> super::ScanReport {
+        self.db
+            .scan_directory(&self.media, true, &AtomicBool::new(false), |_| {})
+            .unwrap()
+    }
+    fn session(&self, game: i64, seconds: i64) {
+        self.db
+            .connect()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(session_id,game_id,seconds,last_played) VALUES(?,?,?,110)",
+                params![format!("session-{game}"), game, seconds],
+            )
+            .unwrap();
+    }
+}
+fn replace_file(path: &Path, byte: u8) {
+    let mut file = File::create(path).unwrap();
+    file.write_all(&[byte; 2048 * 5]).unwrap();
+    file.set_modified(SystemTime::now() + Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
+fn scans_are_incremental_and_an_overwritten_path_does_not_inherit_playtime() {
+    let f = Fixture::new();
+    let image = f.image("Game.iso", 0);
+    assert_eq!(f.scan().added, 1);
+    let game = f.db.games().unwrap().remove(0);
+    let identity = DiscImage::open(&image).unwrap().identity().to_owned();
+    assert_eq!(
+        f.db.associate_opened(&image, &identity, true).unwrap(),
+        game.id
+    );
+    f.session(game.id, 100);
+    assert_eq!(f.scan().existing, 1);
+    replace_file(&image, 1);
+    assert!(f.db.associate_opened(&image, &identity, false).is_err());
+    assert_eq!(f.scan().added, 1);
+    let games = f.db.games().unwrap();
+    assert_eq!(games.len(), 2);
+    assert_eq!(games[0].seconds, 100);
+    assert!(!games[0].locations[0].available);
+    assert_eq!(games[1].seconds, 0);
+    assert!(games[1].locations[0].available);
+    assert!(f.db.relocate(games[0].locations[0].id, &image).is_err());
+}
+
+#[test]
+fn verified_images_keep_their_history_across_timestamp_changes_and_moves() {
+    let f = Fixture::new();
+    let path = f.image("old.iso", 13);
+    f.scan();
+    let id = DiscImage::open(&path).unwrap().identity().to_owned();
+    let game = f.db.associate_opened(&path, &id, true).unwrap();
+    f.session(game, 95);
+    let location = f.db.games().unwrap()[0].locations[0].id;
+    File::open(&path)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(f.scan().existing, 1);
+    let same = f.db.games().unwrap();
+    assert_eq!(same.len(), 1);
+    assert_eq!(
+        (same[0].id, same[0].seconds, same[0].locations[0].id),
+        (game, 95, location)
+    );
+    assert!(same[0].locations[0].fast_boot);
+    let next = f.media.join("moved.iso");
+    fs::rename(path, &next).unwrap();
+    f.scan();
+    let moved = f.db.games().unwrap();
+    assert_eq!(moved.len(), 1);
+    assert_eq!((moved[0].id, moved[0].seconds), (game, 95));
+    assert!(
+        moved[0]
+            .locations
+            .iter()
+            .any(|l| l.available && l.path == next)
+    );
+}
+
+#[test]
+fn concurrent_imports_of_the_same_path_create_one_entry() {
+    let f = Fixture::new();
+    let path = f.image("shared.iso", 9);
+    let barrier = std::sync::Barrier::new(4);
+    std::thread::scope(|workers| {
+        for _ in 0..4 {
+            workers.spawn(|| {
+                barrier.wait();
+                f.db.scan_files(std::slice::from_ref(&path), &AtomicBool::new(false), |_| {})
+                    .unwrap();
+            });
+        }
+    });
+    let games = f.db.games().unwrap();
+    assert_eq!(games.len(), 1);
+    assert_eq!(games[0].locations.len(), 1);
+}
+
+#[test]
+fn rename_offline_remove_and_explicit_readd_preserve_game() {
+    let f = Fixture::new();
+    let path = f.image("old.iso", 1);
+    f.scan();
+    let g = f.db.games().unwrap().remove(0);
+    f.session(g.id, 67);
+    let new = f.media.join("renamed.iso");
+    fs::rename(path, &new).unwrap();
+    f.db.relocate(g.locations[0].id, &new).unwrap();
+    assert_eq!(
+        f.db.games().unwrap()[0].locations[0].path,
+        new.canonicalize().unwrap()
+    );
+    let unplugged = f.media.with_extension("offline");
+    fs::rename(&f.media, &unplugged).unwrap();
+    assert_eq!(f.scan().failed, 1);
+    assert!(!f.db.roots().unwrap()[0].available);
+    assert!(!f.db.games().unwrap()[0].locations[0].available);
+    fs::rename(unplugged, &f.media).unwrap();
+    assert_eq!(f.scan().existing, 1);
+    f.db.remove(g.id).unwrap();
+    assert_eq!(f.scan().added, 0);
+    assert!(f.db.games().unwrap().is_empty());
+    let reloaded = Library::open(&f.root.path().join("index.sqlite3")).unwrap();
+    reloaded
+        .scan_files(&[new], &AtomicBool::new(false), |_| {})
+        .unwrap();
+    let restored = reloaded.games().unwrap().remove(0);
+    assert_eq!((restored.id, restored.seconds), (g.id, 67));
+}
+
+#[test]
+fn relocate_after_rescan_retains_both_session_streams_and_original_metadata() {
+    let f = Fixture::new();
+    let old = f.image("original.iso", 1);
+    f.scan();
+    let original = f.db.games().unwrap().remove(0);
+    super::metadata::set_override(
+        &f.db,
+        original.id,
+        super::metadata::Field::Title,
+        Some("Custom"),
+    )
+    .unwrap();
+    let moved = f.media.join("renamed.iso");
+    fs::rename(old, &moved).unwrap();
+    assert_eq!(f.scan().added, 1); // no strong identity was yet available
+    let second = f.db.games().unwrap().remove(1);
+    f.session(original.id, 180);
+    f.session(second.id, 240);
+    f.db.relocate(original.locations[0].id, &moved).unwrap();
+    let games = f.db.games().unwrap();
+    assert_eq!(games.len(), 1);
+    assert_eq!((games[0].id, games[0].seconds), (original.id, 420));
+    assert_eq!(games[0].locations.len(), 1);
+    assert_eq!(games[0].locations[0].path, moved);
+    assert_eq!(
+        super::metadata::list(&f.db).unwrap()[&original.id]
+            .title
+            .as_deref(),
+        Some("Custom")
+    );
+    // The runner still owns the session for the formerly independent disc.
+    f.db.connect()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET seconds=260 WHERE game_id=?",
+            [second.id],
+        )
+        .unwrap();
+    assert_eq!(f.db.games().unwrap()[0].seconds, 440);
+}
+
+#[test]
+fn confirmed_disc_group_aggregates_independent_sessions_and_can_be_undone() {
+    let f = Fixture::new();
+    f.image("disc1.iso", 1);
+    f.image("disc2.iso", 2);
+    f.scan();
+    let games = f.db.games().unwrap();
+    f.session(games[0].id, 180);
+    f.session(games[1].id, 240);
+    let second = games[1].locations[0].disc_id;
+    f.db.group_disc(second, games[0].id).unwrap();
+    let grouped = f.db.games().unwrap();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].seconds, 7 * 60);
+    assert_eq!(grouped[0].locations[1].disc_number, 2);
+    f.db.separate_disc(second).unwrap();
+    let separated = f.db.games().unwrap();
+    assert_eq!(separated[0].seconds, 180);
+    assert_eq!(separated[1].seconds, 240);
+}
+
+#[test]
+fn candidate_copies_are_independent_until_verified() {
+    let f = Fixture::new();
+    f.image("first.iso", 1);
+    f.image("copy.iso", 1);
+    assert_eq!(f.scan().pending, 1);
+    assert_eq!(f.scan().pending, 2); // both cached entries still await verification
+    let games = f.db.games().unwrap();
+    let (a, b) = (&games[0].locations[0], &games[1].locations[0]);
+    f.db.confirm_copy(a.id, b.id).unwrap();
+    assert_eq!(f.scan().pending, 0);
+    let grouped = f.db.games().unwrap();
+    assert_eq!(grouped.len(), 1);
+    assert_eq!(grouped[0].locations.len(), 2);
+    assert_eq!(
+        grouped[0].locations[0].disc_number,
+        grouped[0].locations[1].disc_number
+    );
+    f.db.separate_disc(a.disc_id).unwrap();
+    assert_eq!(f.db.games().unwrap().len(), 2);
+}
+
+#[test]
+fn unresolved_metadata_survives_incremental_rescans() {
+    let f = Fixture::new();
+    f.image("Crash Bandicoot.iso", 3);
+    assert_eq!(f.scan().pending, 1); // name-only catalog candidate
+    let cached = f.scan();
+    assert_eq!((cached.existing, cached.pending), (1, 1));
+}
+
+#[test]
+fn confirming_copies_preserves_prior_hashes_if_a_replacement_keeps_its_timestamp() {
+    let f = Fixture::new();
+    let path = f.image("original.iso", 1);
+    f.image("other.iso", 2);
+    f.scan();
+    let games = f.db.games().unwrap();
+    let original = &games[0].locations[0];
+    let other = &games[1].locations[0];
+    let identity = DiscImage::open(&path).unwrap().identity().to_owned();
+    f.db.associate_opened(&path, &identity, true).unwrap();
+    let stamp = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::copy(&other.path, &path).unwrap();
+    File::open(&path).unwrap().set_modified(stamp).unwrap();
+    for (a, b) in [(original, other), (other, original)] {
+        assert!(f.db.confirm_copy(a.id, b.id).is_err());
+    }
+    assert_eq!(f.db.games().unwrap().len(), 2);
+    let stored: String =
+        f.db.connect()
+            .unwrap()
+            .query_row(
+                "SELECT strong_id FROM discs WHERE id = ?",
+                [original.disc_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+    assert_eq!(stored, identity);
+}
+
+#[test]
+fn cue_suppresses_tracks_and_reports_invalid_or_ambiguous_entries() {
+    let f = Fixture::new();
+    let data = f.media.join("d.bin");
+    let mut sector = [0; 2352];
+    sector[1..11].fill(255);
+    sector[15] = 2;
+    fs::write(&data, sector).unwrap();
+    fs::write(f.media.join("audio.bin"), [42; 2352]).unwrap();
+    let cue = f.media.join("disc.cue");
+    fs::write(&cue,"FILE \"d.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\nFILE \"audio.bin\" BINARY\n TRACK 02 AUDIO\n INDEX 01 00:00:00\n").unwrap();
+    fs::write(
+        f.media.join("bad.cue"),
+        "FILE \"absent.bin\" BINARY\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n",
+    )
+    .unwrap();
+    let report = f.scan();
+    assert_eq!((report.added, report.failed), (1, 1));
+    assert!(report.errors[0].contains("absent.bin"));
+    assert_eq!(f.db.games().unwrap().len(), 1);
+    let other = f.media.join("alt.cue");
+    fs::copy(&cue, &other).unwrap();
+    let single =
+        f.db.scan_files(&[data], &AtomicBool::new(false), |_| {})
+            .unwrap();
+    assert_eq!((single.added, single.pending), (0, 1));
+    assert_eq!(single.choices[0].cues.len(), 2);
+    fs::remove_file(f.media.join("audio.bin")).unwrap();
+    assert!(f.scan().failed >= 2);
+    assert!(!f.db.games().unwrap()[0].locations[0].available);
+}
+
+#[test]
+fn cooked_firmware_bin_is_not_a_game() {
+    let f = Fixture::new();
+    fs::write(f.media.join("firmware.bin"), vec![0; 512 * 1024]).unwrap();
+    let result = f.scan();
+    assert_eq!((result.added, result.failed), (0, 1));
+}
+
+#[test]
+fn finding_a_cue_after_its_track_hides_the_standalone_card() {
+    let f = Fixture::new();
+    let mut sector = [0; 2352];
+    sector[1..11].fill(255);
+    sector[15] = 2;
+    fs::write(f.media.join("track.bin"), sector).unwrap();
+    assert_eq!(f.scan().added, 1);
+    let track_id = f.db.games().unwrap()[0].id;
+    let cue = f.media.join("disc.cue");
+    fs::write(
+        &cue,
+        "FILE track.bin BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n",
+    )
+    .unwrap();
+    assert_eq!(f.scan().added, 1);
+    let shown = f.db.games().unwrap();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].locations[0].path, cue);
+    fs::remove_file(&cue).unwrap();
+    f.scan();
+    assert!(
+        f.db.games()
+            .unwrap()
+            .iter()
+            .any(|g| g.id == track_id && g.locations[0].available)
+    );
+}
+
+#[test]
+fn cancellation_preserves_completed_entries_migration_is_idempotent() {
+    let f = Fixture::new();
+    let first = f.image("a.iso", 0);
+    f.image("b.iso", 2);
+    let flag = AtomicBool::new(false);
+    let partial =
+        f.db.scan_directory(&f.media, true, &flag, |r| {
+            if r.added == 1 {
+                flag.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+    assert_eq!(partial.added, 1);
+    assert_eq!(f.scan().added, 1);
+    let recent = crate::preferences::RecentDisc {
+        path: first,
+        fast_boot: true,
+    };
+    for _ in 0..2 {
+        f.db.migrate_recents(std::slice::from_ref(&recent)).unwrap();
+    }
+    let games = f.db.games().unwrap();
+    assert_eq!(games.len(), 2);
+    assert!(games[0].locations[0].fast_boot);
+    assert!(games[0].last_played.is_none());
+    f.db.remove(games[0].id).unwrap();
+    f.db.migrate_recents(&[recent]).unwrap();
+    assert_eq!(f.db.games().unwrap().len(), 1);
+}
+
+#[test]
+fn opening_a_future_schema_preserves_data() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("future.sqlite3");
+    let db = rusqlite::Connection::open(&file).unwrap();
+    db.execute_batch(
+        "CREATE TABLE marker(x); INSERT INTO marker VALUES(10); PRAGMA user_version=32;",
+    )
+    .unwrap();
+    assert!(Library::open(&file).is_err());
+    assert_eq!(
+        db.query_row("SELECT x FROM marker", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        10
+    );
+}
+
+/// Run in isolation with --ignored --nocapture --test-threads=1. Sparse test
+/// media mix small and CD-sized images without using proprietary game bytes.
+#[test]
+#[ignore = "reproducible 1,000-image index benchmark"]
+fn benchmark_thousand_images() {
+    use std::time::Instant;
+    let f = Fixture::new();
+    let mut bytes = 0;
+    for i in 0..1000_u32 {
+        let mut file = File::create(f.media.join(format!("game-{i:04}.iso"))).unwrap();
+        file.write_all(&i.to_le_bytes()).unwrap();
+        let len = [48 * 2048, 1 << 20, 32 << 20, 600 << 20][i as usize % 4];
+        file.set_len(len).unwrap();
+        bytes += len;
+    }
+    // Linux's rchar includes SQLite and media file reads, even from page cache.
+    let io_chars = || {
+        fs::read_to_string("/proc/self/io").ok().and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("rchar: ")?.parse::<u64>().ok())
+        })
+    };
+    for cold in [true, false] {
+        let before = io_chars();
+        let start = Instant::now();
+        let mut first = None;
+        let result =
+            f.db.scan_directory(&f.media, true, &AtomicBool::new(false), |r| {
+                if first.is_none() && r.added + r.existing >= 12 {
+                    first = Some(start.elapsed());
+                }
+            })
+            .unwrap();
+        let elapsed = start.elapsed();
+        let delta = before.zip(io_chars()).map(|(a, b)| b - a);
+        assert_eq!(
+            (result.added, result.existing, result.failed),
+            if cold { (1000, 0, 0) } else { (0, 1000, 0) }
+        );
+        let list = Instant::now();
+        assert_eq!(f.db.games().unwrap().len(), 1000);
+        let list = list.elapsed();
+        eprintln!(
+            "cold_index={cold}, logical_bytes={bytes}, first_12={first:?}, elapsed={elapsed:?}, load_rows={list:?}, read_chars={delta:?}"
+        );
+    }
+    assert_eq!(
+        f.db.connect()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM discs WHERE strong_id IS NOT NULL",
+                [],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+        0
+    );
+    if let Ok(status) = fs::read_to_string("/proc/self/status")
+        && let Some(line) = status.lines().find(|l| l.starts_with("VmHWM:"))
+    {
+        eprintln!("{line}");
+    }
+}

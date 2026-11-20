@@ -49,6 +49,12 @@ Disc swapping is not supported. Memory-card saves use the game's own save points
 
 This UI redesign branch produces temporary test releases for Linux x86-64 Wayland, Linux x86-64 X11, and Windows x86-64, with SHA-256 checksums. These prereleases are built from the test branch and do not replace the latest release. On Linux, choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. On Windows, extract the full ZIP and run `eidoryn.exe` from its directory. Windows desktop display, input, and audio still need hands-on validation; native CI covers compilation, tests, and the headless demo. See [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) for available test packages.
 
+### Desktop game library
+
+Open **Game library** in the sidebar to add disc images or scan a folder offline. Pick the CUE file for a multi-track game. Double-click a card or press Enter to start the selected disc. For a normal boot, the library prompts for a BIOS if needed.
+
+Game details let you relocate an image, group discs, correct a release match, and override individual fields or the cover. Cover downloads are opt-in. The library keeps its SQLite index and artwork in the user's application data directory. Playtime follows the runner's forward intervals, including cutscenes and input-free menus. A normal exit saves the final interval.
+
 ### Build and launch
 
 ```bash

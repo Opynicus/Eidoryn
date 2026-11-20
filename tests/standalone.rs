@@ -1121,3 +1121,112 @@ fn batched_cd_commands_preserve_blocked_completion_priority() {
         assert_eq!(response(bus, 2), [0x10]); // Completion remains pending.
     }
 }
+
+#[cfg(feature = "desktop")]
+#[test]
+fn library_disc_launch_shutdown_and_failed_switch_follow_runner_receipts() {
+    use eidoryn_psx::{
+        library::Library,
+        runner::{Command as SessionCommand, Runner, SelectedMedia, Snapshot},
+    };
+    use std::time::{Duration, Instant};
+    fn wait_for(runner: &Runner, accept: impl Fn(&Snapshot) -> bool) -> Snapshot {
+        let start = Instant::now();
+        loop {
+            if let Some(snap) = runner.take_snapshot()
+                && accept(&snap)
+            {
+                return snap;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "runner receipt timed out"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    let fixture = Fixture::new();
+    let path = fixture.image("homebrew.iso", &iso(&demo::executable()));
+    let db = fixture.0.join("library.sqlite3");
+    let library = Library::open(&db).unwrap();
+    let runner = Runner::new(Machine::demo(), false).unwrap();
+    runner
+        .send(SessionCommand::TrackLibrary {
+            library: library.clone(),
+            initial_disc: None,
+        })
+        .unwrap();
+    runner
+        .send(SessionCommand::LaunchLibraryDisc {
+            path: path.clone(),
+            bios: None,
+            fast_boot: true,
+        })
+        .unwrap();
+    let opened = wait_for(&runner, |s| s.media_revision == 1);
+    assert_eq!(opened.disc_path.as_ref(), Some(&path));
+    assert_eq!(opened.media_selection, Some(SelectedMedia::LibraryDisc));
+    assert!(opened.running);
+    runner
+        .send(SessionCommand::ReopenDisc {
+            path: fixture.0.join("missing.iso"),
+            bios: None,
+            fast_boot: true,
+        })
+        .unwrap();
+    let failed = wait_for(&runner, |s| s.message.is_some());
+    assert!(failed.running);
+    assert_eq!(failed.media_revision, opened.media_revision);
+    runner.send(SessionCommand::Toggle).unwrap();
+    wait_for(&runner, |s| !s.running);
+    runner.send(SessionCommand::Step).unwrap();
+    drop(runner); // joins the writer after the final checkpoint
+    let games = Library::open(&db).unwrap().games().unwrap();
+    assert_eq!(games.len(), 1);
+    assert!(games[0].last_played.is_some());
+    assert_eq!(games[0].locations[0].path, path);
+}
+
+/// Opt-in field check using the operator's multi-track CUE and CHD alongside
+/// the redistributable homebrew ISO fixture. No firmware or network is used.
+#[cfg(feature = "desktop")]
+#[test]
+#[ignore = "requires local CUE and CHD paths (see game library validation report)"]
+fn offline_library_mixed_media_smoke() {
+    use eidoryn_psx::library::{Library, metadata};
+    use std::sync::atomic::AtomicBool;
+    let fixture = Fixture::new();
+    let db = fixture.0.join("library.sqlite3");
+    let cue = PathBuf::from(std::env::var_os("EIDORYN_TEST_CUE").unwrap());
+    let chd = PathBuf::from(std::env::var_os("EIDORYN_TEST_CHD").unwrap());
+    let homebrew = fixture.image("homebrew.iso", &iso(&demo::executable()));
+    let mut files = vec![homebrew, cue.clone(), chd];
+    files.extend(DiscImage::cue_dependencies(&cue).unwrap());
+    let library = Library::open(&db).unwrap();
+    let scan = || {
+        library
+            .scan_files(&files, &AtomicBool::new(false), |_| {})
+            .unwrap()
+    };
+    let cold = scan();
+    assert_eq!((cold.added, cold.failed), (3, 0), "{cold:?}");
+    let warm = scan();
+    assert_eq!(
+        (warm.existing, warm.added, warm.failed),
+        (3, 0, 0),
+        "{warm:?}"
+    );
+    drop(library);
+    let reopened = Library::open(&db).unwrap();
+    let games = reopened.games().unwrap();
+    let metadata = metadata::list(&reopened).unwrap();
+    assert_eq!(games.len(), 3);
+    for game in games {
+        let release = &metadata[&game.id];
+        assert_eq!((game.seconds, game.last_played), (0, None));
+        println!(
+            "{} | {:?} | {:?} | {:?}",
+            game.title, game.serial, release.release_id, release.date
+        );
+    }
+}

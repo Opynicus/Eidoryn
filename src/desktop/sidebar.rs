@@ -202,8 +202,9 @@ impl Desktop {
     }
 }
 
-const DESTINATIONS: [(&str, &str, Text, WorkspacePage); 4] = [
+const DESTINATIONS: [(&str, &str, Text, WorkspacePage); 5] = [
     ("nav-console", "grid", Text::Console, WorkspacePage::Console),
+    ("nav-library", "disc", Text::Library, WorkspacePage::Library),
     ("nav-game", "screen", Text::GameView, WorkspacePage::Game),
     (
         "nav-save-states",

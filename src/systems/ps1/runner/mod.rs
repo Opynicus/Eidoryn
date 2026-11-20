@@ -1,5 +1,7 @@
 //! One emulation thread owns the machine; clients send commands and consume snapshots.
 mod pacing;
+#[cfg(feature = "desktop")]
+mod playtime;
 mod snapshot;
 mod worker;
 
@@ -37,6 +39,24 @@ pub const MAX_REWIND_SECONDS: u16 = 120;
 pub const DEFAULT_REWIND_SECONDS: u16 = 30;
 
 pub enum Command {
+    /// Enable persistent statistics only for an interactive desktop session.
+    #[cfg(feature = "desktop")]
+    TrackLibrary {
+        library: crate::library::Library,
+        initial_disc: Option<(PathBuf, bool)>,
+    },
+    /// Settle any active interval before clearing the selected game's statistics.
+    #[cfg(feature = "desktop")]
+    ClearLibraryStatistics {
+        game_id: i64,
+        completed: mpsc::Sender<Result<(), String>>,
+    },
+    /// Start either boot mode immediately and return a library navigation receipt.
+    LaunchLibraryDisc {
+        path: PathBuf,
+        bios: Option<PathBuf>,
+        fast_boot: bool,
+    },
     SetSnapshotMode(SnapshotMode),
     SetButtons(u16),
     SetTurbo(super::input::TurboConfig),
