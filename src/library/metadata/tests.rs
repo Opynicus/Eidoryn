@@ -5,6 +5,15 @@ use std::sync::atomic::Ordering;
 
 const TEST_SERIAL: &str = "SCUS-94900";
 
+fn search_with(
+    lib: &Library,
+    id: i64,
+    query: &str,
+    fetch: impl FnOnce(&str) -> Result<SourceResponse, String>,
+) -> Result<Vec<Release>, String> {
+    super::search_with(lib, id, query, &AtomicBool::new(false), fetch)
+}
+
 fn response(releases: Vec<Release>) -> SourceResponse {
     let bindings: Vec<_> = releases.iter().map(|r| serde_json::json!({
         "game": {"value": format!("http://www.wikidata.org/entity/{}", r.id.split('/').next().unwrap())},
@@ -203,14 +212,11 @@ fn cleared_games_survive_reopen_and_incremental_work_until_explicitly_restored()
     assert!(list(&lib).unwrap()[&1].cache_cleared);
     // A manual request can be waiting for a worker when the UI clears the cache.
     assert!(refresh_online_cancellable(&lib, 1, &AtomicBool::new(true)).is_err());
-    // Another game can use the preserved edition, but this one stays cleared.
+    // A new game cannot inherit release data from a cleared catalog.
     fixture(&lib, 2, Some(TEST_SERIAL));
     refresh(&lib, 1).unwrap();
     assert!(list(&lib).unwrap()[&1].cache_cleared);
-    assert_eq!(
-        list(&lib).unwrap()[&2].release_id.as_ref(),
-        Some(&release.id)
-    );
+    assert!(list(&lib).unwrap()[&2].release_id.is_none());
     scrape::enqueue_games(&lib, &[1, 2], Mode::Incremental, Provider::Libretro).unwrap();
     assert_eq!(scrape::due_games(&lib).unwrap(), [(2, Mode::Incremental)]);
     assert!(
@@ -231,6 +237,11 @@ fn cleared_games_survive_reopen_and_incremental_work_until_explicitly_restored()
     );
     assert!(!list(&lib).unwrap()[&1].cache_cleared);
     lib.clear_metadata_cache(CacheScope::All).unwrap();
+    assert!(select(&lib, 1, &release.id).is_err());
+    search_with(&lib, 1, TEST_SERIAL, |_| {
+        Ok(response(vec![release.clone()]))
+    })
+    .unwrap();
     select(&lib, 1, &release.id).unwrap();
     assert!(!list(&lib).unwrap()[&1].cache_cleared);
     lib.clear_metadata_cache(CacheScope::All).unwrap();
@@ -437,6 +448,31 @@ fn shared_serial_is_fetched_once_and_applied_to_each_game_independently() {
         list(&lib).unwrap()[&1].title.as_deref(),
         Some("Refreshed title")
     );
+}
+
+#[test]
+fn cancelled_serial_search_cannot_repopulate_the_release_catalog() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("index.db");
+    let lib = Library::open(&path).unwrap();
+    fixture(&lib, 1, None);
+    lib.clear_metadata_cache(CacheScope::All).unwrap();
+    let cancel = AtomicBool::new(true);
+    assert!(
+        super::search_with(&lib, 1, TEST_SERIAL, &cancel, |_| {
+            panic!("cancelled search reached the provider")
+        })
+        .is_err()
+    );
+    cancel.store(false, Ordering::Relaxed);
+    let result = super::search_with(&lib, 1, TEST_SERIAL, &cancel, |_| {
+        cancel.store(true, Ordering::Relaxed);
+        Ok(response(vec![downloaded("Q1", "Superseded result")]))
+    });
+    assert_eq!(result.unwrap_err(), ProviderError::Cancelled.to_string());
+    drop(lib);
+    let reopened = Library::open(&path).unwrap();
+    assert!(candidates(&reopened, 1, TEST_SERIAL).unwrap().is_empty());
 }
 
 #[test]

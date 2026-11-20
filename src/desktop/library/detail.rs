@@ -65,15 +65,18 @@ impl Desktop {
         let Some(store) = self.library.store.clone() else {
             return;
         };
-        self.library.match_generation = self.library.match_generation.wrapping_add(1);
-        let generation = self.library.match_generation;
+        self.library.invalidate_match_request();
+        let request = Arc::clone(&self.library.match_cancel);
         cx.spawn(async move |this, cx| {
+            let cancel = Arc::clone(&request);
             let result = cx
                 .background_executor()
-                .spawn(async move { metadata::search_candidates(&store, id, &query) })
+                .spawn(async move {
+                    metadata::search_candidates_cancellable(&store, id, &query, &cancel)
+                })
                 .await;
             let _ = this.update(cx, |v, cx| {
-                if generation == v.library.match_generation {
+                if !request.load(Ordering::Relaxed) {
                     match result {
                         Ok(rows) => v.library.matches = rows,
                         Err(error) => v.notice = Some(error),
@@ -116,7 +119,7 @@ impl Desktop {
                 ReleaseRequest::Confirm(_) => previous.store(true, Ordering::Relaxed),
             }
         }
-        let generation = self.library.match_generation;
+        let match_cancel = Arc::clone(&self.library.match_cancel);
         let request = Arc::new(AtomicBool::new(false));
         let provider = self.preferences.library.cover_provider;
         let template = self.preferences.library.cover_template.clone();
@@ -144,7 +147,7 @@ impl Desktop {
                             && !v.library.settings
                             && !v.graphics.open
                             && !v.presentation.shows_video()
-                            && generation == v.library.match_generation
+                            && !match_cancel.load(Ordering::Relaxed)
                         {
                             v.edit_library(Edit::Match(id), String::new(), window, cx);
                         }
@@ -413,9 +416,8 @@ impl Desktop {
             .child(label(&p, subtitle).text_size(px(12.)))
     }
 
-    fn edition_card(&self, entry: &Entry, cx: &Context<Self>) -> Div {
+    fn edition_fields(&self, entry: &Entry) -> Div {
         let p = self.library_palette();
-        let id = entry.game.id;
         let manual = entry.manual_fields.contains(&true);
         let source = [
             manual.then(|| self.tr(Text::LibraryManualData).to_owned()),
@@ -426,9 +428,15 @@ impl Desktop {
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
+        let date = entry.publication_date();
+        let matched = entry.matched_release(self.tr(Text::LibraryPending));
+        if matched.is_none() && date.1.is_none() && source.is_empty() {
+            return label(&p, self.tr(Text::LibraryNoReleaseInfo))
+                .debug_selector(|| "lib-release-empty".into());
+        }
         let played = self.played_at(entry.game.last_played);
         let duration = self.library_duration(entry);
-        let fields = [
+        self.detail_fields(&[
             (
                 Text::LibraryPlatform,
                 Some(if entry.game.platform == "PS1" {
@@ -439,18 +447,21 @@ impl Desktop {
             ),
             (Text::LibrarySerial, entry.serial.as_deref()),
             (Text::LibraryRegion, entry.region.as_deref()),
-            entry.publication_date(),
-            (
-                Text::LibraryMatchedRelease,
-                entry.matched_release(self.tr(Text::LibraryPending)),
-            ),
+            date,
+            (Text::LibraryMatchedRelease, matched),
             (
                 Text::LibrarySourceUpdated,
                 (!source.is_empty()).then_some(source.as_str()),
             ),
             (Text::LibraryPlayed, Some(&played)),
             (Text::LibraryTime, Some(&duration)),
-        ];
+        ])
+        .debug_selector(|| "lib-release-fields".into())
+    }
+
+    fn edition_card(&self, entry: &Entry, cx: &Context<Self>) -> Div {
+        let p = self.library_palette();
+        let id = entry.game.id;
         let actions = actions(&p)
             .when_else(
                 matches!(
@@ -495,7 +506,7 @@ impl Desktop {
                             move |v, w, cx| v.edit_release(id, w, cx),
                         )),
                 )
-                .child(self.detail_fields(&fields))
+                .child(self.edition_fields(entry))
                 .child(actions);
         match self.library.metadata_lookups.get(&id) {
             Some(MetadataLookup::Finished(text)) => panel.child(label(&p, self.tr(*text))),

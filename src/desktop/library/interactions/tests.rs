@@ -43,7 +43,6 @@ fn cleared_collection(
     app: &mut TestAppContext,
     metadata_status: http::StatusCode,
 ) -> (TempDir, Entity<Desktop>, &mut VisualTestContext) {
-    use std::io::Cursor;
     let (dir, view, cx) = collection(app, 2);
     let lib = view.read_with(cx, |v, _| v.library.store.clone().unwrap());
     lib.connect()
@@ -53,22 +52,10 @@ fn cleared_collection(
         )
         .unwrap();
     lib.clear_metadata_cache(metadata::CacheScope::All).unwrap();
-    let rows = br#"{"results":{"bindings":[{"game":{"value":"https://www.wikidata.org/entity/Q1"},"title":{"value":"Recorded release"},"date":{"value":"+1998-05-01T00:00:00Z"},"precision":{"value":"11"}}]}}"#;
-    let mut png = Cursor::new(Vec::new());
-    image::RgbImage::from_pixel(32, 32, image::Rgb([20, 60, 100]))
-        .write_to(&mut png, image::ImageFormat::Png)
-        .unwrap();
-    let lib = lib.with_scrape_responses(
-        http::Response::builder()
-            .status(metadata_status)
-            .body(rows.to_vec())
-            .unwrap(),
-        http::Response::new(png.into_inner()),
-    );
     view.update(cx, |v, cx| {
         v.preferences.library.auto_covers = false;
         v.preferences.library.scrape_new_games = false;
-        v.library = Workspace::new(Some(lib));
+        v.library = Workspace::new(Some(recorded_provider(lib, metadata_status)));
         v.reload_library(cx);
     });
     cx.run_until_parked();
@@ -76,6 +63,21 @@ fn cleared_collection(
         assert!(cx.debug_bounds(selector).is_some());
     }
     (dir, view, cx)
+}
+
+fn recorded_provider(lib: Library, metadata_status: http::StatusCode) -> Library {
+    let rows = br#"{"results":{"bindings":[{"game":{"value":"https://www.wikidata.org/entity/Q1"},"title":{"value":"Recorded release"},"date":{"value":"+1998-05-01T00:00:00Z"},"precision":{"value":"11"}}]}}"#;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(32, 32, image::Rgb([20, 60, 100]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    lib.with_scrape_responses(
+        http::Response::builder()
+            .status(metadata_status)
+            .body(rows.to_vec())
+            .unwrap(),
+        http::Response::new(png.into_inner()),
+    )
 }
 
 fn assert_card_shows_cover(view: &Entity<Desktop>, cx: &mut VisualTestContext, id: i64) {
@@ -124,6 +126,72 @@ fn card_and_details_scrapes_restore_only_the_selected_cover(app: &mut TestAppCon
                 .iter()
                 .all(|e| e.title == "Recorded release")
         );
+    });
+}
+
+#[gpui::test]
+fn clearing_a_confirmed_release_empties_the_details_and_match_dialog_after_restart(
+    app: &mut TestAppContext,
+) {
+    let (dir, view, cx) = cleared_collection(app, http::StatusCode::OK);
+    cx.simulate_resize(size(px(1280.), px(1300.)));
+    for selector in [
+        "library-entry-1",
+        "lib-details",
+        "lib-refresh",
+        "lib-match",
+        "lib-match-0",
+    ] {
+        click_control(cx, selector);
+    }
+    assert!(cx.debug_bounds("lib-release-fields").is_some());
+    for selector in [
+        "lib-back",
+        "lib-settings",
+        "lib-clear-metadata",
+        "lib-cache-confirm",
+        "lib-settings-back",
+        "library-entry-1",
+        "lib-details",
+    ] {
+        click_control(cx, selector);
+    }
+    assert!(cx.debug_bounds("lib-release-empty").is_some());
+    assert!(cx.debug_bounds("lib-release-fields").is_none());
+
+    cx.update(|window, _| window.remove_window());
+    drop(view);
+    let (view, cx) = app.add_window_view(desktop);
+    let store = Library::open(&dir.path().join("library.db")).unwrap();
+    view.update(cx, |v, _| {
+        v.preferences.library.auto_covers = false;
+        v.library = Workspace::new(Some(recorded_provider(store, http::StatusCode::OK)));
+    });
+    for selector in ["nav-library", "library-entry-1", "lib-details", "lib-match"] {
+        click_control(cx, selector);
+    }
+    assert!(cx.debug_bounds("lib-match-0").is_none());
+    assert!(view.read_with(cx, |v, _| v.library.matches.is_empty()));
+    click_control(cx, "lib-close-edit");
+    click_control(cx, "lib-get-cover");
+    assert!(cx.debug_bounds("lib-release-empty").is_some());
+    assert!(cx.debug_bounds("lib-release-fields").is_none());
+    assert!(view.read_with(cx, |v, _| {
+        v.library
+            .entries
+            .iter()
+            .find(|e| e.game.id == 1)
+            .unwrap()
+            .thumbnail
+            .is_some()
+    }));
+    click_control(cx, "lib-refresh");
+    assert!(cx.debug_bounds("lib-release-empty").is_none());
+    assert!(cx.debug_bounds("lib-release-fields").is_some());
+    view.read_with(cx, |v, _| {
+        let card = v.library.entries.iter().find(|e| e.game.id == 1).unwrap();
+        assert_eq!(card.title, "Recorded release");
+        assert_eq!(card.date.as_deref(), Some("1998-05-01"));
     });
 }
 

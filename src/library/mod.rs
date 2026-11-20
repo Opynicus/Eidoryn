@@ -95,7 +95,7 @@ fn european_market(market: &str) -> bool {
     )
 }
 
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 const SCHEMA: &str = include_str!("schema.sql");
 
 impl Library {
@@ -329,7 +329,7 @@ impl Library {
         if from > SCHEMA_VERSION {
             return Err(format!("Unsupported library schema version {from}").into());
         }
-        // The stable sidecar serializes the snapshot and both migration transactions.
+        // The stable sidecar serializes the snapshot and schema migration transactions.
         // Leaving the file in place keeps all processes locking the same inode.
         let migration_lock = std::fs::File::options()
             .create(true)
@@ -367,7 +367,17 @@ impl Library {
             tx.pragma_update(None, "user_version", 4)?;
         }
         tx.commit()?;
-        drop(db);
+        if version < 8 {
+            Self::migrate_v8(pool)?;
+        }
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        metadata::migrate_release_preferences(&tx)?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn migrate_v8(pool: &sqlx::SqlitePool) -> IndexResult<()> {
         runtime()?.block_on(async {
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             let current: i64 = sqlx::query_scalar("PRAGMA user_version")

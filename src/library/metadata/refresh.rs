@@ -373,6 +373,7 @@ pub(super) fn download_serial(
     conn: &mut Connection,
     id: i64,
     serial: &str,
+    cancel: &AtomicBool,
     fetch: impl FnOnce(&str) -> Result<SourceResponse, String>,
 ) -> Result<bool, String> {
     let generation = |db: &Connection| {
@@ -392,6 +393,9 @@ pub(super) fn download_serial(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ProviderError::Cancelled.to_string());
+    }
     if generation(&tx)? != before || !(Fetched { revision, download }).store(&tx, serial)? {
         return Err("A newer metadata request superseded this one".into());
     }

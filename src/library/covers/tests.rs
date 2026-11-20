@@ -160,6 +160,50 @@ fn negative_cache_and_server_backoff_apply_across_requests() {
 }
 
 #[test]
+#[cfg(feature = "ui-tests")]
+fn cover_only_refresh_uses_the_chosen_editions_region_after_clear() {
+    let (_dir, lib) = fixture(); // Local disc is a US edition.
+    let lib = lib.with_scrape_responses(
+        response(503, Vec::new()),
+        response(200, encoded(ImageFormat::Png)),
+    );
+    let serial = "SLPS-00001";
+    lib.connect()
+        .unwrap()
+        .execute(
+            "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date)
+         VALUES('Q1/SLPS-00001',?,'Japan','Chosen edition','1997','','')",
+            [serial],
+        )
+        .unwrap();
+    metadata::select(&lib, 1, "Q1/SLPS-00001").unwrap();
+    lib.clear_metadata_cache(metadata::CacheScope::All).unwrap();
+    let cancel = AtomicBool::default();
+    assert_eq!(
+        fetch(&lib, 1, Provider::Libretro, "", &cancel).unwrap(),
+        "ready"
+    );
+    let source: String = lib
+        .connect()
+        .unwrap()
+        .query_row(
+            "SELECT url FROM cover_attempts WHERE game_id=1 AND serial=?",
+            [serial],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        source,
+        provider_key(Provider::Libretro, "", serial, "", "Japan")
+            .unwrap()
+            .as_str()
+    );
+    let metadata = metadata::list(&lib).unwrap();
+    assert!(metadata[&1].release_title.is_none());
+    assert!(metadata[&1].date.is_none());
+}
+
+#[test]
 fn explicit_fetch_retries_a_cached_miss_and_observes_provider_backoff() {
     let (_dir, lib) = fixture();
     let cancel = AtomicBool::new(false);

@@ -332,7 +332,8 @@ fn fetch_edition(
     // A local filename and manual display title are private. Only send a catalog
     // title to a title-based service, or a verified disc serial to a serial-based one.
     let (serial, title, region, generation, cleared) = conn.query_row(
-        "SELECT COALESCE(release_serial,disc_serial),auto_title,COALESCE(auto_region,disc_region),
+        "SELECT COALESCE(release_serial,disc_serial),auto_title,
+                COALESCE(auto_region, CASE WHEN release_serial IS NULL OR release_serial=disc_serial THEN disc_region END),
                 cache_generation,cache_cleared FROM game_metadata WHERE game_id=?",
         [id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?,
                       r.get::<_, Option<String>>(2)?, r.get(3)?, r.get::<_, bool>(4)?))
@@ -358,14 +359,15 @@ fn fetch_edition(
         .map(|r| r.title.as_str())
         .or(title.as_deref())
         .unwrap_or("");
-    let region = chosen
-        .map(|r| r.region.as_str())
-        .or(region.as_deref())
-        .unwrap_or("");
     let serial = chosen
         .map(|r| r.serial.as_str())
         .or(serial.as_deref())
         .ok_or("A disc serial or a selected release is needed to get cover art")?;
+    let region = chosen
+        .map(|r| r.region.as_str())
+        .or(region.as_deref())
+        .or_else(|| super::metadata::serial_region(serial))
+        .unwrap_or("");
     if provider == Provider::Igdb && title.is_empty() {
         return Err("Choose a release or fetch its release details before searching IGDB".into());
     }

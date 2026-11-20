@@ -19,57 +19,143 @@ fn cached(lib: &Library, serial: &str) -> bool {
 }
 
 #[test]
-fn cleanup_keeps_only_referenced_historical_payloads_for_confirmed_editions() {
+fn clearing_a_confirmed_release_drops_its_snapshot_and_historical_payload() {
     let root = tempfile::tempdir().unwrap();
-    let lib = Library::open(&root.path().join("index.db")).unwrap();
-    let confirmed = "SLUS-12347";
-    seed(&lib, 4, confirmed);
-    select(&lib, 4, &format!("Test/{confirmed}")).unwrap();
-    let proof = || {
-        lib.connect()
-            .unwrap()
-            .query_row(
-                "SELECT raw_payload FROM metadata_sources WHERE game_id=4",
-                [],
-                |r| r.get::<_, Vec<u8>>(0),
-            )
-            .unwrap()
+    let path = root.path().join("index.db");
+    let lib = Library::open(&path).unwrap();
+    seed(&lib, 4, TEST_SERIAL);
+    select(&lib, 4, &format!("Test/{TEST_SERIAL}")).unwrap();
+    fixture(&lib, 5, Some(TEST_SERIAL));
+    fixture(&lib, 6, Some(TEST_SERIAL));
+    select(&lib, 6, &format!("Test/{TEST_SERIAL}")).unwrap();
+    let mut newer = downloaded("Other", "Updated title");
+    newer.work_date = "1995".into();
+    refresh_with(&lib, 5, |_| Ok(response(vec![newer]))).unwrap();
+
+    let count = |db: &Connection, table: &str| {
+        db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get::<_, usize>(0)
+        })
+        .unwrap()
     };
-    let chosen_bytes = proof();
-    // Another game refreshes the same serial. The confirmed choice now refers
-    // to a historical revision, while a legacy unreferenced revision can go.
-    fixture(&lib, 5, Some(confirmed));
-    refresh_with(&lib, 5, |_| {
-        let mut release = downloaded("Test", "Refreshed title");
-        release.serial = confirmed.into();
-        release.id = format!("Test/{confirmed}");
-        Ok(response(vec![release]))
-    })
-    .unwrap();
+    assert_eq!(
+        count(&lib.connect().unwrap(), "referenced_metadata_responses"),
+        1
+    );
+    lib.remove_games_and_clear_metadata(&[4]).unwrap();
+    let db = lib.connect().unwrap();
+    assert_eq!(count(&db, "referenced_metadata_responses"), 1);
+    assert!(list(&lib).unwrap()[&6].release_id.is_some());
+    lib.remove_games_and_clear_metadata(&[6]).unwrap();
+    assert_eq!(count(&db, "referenced_metadata_responses"), 0);
+    assert!(cached(&lib, TEST_SERIAL)); // Game 5 still uses the new revision.
+    let rows = list(&lib).unwrap();
+    assert!(rows[&4].release_id.is_none());
+    assert_eq!(rows[&5].title.as_deref(), Some("Updated title"));
+
+    lib.clear_metadata_cache(CacheScope::All).unwrap();
+    drop(db);
+    drop(lib);
+    let lib = Library::open(&path).unwrap();
+    let db = lib.connect().unwrap();
+    for table in [
+        "fetched_releases",
+        "release_names",
+        "metadata_responses",
+        "referenced_metadata_responses",
+        "metadata_sources",
+    ] {
+        assert_eq!(count(&db, table), 0, "{table}");
+    }
+    for row in list(&lib).unwrap().values() {
+        assert!(row.release_id.is_none() && row.release_title.is_none());
+        assert!(row.date.is_none() && row.work_date.is_none() && row.aliases.is_empty());
+        assert!(row.source.is_none() && row.refreshed.is_none());
+    }
+}
+
+#[test]
+fn v8_upgrade_clears_old_snapshots_and_refetches_an_explicit_edition_by_its_serial() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("index.db");
+    let lib = Library::open(&path).unwrap();
+    let mut chosen = downloaded("Q2", "Previously chosen title");
+    let other = downloaded("Q1", "Another edition");
+    for (id, serial) in [(1, Some("SLPS-00001")), (2, None)] {
+        fixture(&lib, id, serial);
+        search_with(&lib, id, TEST_SERIAL, |_| {
+            Ok(response(vec![other.clone(), chosen.clone()]))
+        })
+        .unwrap();
+        select(&lib, id, &chosen.id).unwrap();
+    }
+    let unaffected = "SLUS-12345";
+    seed(&lib, 3, unaffected);
+    select(&lib, 3, &format!("Test/{unaffected}")).unwrap();
+    set_override(&lib, 1, Field::Title, Some("Manual title")).unwrap();
+    // Simulate v8 leaving all confirmed fields in place on a cache clear.
     lib.connect()
         .unwrap()
-        .execute(
-            "INSERT INTO referenced_metadata_responses
-         SELECT serial,provider,-1,payload_version,fetched_at,payload
-         FROM metadata_responses WHERE serial=?",
-            [confirmed],
+        .execute_batch(
+            "UPDATE game_metadata SET cache_cleared=1,cache_generation=1 WHERE game_id IN (1,2);
+         ALTER TABLE game_metadata DROP COLUMN preferred_release_id;
+         PRAGMA user_version=8;",
         )
         .unwrap();
-    lib.remove_games(&[4]).unwrap();
-    for scope in [CacheScope::Removed, CacheScope::All] {
-        lib.clear_metadata_cache(scope).unwrap();
-        assert_eq!(proof(), chosen_bytes);
-        let history: i64 = lib
-            .connect()
-            .unwrap()
-            .query_row(
-                "SELECT count(*) FROM referenced_metadata_responses WHERE serial=?",
-                [confirmed],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(history, 1);
+    drop(lib);
+
+    let lib = Library::open(&path).unwrap();
+    assert!(path.with_extension("db.v8.bak").exists());
+    assert!(!cached(&lib, TEST_SERIAL));
+    assert!(cached(&lib, unaffected));
+    let rows = list(&lib).unwrap();
+    for id in [1, 2] {
+        assert!(rows[&id].release_id.is_none());
+        assert!(rows[&id].release_title.is_none() && rows[&id].date.is_none());
+        assert!(rows[&id].source.is_none() && rows[&id].cache_cleared);
+        assert!(candidates(&lib, id, TEST_SERIAL).unwrap().is_empty());
     }
+    assert_eq!(rows[&1].title.as_deref(), Some("Manual title"));
+    assert_eq!(
+        rows[&3].release_title.as_deref(),
+        Some("Catalog title · USA")
+    );
+
+    // Fetching the same ambiguous catalog must select the exact preferred ID,
+    // including for a game whose own serial was missing or from another market.
+    chosen.title = "Newly downloaded title".into();
+    for id in [1, 2] {
+        assert_eq!(
+            refresh_with(&lib, id, |serial| {
+                assert_eq!(serial, TEST_SERIAL);
+                Ok(response(vec![other.clone(), chosen.clone()]))
+            })
+            .unwrap(),
+            RefreshOutcome::Updated
+        );
+        let card = &list(&lib).unwrap()[&id];
+        assert_eq!(card.release_id.as_deref(), Some(chosen.id.as_str()));
+        assert_eq!(
+            card.release_title.as_deref(),
+            Some("Newly downloaded title · USA")
+        );
+    }
+}
+
+#[test]
+fn clearing_the_last_active_copy_releases_data_shared_with_a_previously_cleared_copy() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = Library::open(&root.path().join("index.db")).unwrap();
+    seed(&lib, 1, TEST_SERIAL);
+    fixture(&lib, 2, Some(TEST_SERIAL));
+    for id in [1, 2] {
+        select(&lib, id, &format!("Test/{TEST_SERIAL}")).unwrap();
+    }
+    lib.remove_games_and_clear_metadata(&[1]).unwrap();
+    assert!(cached(&lib, TEST_SERIAL));
+    lib.remove_games_and_clear_metadata(&[2]).unwrap();
+    assert!(!cached(&lib, TEST_SERIAL));
+    assert!(candidates(&lib, 2, TEST_SERIAL).unwrap().is_empty());
 }
 
 #[test]

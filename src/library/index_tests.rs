@@ -650,7 +650,7 @@ fn migrating_v5_through_v7_preserves_games_positions_and_playtime() {
         let game = f.db.games().unwrap()[0].id;
         f.session(game, 26);
         let db = f.db.connect().unwrap();
-        db.execute_batch("ALTER TABLE game_metadata DROP COLUMN cache_cleared")
+        db.execute_batch("ALTER TABLE game_metadata DROP COLUMN preferred_release_id; ALTER TABLE game_metadata DROP COLUMN cache_cleared")
             .unwrap();
         if version < 7 {
             db.execute_batch("ALTER TABLE game_metadata DROP COLUMN cache_generation")

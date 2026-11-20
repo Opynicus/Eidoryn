@@ -8,13 +8,14 @@ mod refresh;
 mod wikidata;
 pub(crate) use super::transport::ProviderError;
 pub use cache::CacheScope;
-pub(super) use cache::clear_in_transaction;
+pub(super) use cache::{clear_in_transaction, migrate_release_preferences};
 pub use matching::candidates;
 use matching::{has_title_candidate, index_names, matching_serial, title_hint};
 use providers::{is_release_serial, lookup_release};
 use refresh::download_serial;
 pub(super) use refresh::{Batch, Prepared};
 pub use refresh::{RefreshOutcome, refresh_online, refresh_online_cancellable};
+pub(super) use wikidata::serial_region;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -245,9 +246,9 @@ struct Evidence {
 
 fn evidence(conn: &Connection, id: i64) -> rusqlite::Result<Evidence> {
     conn.query_row(
-        "SELECT CASE WHEN confirmed THEN release_serial ELSE disc_serial END,
+        "SELECT CASE WHEN preferred_release_id IS NOT NULL THEN release_serial ELSE disc_serial END,
                 CASE WHEN confirmed THEN auto_region ELSE disc_region END,
-                CASE WHEN confirmed THEN release_id END, filename, cache_generation, cache_cleared
+                preferred_release_id, filename, cache_generation, cache_cleared
          FROM game_metadata WHERE game_id=?",
         [id],
         |r| {
@@ -289,8 +290,18 @@ pub fn refresh(lib: &Library, id: i64) -> Result<(), String> {
 
 /// Search cached names locally or query release providers for an uncached PS1 serial.
 pub fn search_candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, String> {
-    search_with(lib, id, query, |serial| {
-        lookup_release(serial, &AtomicBool::new(false)).map_err(|err| err.to_string())
+    search_candidates_cancellable(lib, id, query, &AtomicBool::new(false))
+}
+
+/// Search for editions until the caller closes the picker or clears its cache.
+pub fn search_candidates_cancellable(
+    lib: &Library,
+    id: i64,
+    query: &str,
+    cancel: &AtomicBool,
+) -> Result<Vec<Release>, String> {
+    search_with(lib, id, query, cancel, |serial| {
+        lookup_release(serial, cancel).map_err(|err| err.to_string())
     })
 }
 
@@ -298,8 +309,12 @@ fn search_with(
     lib: &Library,
     id: i64,
     query: &str,
+    cancel: &AtomicBool,
     fetch: impl FnOnce(&str) -> Result<SourceResponse, String>,
 ) -> Result<Vec<Release>, String> {
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(ProviderError::Cancelled.to_string());
+    }
     let serial = query.trim().to_ascii_uppercase();
     if is_release_serial(&serial) {
         let mut conn = lib.connect()?;
@@ -308,7 +323,7 @@ fn search_with(
             .and_then(|mut stmt| stmt.exists([&serial]))
             .map_err(|e| e.to_string())?;
         if !cached {
-            download_serial(&mut conn, id, &serial, fetch)?;
+            download_serial(&mut conn, id, &serial, cancel, fetch)?;
         }
     }
     candidates(lib, id, query)
@@ -335,7 +350,11 @@ pub fn select_cancellable(
     if assign(&tx, id, release_id, true).map_err(|e| e.to_string())? == 0 {
         return Err("Unknown game or cached release".into());
     }
-    restore_display(&tx, id).map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE game_metadata SET preferred_release_id=release_id, cache_cleared=0 WHERE game_id=?",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
 }
 

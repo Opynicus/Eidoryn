@@ -255,6 +255,7 @@ impl Desktop {
             return;
         }
         if scope == metadata::CacheScope::All {
+            self.library.invalidate_match_request();
             for lookup in self.library.metadata_lookups.values() {
                 lookup.cancel();
             }
@@ -281,7 +282,7 @@ impl Desktop {
                             v.library.thumbnails.clear();
                             v.library.auto_attempted.clear();
                             v.library.matches.clear();
-                            v.library.match_generation = v.library.match_generation.wrapping_add(1);
+                            v.library.invalidate_match_request();
                             v.library.metadata_lookups.clear();
                         }
                         v.reload_after_library_change(cx);

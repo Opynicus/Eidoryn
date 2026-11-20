@@ -7,14 +7,14 @@ use serde_json::value::RawValue;
 use std::sync::atomic::AtomicBool;
 
 pub(super) fn is_release_serial(serial: &str) -> bool {
-    wikidata::is_supported_serial(serial) || gamedb::is_supported_serial(serial)
+    wikidata::serial_region(serial).is_some() || gamedb::is_supported_serial(serial)
 }
 
 pub(super) fn lookup_release(
     serial: &str,
     cancel: &AtomicBool,
 ) -> Result<SourceResponse, ProviderError> {
-    if !wikidata::is_supported_serial(serial) {
+    if wikidata::serial_region(serial).is_none() {
         return gamedb::GameDb.search(serial, cancel);
     }
     let primary = wikidata::Wikidata.search(serial, cancel);

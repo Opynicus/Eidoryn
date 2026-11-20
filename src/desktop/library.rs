@@ -73,8 +73,7 @@ impl Entry {
         let pending = metadata.as_ref().is_some_and(|m| m.pending);
         let scrape_active = metadata.as_ref().is_some_and(|m| m.scrape_active);
         let cover_status = metadata.as_mut().and_then(|m| m.status.take());
-        // Manual overrides and confirmed editions survive a clear for future edits.
-        // A cleared card presents only its local disc identity until explicitly restored.
+        // A cleared card presents its local disc identity until explicitly restored.
         let metadata = metadata.filter(|m| !m.cache_cleared);
         let title = metadata
             .as_ref()
@@ -202,7 +201,7 @@ pub(super) struct Workspace {
     choices: Vec<eidoryn_psx::library::TrackChoice>,
     editor: Option<Editor>,
     matches: Vec<Release>,
-    match_generation: u64,
+    match_cancel: Arc<AtomicBool>,
     launch_generation: u64,
     metadata_lookups: HashMap<i64, MetadataLookup>,
     clear_playtime_confirmation: Option<i64>,
@@ -251,7 +250,7 @@ impl Workspace {
             choices: vec![],
             editor: None,
             matches: vec![],
-            match_generation: 0,
+            match_cancel: Arc::default(),
             launch_generation: 0,
             metadata_lookups: HashMap::new(),
             clear_playtime_confirmation: None,
@@ -268,6 +267,8 @@ impl Workspace {
     }
 
     pub(super) fn shutdown(&mut self) {
+        self.match_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(store) = &self.store {
             store.request_scrape_shutdown();
         }
@@ -331,7 +332,13 @@ impl Workspace {
         self.editor = None;
         self.matches.clear();
         self.clear_playtime_confirmation = None;
-        self.match_generation = self.match_generation.wrapping_add(1);
+        self.invalidate_match_request();
+    }
+
+    fn invalidate_match_request(&mut self) {
+        self.match_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.match_cancel = Arc::default();
     }
 }
 

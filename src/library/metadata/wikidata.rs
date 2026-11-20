@@ -82,8 +82,8 @@ fn territory(serial: &str) -> Result<Territory, String> {
     })
 }
 
-pub(super) fn is_supported_serial(serial: &str) -> bool {
-    territory(serial).is_ok()
+pub(in crate::library) fn serial_region(serial: &str) -> Option<&'static str> {
+    territory(serial).ok().map(|t| t.region)
 }
 
 fn query(serial: &str, territory: &Territory) -> String {

@@ -231,6 +231,7 @@ fn whole_library_clear_orders_pending_refreshes_and_later_retries(cx: &mut TestA
     let (view, cx) = cx.add_window_view(desktop);
     let (release, wait) = tokio::sync::oneshot::channel();
     let waiting_lookup = Arc::new(AtomicBool::new(false));
+    let waiting_search = Arc::new(AtomicBool::new(false));
     view.update(cx, |v, cx| {
         v.library = Workspace::new(Some(lib));
         // The normal scheduler waits for an in-flight chosen cover. Inspect the
@@ -240,6 +241,7 @@ fn whole_library_clear_orders_pending_refreshes_and_later_retries(cx: &mut TestA
             chosen_edition: true,
         });
         v.library.scraping.queue_write = Some(cx.spawn(async move |_, _| wait.await.unwrap()));
+        v.library.match_cancel = Arc::clone(&waiting_search);
         v.library.metadata_lookups.insert(
             1,
             crate::desktop::library::MetadataLookup::Fetching(Arc::clone(&waiting_lookup)),
@@ -252,6 +254,7 @@ fn whole_library_clear_orders_pending_refreshes_and_later_retries(cx: &mut TestA
     cx.run_until_parked();
     assert_eq!(job_counts(), (0, 0, None));
     assert!(waiting_lookup.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(waiting_search.load(std::sync::atomic::Ordering::Relaxed));
     assert!(view.read_with(cx, |v, _| v.library.cache_clear == CacheClearState::Running));
     release.send(()).unwrap();
     cx.run_until_parked();
