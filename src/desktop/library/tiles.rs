@@ -279,7 +279,6 @@ impl Desktop {
 
     pub(super) fn library_badges(&self, entry: &Entry) -> Div {
         let p = self.library_palette();
-        let midnight = self.themes.active().id == eidoryn_psx::theme::DEFAULT_THEME_ID;
         let badge = |text: String, color: u32, border: u32| {
             div()
                 .flex_shrink_0()
@@ -318,15 +317,15 @@ impl Desktop {
             .when(entry.scrape_active, |row| {
                 row.child(badge(
                     self.tr(Text::LibraryScrapePending).into(),
-                    if midnight { 0xdfbf83 } else { p.primary },
-                    if midnight { 0x61523b } else { p.border },
+                    p.warning_text(),
+                    p.warning_border(),
                 ))
             })
             .when(entry.pending, |row| {
                 row.child(badge(
                     self.tr(Text::LibraryPending).into(),
-                    if midnight { 0xaabfdb } else { p.on_tonal },
-                    if midnight { 0x4a586b } else { p.border },
+                    p.info_text(),
+                    p.info_border(),
                 ))
             })
             .when(
@@ -335,8 +334,8 @@ impl Desktop {
                 |row| {
                     row.child(badge(
                         self.tr(Text::LibraryMissing).into(),
-                        if midnight { 0xeda7a0 } else { p.on_error },
-                        if midnight { 0x704a49 } else { p.border },
+                        p.on_error,
+                        p.error_border(),
                     ))
                 },
             )

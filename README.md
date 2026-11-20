@@ -22,7 +22,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
 - **Graphics and performance options:** serial and multithreaded software rendering, optional wgpu hardware acceleration with runtime backend detection, enlarged and fullscreen views, and a CRT display filter.
-- **Desktop experience:** English and Simplified Chinese, keyboard navigation, four built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
+- **Desktop experience:** English and Simplified Chinese, keyboard navigation, five built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
 - **Media and saves:** ISO, BIN, multi-track CUE/BIN, and CHD CD images; two memory-card slots with automatic persistence, plus timestamped save states for returning to any saved moment.
 - **Debugging tools:** An optional debugger with CPU registers, disassembly, single stepping, and execution slices; an experimental JIT and a headless CLI. Enable the debugger in its workspace or start with `--debugger`.
 
@@ -104,7 +104,7 @@ Choose **Settings → Appearance → Language** to switch immediately and save y
 
 To add a language, create a file named for its language tag, such as `locales/fr.toml`. Set `name` to the native language name and add translations under `[messages]`. An optional top-level `aliases` list adds system locale matches. Rebuild to include the language in settings and the CLI. Omitted keys use English. The build rejects unknown keys and empty translations. See the [English catalog](locales/en.toml) for the full list of keys.
 
-Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are also saved. CLI options such as `--theme ocean --volume 60 --crt soft` override saved preferences for the current session. **Settings → Graphics → Clean fullscreen** hides the playback controls when the game picture is fullscreen. The equivalent launch options are `--fullscreen --clean-fullscreen`.
+Select **Settings → Appearance → Interface theme → Lemon Green** for a charcoal interface with lime accents. Eidoryn saves the selected theme, CRT, volume, mute state, preferred renderer, and fullscreen controls. CLI options such as `--theme lemon-green --volume 60 --crt soft` override saved preferences for the current session. **Settings → Graphics → Clean fullscreen** hides the playback controls when the game picture is fullscreen. The equivalent launch options are `--fullscreen --clean-fullscreen`.
 
 ### Load a game
 

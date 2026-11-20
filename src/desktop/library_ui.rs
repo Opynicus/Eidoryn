@@ -27,30 +27,11 @@ impl DialogFocus {
 impl Desktop {
     pub(super) fn library_palette(&self) -> Palette {
         let theme = self.themes.active();
-        if theme.id != DEFAULT_THEME_ID {
-            return theme.palette;
-        }
-        Palette {
-            background: 0x101114,
-            surface: 0x1a1c21,
-            surface_variant: 0x212329,
-            border: 0x303238,
-            text: 0xf4f4f2,
-            muted: 0xaaaeb7,
-            primary: 0xd3f572,
-            on_primary: 0x182008,
-            primary_hover: 0xdff99b,
-            primary_pressed: 0xb9d95c,
-            tonal: 0x2a3020,
-            on_tonal: 0xd3f572,
-            tonal_hover: 0x303238,
-            tonal_pressed: 0x3b3d44,
-            error: 0x382827,
-            on_error: 0xf0a49e,
-            success: 0x292f20,
-            on_success: 0xd3f572,
-            components: None,
-            ..theme.palette
+        if theme.id == DEFAULT_THEME_ID {
+            // Keep the collection's established appearance with the default desktop theme.
+            Palette::LEMON_GREEN
+        } else {
+            theme.palette
         }
     }
 
@@ -154,8 +135,8 @@ impl Desktop {
                     .flex_col()
                     .rounded(px(12.))
                     .border_1()
-                    .border_color(rgb(p.border))
-                    .bg(rgb(p.surface))
+                    .border_color(rgb(p.dialog_border()))
+                    .bg(rgb(p.dialog_surface()))
                     .shadow_lg()
                     .child(
                         div()

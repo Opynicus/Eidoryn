@@ -11,7 +11,7 @@ macro_rules! component_colors {
         impl ComponentColors {
             pub(super) const MIDNIGHT: Self = Self { $( $role: $midnight, )+ };
 
-            fn inherited($p: &Palette) -> Self {
+            pub(super) const fn inherited($p: &Palette) -> Self {
                 Self { $( $role: $fallback, )+ }
             }
         }
@@ -64,6 +64,10 @@ component_colors! { |p|
     running_indicator: 0xa8d9ba => p.on_success,
     paused_indicator: 0xe6bf79 => p.muted,
     danger_text: 0xffc6ba => p.on_error,
+    warning_text: 0xe6bf79 => p.primary,
+    warning_border: 0x61523b => p.border,
+    info_text: 0xaabfdb => p.on_tonal,
+    info_border: 0x4a586b => p.border,
     success_border: 0x405f4d => p.on_success,
     error_border: 0x795048 => p.on_error,
     inset_surface: 0x151b1d => p.background,

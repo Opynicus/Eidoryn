@@ -37,12 +37,17 @@ impl Desktop {
                     .gap_2()
                     .children(self.themes.themes().iter().map(|theme| {
                         let id = theme.id.clone();
+                        let selector = format!("theme-{id}");
                         let selected = id == self.themes.active().id;
                         let palette = theme.palette;
                         let focus_color = p.primary;
                         let hover = p.tonal_hover;
                         div()
-                            .id(SharedString::from(format!("theme-{id}")))
+                            .id(SharedString::from(selector.clone()))
+                            .debug_selector(move || selector.clone())
+                            .role(gpui::Role::RadioButton)
+                            .aria_label(theme.name.clone())
+                            .aria_toggled(selected.into())
                             .tab_index(0)
                             .focus(move |style| style.border_color(rgb(focus_color)).border_2())
                             .min_w_0()

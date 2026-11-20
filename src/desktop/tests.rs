@@ -966,7 +966,7 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
         (1600., 1000., 16.),
     ] {
         visual.simulate_resize(size(px(width), px(height)));
-        for theme in ["midnight", "lavender", "ocean", "forest"] {
+        for theme in ["midnight", "lavender", "ocean", "forest", "lemon-green"] {
             for &language in Language::ALL {
                 for (page, settings, tab) in [
                     (WorkspacePage::Console, false, SettingsTab::Graphics),
@@ -1232,12 +1232,13 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
             assert!(v.settings_focus.contains_focused(window, cx));
         });
     }
-    view.update(cx, |view, cx| view.select_theme("ocean", cx));
+    click_control(cx, "theme-lemon-green");
+    assert!(view.read_with(cx, |v, _| v.themes.active().id == "lemon-green"));
     assert_eq!(
         eidoryn_psx::preferences::Preferences::load(&path)
             .unwrap()
             .theme,
-        "ocean"
+        "lemon-green"
     );
     press_keys(cx, "escape f12");
     assert!(!view.read_with(cx, |v, _| v.clean_fullscreen));

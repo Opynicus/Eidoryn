@@ -76,6 +76,57 @@ impl Palette {
         video_background: 0x11181b,
     };
 
+    /// Charcoal surfaces and the lemon-green accent from the game library prototype.
+    pub const LEMON_GREEN: Self = {
+        let mut palette = Self {
+            background: 0x101114,
+            surface: 0x1a1c21,
+            surface_variant: 0x212329,
+            border: 0x303238,
+            text: 0xf4f4f2,
+            muted: 0xaaaeb7,
+            primary: 0xd3f572,
+            on_primary: 0x182008,
+            primary_hover: 0xe0ff94,
+            primary_pressed: 0xb9d95c,
+            tonal: 0x30352a,
+            on_tonal: 0xd3f572,
+            tonal_hover: 0x34373d,
+            tonal_pressed: 0x3b3d44,
+            error: 0x352525,
+            on_error: 0xf0a49e,
+            success: 0x1b1f1b,
+            on_success: 0xd3f572,
+            video_background: 0x090a0c,
+            components: None,
+        };
+        palette.components = Some(ComponentColors {
+            sidebar: 0x141519,
+            soft_text: 0x787e89,
+            button_surface: 0x25272d,
+            ghost_hover: 0x282b30,
+            paused_indicator: 0xe7b974,
+            warning_text: 0xdfbf83,
+            warning_border: 0x61523b,
+            info_text: 0xaabfdb,
+            info_border: 0x4a586b,
+            danger_text: 0xffc3be,
+            success_border: 0x333b2d,
+            error_border: 0x79504f,
+            history_selected: 0x22251f,
+            dialog_surface: 0x202227,
+            dialog_border: 0x4a4d52,
+            input_surface: 0x1b1d22,
+            input_border: 0x3a3d43,
+            rewind_track: 0x384037,
+            switch_off: 0x555a60,
+            switch_thumb_off: 0xf5f5f0,
+            switch_thumb_on: 0x263118,
+            ..ComponentColors::inherited(&palette)
+        });
+        palette
+    };
+
     pub const OCEAN: Self = Self {
         background: 0xf1f7fc,
         surface: 0xfafdff,

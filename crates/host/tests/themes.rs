@@ -42,9 +42,10 @@ fn plugin() -> Value {
 fn themes_switch_and_plugins_inherit_then_reload_without_duplicate_entries() {
     let fixture = Fixture::new();
     let mut catalog = ThemeCatalog::default();
+    let builtins = catalog.themes().len();
     assert_eq!(catalog.active().id, "midnight");
     assert_eq!(catalog.active().palette, Palette::MIDNIGHT);
-    for id in ["lavender", "midnight", "ocean", "forest"] {
+    for id in ["lavender", "midnight", "ocean", "forest", "lemon-green"] {
         catalog.select(id).unwrap();
         assert_eq!(catalog.active().id, id);
     }
@@ -60,8 +61,33 @@ fn themes_switch_and_plugins_inherit_then_reload_without_duplicate_entries() {
     manifest["colors"]["primary"] = json!("#123456");
     fixture.write("theme.json", &manifest);
     catalog.load_plugin(&path).unwrap();
-    assert_eq!(catalog.themes().len(), 5);
+    assert_eq!(catalog.themes().len(), builtins + 1);
     assert_eq!(catalog.active().palette.primary, 0x0012_3456);
+}
+
+#[test]
+fn lemon_green_exposes_the_prototype_colors_to_plugins() {
+    let mut catalog = ThemeCatalog::default();
+    catalog.select("lemon-green").unwrap();
+    let theme = catalog.active();
+    let palette = theme.palette;
+    assert_eq!(theme.name, "Lemon Green");
+    assert_eq!(palette.background, 0x0010_1114);
+    assert_eq!(palette.primary, 0x00d3_f572);
+    assert_eq!(palette.on_primary, 0x0018_2008);
+    assert_eq!(palette.sidebar(), 0x0014_1519);
+
+    let fixture = Fixture::new();
+    let mut manifest = plugin();
+    manifest["base"] = json!("lemon-green");
+    let id = catalog
+        .load_plugin(&fixture.write("theme.json", &manifest))
+        .unwrap();
+    catalog.select(&id).unwrap();
+    let inherited = catalog.active().palette;
+    assert_eq!(inherited.primary, 0x00ab_cdef);
+    assert_eq!(inherited.background, palette.background);
+    assert_eq!(inherited.sidebar(), palette.sidebar());
 }
 
 #[test]
@@ -96,6 +122,7 @@ fn component_colors_follow_base_overrides_and_allow_individual_customization() {
 fn malformed_plugins_preserve_the_selected_theme_and_catalog() {
     let fixture = Fixture::new();
     let mut catalog = ThemeCatalog::default();
+    let builtins = catalog.themes().len();
     catalog.select("ocean").unwrap();
     for (key, value) in [
         ("api_version", json!(2)),
@@ -114,7 +141,7 @@ fn malformed_plugins_preserve_the_selected_theme_and_catalog() {
         let path = fixture.write("invalid.json", &manifest);
         assert!(catalog.load_plugin(&path).is_err(), "{manifest}");
         assert_eq!(catalog.active().id, "ocean");
-        assert_eq!(catalog.themes().len(), 4);
+        assert_eq!(catalog.themes().len(), builtins);
     }
     assert!(catalog.select("missing").is_err());
     assert_eq!(catalog.active().id, "ocean");
@@ -124,11 +151,12 @@ fn malformed_plugins_preserve_the_selected_theme_and_catalog() {
 fn plugin_file_limits_and_discovery_report_errors_without_losing_valid_themes() {
     let fixture = Fixture::new();
     let mut catalog = ThemeCatalog::default();
+    let builtins = catalog.themes().len();
     fixture.write("valid.json", &plugin());
     std::fs::write(fixture.0.join("broken.json"), b"{").unwrap();
     std::fs::write(fixture.0.join("notes.txt"), b"ignored").unwrap();
     assert_eq!(catalog.discover(&fixture.0).len(), 1);
-    assert_eq!(catalog.themes().len(), 5);
+    assert_eq!(catalog.themes().len(), builtins + 1);
     assert_eq!(
         catalog.discover(&fixture.0.join("missing")),
         Vec::<String>::new()

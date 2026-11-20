@@ -18,7 +18,7 @@ struct BuiltinTheme {
     palette: Palette,
 }
 
-static BUILTINS: [BuiltinTheme; 4] = [
+static BUILTINS: [BuiltinTheme; 5] = [
     BuiltinTheme {
         id: "midnight",
         name: "Midnight",
@@ -38,6 +38,11 @@ static BUILTINS: [BuiltinTheme; 4] = [
         id: "forest",
         name: "Forest",
         palette: Palette::FOREST,
+    },
+    BuiltinTheme {
+        id: "lemon-green",
+        name: "Lemon Green",
+        palette: Palette::LEMON_GREEN,
     },
 ];
 
