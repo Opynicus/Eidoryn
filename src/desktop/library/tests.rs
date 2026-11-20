@@ -196,7 +196,7 @@ fn library_enter_requires_bios_then_navigates_only_after_success(cx: &mut TestAp
     assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Game);
     assert_eq!(
         view.read_with(cx, |v, _| v.snapshot.disc_path.clone()),
-        Some(path.clone())
+        Some(path.canonicalize().unwrap())
     );
     cx.run_until_parked();
 
