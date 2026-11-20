@@ -83,6 +83,7 @@ enum Hit {
 }
 
 pub(in crate::library) struct Prepared {
+    cache_generation: i64,
     serial: Option<String>,
     hit: Hit,
 }
@@ -129,6 +130,7 @@ impl Batch {
         let evidence = evidence(&conn, id)?;
         let Some(key) = evidence.serial.as_deref() else {
             return Ok(Prepared {
+                cache_generation: evidence.cache_generation,
                 serial: None,
                 hit: Hit::Missing,
             });
@@ -194,6 +196,7 @@ impl Batch {
             }
         };
         Ok(Prepared {
+            cache_generation: evidence.cache_generation,
             serial: evidence.serial,
             hit,
         })
@@ -308,7 +311,7 @@ impl Prepared {
         id: i64,
     ) -> Result<Option<RefreshOutcome>, String> {
         let ev = evidence(tx, id).map_err(|e| e.to_string())?;
-        if ev.serial != self.serial {
+        if ev.serial != self.serial || ev.cache_generation != self.cache_generation {
             return Ok(None);
         }
         let Some(serial) = self.serial else {
@@ -347,9 +350,19 @@ impl Prepared {
 /// Manual search populates candidates without automatically assigning the game.
 pub(super) fn download_serial(
     conn: &mut Connection,
+    id: i64,
     serial: &str,
     fetch: impl FnOnce(&str) -> Result<SourceResponse, String>,
 ) -> Result<bool, String> {
+    let generation = |db: &Connection| {
+        db.query_row(
+            "SELECT cache_generation FROM game_metadata WHERE game_id=?",
+            [id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(|e| e.to_string())
+    };
+    let before = generation(conn)?;
     let revision = reserve(conn, serial).map_err(|e| e.to_string())?;
     let download = fetch(serial)?;
     if download.releases.is_empty() {
@@ -358,7 +371,7 @@ pub(super) fn download_serial(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    if !(Fetched { revision, download }).store(&tx, serial)? {
+    if generation(&tx)? != before || !(Fetched { revision, download }).store(&tx, serial)? {
         return Err("A newer metadata request superseded this one".into());
     }
     tx.commit().map_err(|e| e.to_string())?;

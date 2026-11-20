@@ -85,17 +85,51 @@ fn context_actions_target_the_right_clicked_game(cx: &mut TestAppContext) {
 #[gpui::test]
 fn card_menu_removal_in_batch_mode_only_removes_its_target(cx: &mut TestAppContext) {
     let (_dir, view, cx) = collection(cx, 3);
-    click_control(cx, "lib-batch-select");
     click_control(cx, "lib-check-1");
     right_click(cx, "library-entry-2");
     click_control(cx, "lib-card-remove");
     click_control(cx, "lib-confirm-removal");
     view.read_with(cx, |v, _| {
-        let checked = v.library.checked_games.as_ref().unwrap();
+        let checked = &v.library.checked_games;
         assert_eq!(checked.iter().copied().collect::<Vec<_>>(), [1]);
         assert_eq!(v.library.order.len(), 2);
         assert!(v.library.entries.iter().all(|entry| entry.game.id != 2));
     });
+}
+
+#[gpui::test]
+fn double_click_launches_only_when_the_first_click_was_browsing(cx: &mut TestAppContext) {
+    let (_dir, view, cx) = collection(cx, 3);
+    let double_click = |cx: &mut VisualTestContext| {
+        let position = cx.debug_bounds("library-entry-1").unwrap().center();
+        let button = MouseButton::Left;
+        let modifiers = Modifiers::none();
+        cx.simulate_click(position, modifiers);
+        cx.run_until_parked();
+        cx.simulate_event(gpui::MouseDownEvent {
+            position,
+            button,
+            modifiers,
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            position,
+            button,
+            modifiers,
+            click_count: 2,
+        });
+        cx.run_until_parked();
+    };
+    click_control(cx, "library-entry-1");
+    click_control(cx, "lib-check-1");
+    double_click(cx);
+    view.read_with(cx, |v, _| {
+        assert!(v.library.checked_games.is_empty());
+        assert_eq!(v.library.launch_generation, 0);
+    });
+    double_click(cx);
+    view.read_with(cx, |v, _| assert_eq!(v.library.launch_generation, 1));
 }
 
 #[gpui::test]
@@ -146,6 +180,9 @@ fn drag_orders_grid_and_list_by_the_drop_edge_without_launching(cx: &mut TestApp
         })
     };
     assert_eq!(order(cx), [1, 2, 3]);
+    drag(cx, "lib-check-1", "library-entry-3", point(px(15.), px(0.)));
+    assert_eq!(order(cx), [1, 2, 3]);
+    assert!(cx.debug_bounds("lib-batch-bar").is_none());
     drag(
         cx,
         "library-entry-1",

@@ -62,6 +62,8 @@ pub(super) struct Scraping {
     failed: BTreeSet<i64>,
     reading_queue: bool,
     queue_revision: u64,
+    /// Enqueues and manual cache clears must commit in the order the user requested them.
+    pub(super) queue_write: Option<gpui::Task<()>>,
     next_recovery: Instant,
     pub(super) preparing_full: bool,
     active: Option<Active>,
@@ -80,6 +82,7 @@ impl Scraping {
             failed: BTreeSet::new(),
             reading_queue: false,
             queue_revision: 0,
+            queue_write: None,
             next_recovery: Instant::now(),
             preparing_full: false,
             active: None,
@@ -141,7 +144,11 @@ impl Desktop {
         };
         let provider = self.preferences.library.cover_provider;
         let all = ids.is_none();
-        cx.spawn(async move |this, cx| {
+        let previous = self.library.scraping.queue_write.take();
+        self.library.scraping.queue_write = Some(cx.spawn(async move |this, cx| {
+            if let Some(previous) = previous {
+                previous.await;
+            }
             let result = cx
                 .background_executor()
                 .spawn(async move {
@@ -167,8 +174,7 @@ impl Desktop {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }));
         cx.notify();
     }
 

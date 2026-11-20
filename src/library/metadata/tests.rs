@@ -915,3 +915,5 @@ fn european_disc_matches_a_single_local_market_and_reuses_its_dated_cache() {
     );
     assert!(matching_serial(&[edition("Australia")], Some(DISC), Some("Europe")).is_none());
 }
+
+mod cache;

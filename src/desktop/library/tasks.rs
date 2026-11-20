@@ -222,6 +222,61 @@ impl Desktop {
         }
     }
 
+    pub(in crate::desktop) fn saving_library_changes(&self) -> bool {
+        !self.library.pending_moves.is_empty()
+            || self.removal_in_progress()
+            || matches!(
+                self.library.cache_clear,
+                super::settings::CacheClearState::Running
+            )
+    }
+
+    pub(super) fn reload_after_library_change(&mut self, cx: &mut Context<Self>) {
+        self.library.entries_revision = self.library.entries_revision.wrapping_add(1);
+        self.reload_library(cx);
+    }
+
+    pub(super) fn clear_library_metadata_cache(
+        &mut self,
+        scope: metadata::CacheScope,
+        cx: &mut Context<Self>,
+    ) {
+        use super::settings::CacheClearState;
+        let Some(store) = self.library.store.clone() else {
+            return;
+        };
+        if matches!(self.library.cache_clear, CacheClearState::Running) {
+            return;
+        }
+        self.library.cache_clear = CacheClearState::Running;
+        cx.notify();
+        let previous = self.library.scraping.queue_write.take();
+        self.library.scraping.queue_write = Some(cx.spawn(async move |this, cx| {
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            let result = cx
+                .background_executor()
+                .spawn(async move { store.clear_metadata_cache(scope) })
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                match result {
+                    Ok(()) => {
+                        v.library.cache_clear = CacheClearState::Finished;
+                        if scope == metadata::CacheScope::All {
+                            v.library.matches.clear();
+                            v.library.match_generation = v.library.match_generation.wrapping_add(1);
+                            v.library.metadata_lookups.clear();
+                        }
+                        v.reload_after_library_change(cx);
+                    }
+                    Err(error) => v.library.cache_clear = CacheClearState::Failed(error),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     pub(in crate::desktop) fn reload_library(&mut self, cx: &mut Context<Self>) {
         let Some(store) = self.library.store.clone() else {
             return;
@@ -233,7 +288,7 @@ impl Desktop {
         self.library.last_refresh = Instant::now();
         self.library.dirty_games.clear();
         self.library.reading = true;
-        let order_revision = self.library.order_revision;
+        let entries_revision = self.library.entries_revision;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -251,7 +306,7 @@ impl Desktop {
                 })
                 .await;
             let _ = this.update(cx, |v, cx| {
-                if !v.finish_library_read(order_revision, cx) {
+                if !v.finish_library_read(entries_revision, cx) {
                     return;
                 }
                 match result {
@@ -299,10 +354,10 @@ impl Desktop {
         self.read_pending_games(cx);
     }
 
-    // A read started before a completed drop can contain obsolete positions.
-    fn finish_library_read(&mut self, order_revision: u64, cx: &mut Context<Self>) -> bool {
+    // A read started before a committed edit may contain removed entries or obsolete metadata.
+    fn finish_library_read(&mut self, entries_revision: u64, cx: &mut Context<Self>) -> bool {
         self.library.reading = false;
-        if self.library.order_revision == order_revision {
+        if self.library.entries_revision == entries_revision {
             return true;
         }
         self.library.reload_pending = true;
@@ -328,7 +383,7 @@ impl Desktop {
             .map_while(|_| self.library.dirty_games.pop_first())
             .collect();
         self.library.reading = true;
-        let order_revision = self.library.order_revision;
+        let entries_revision = self.library.entries_revision;
         cx.spawn(async move |this, cx| {
             let (ids, result) = cx
                 .background_executor()
@@ -350,7 +405,7 @@ impl Desktop {
                 })
                 .await;
             let _ = this.update(cx, |v, cx| {
-                if !v.finish_library_read(order_revision, cx) {
+                if !v.finish_library_read(entries_revision, cx) {
                     return;
                 }
                 match result {

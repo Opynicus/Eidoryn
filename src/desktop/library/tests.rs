@@ -876,6 +876,9 @@ fn library_details_reflow_and_removal_requires_confirmation(cx: &mut TestAppCont
     let db = Library::open(&temp.path().join("library.db")).unwrap();
     db.scan_files(std::slice::from_ref(&path), &AtomicBool::default(), |_| {})
         .unwrap();
+    let conn = db.connect().unwrap();
+    conn.execute("UPDATE game_metadata SET auto_date='1998'", [])
+        .unwrap();
     let (view, cx) = cx.add_window_view(desktop);
     view.update(cx, |v, _| v.library = Workspace::new(Some(db.clone())));
     cx.simulate_resize(size(px(1440.), px(1100.)));
@@ -887,9 +890,9 @@ fn library_details_reflow_and_removal_requires_confirmation(cx: &mut TestAppCont
     let management = cx.debug_bounds("library-management-panels").unwrap();
     assert!(management.left() >= edition.right());
     click_control(cx, "lib-remove");
-    assert!(cx.debug_bounds("lib-confirm").is_some());
+    assert!(cx.debug_bounds("lib-confirm-removal").is_some());
     press_keys(cx, "escape");
-    assert!(cx.debug_bounds("lib-confirm").is_none());
+    assert!(cx.debug_bounds("lib-confirm-removal").is_none());
     assert_eq!(db.games().unwrap().len(), 1);
     cx.simulate_resize(size(px(980.), px(900.)));
     cx.run_until_parked();
@@ -900,8 +903,16 @@ fn library_details_reflow_and_removal_requires_confirmation(cx: &mut TestAppCont
     cx.simulate_resize(size(px(1440.), px(1100.)));
     cx.run_until_parked();
     click_control(cx, "lib-remove");
-    click_control(cx, "lib-confirm");
+    click_control(cx, "lib-confirm-removal");
     assert!(db.games().unwrap().is_empty());
+    let retained: String = conn
+        .query_row(
+            "SELECT auto_date FROM game_metadata WHERE game_id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, "1998");
     assert!(path.is_file());
     assert!(cx.debug_bounds("library-details").is_none());
 }

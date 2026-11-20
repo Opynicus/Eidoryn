@@ -43,11 +43,16 @@ pub enum LibrarySort {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "SavedLibraryPreferences")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each switch is an independent user preference"
+)]
 pub struct LibraryPreferences {
     pub sort: LibrarySort,
     pub list: bool,
     pub auto_covers: bool,
     pub scrape_new_games: bool,
+    pub clear_metadata_on_remove: bool,
     pub scrape_workers: WorkerCount,
     pub cover_workers: WorkerCount,
     pub cover_provider: Provider,
@@ -61,6 +66,7 @@ struct SavedLibraryPreferences {
     list: bool,
     auto_covers: bool,
     scrape_new_games: Option<bool>,
+    clear_metadata_on_remove: bool,
     scrape_workers: WorkerCount,
     cover_workers: Option<WorkerCount>,
     cover_provider: Option<Provider>,
@@ -85,6 +91,7 @@ impl From<SavedLibraryPreferences> for LibraryPreferences {
             sort: saved.sort,
             auto_covers: saved.auto_covers,
             scrape_new_games: saved.scrape_new_games.unwrap_or(true),
+            clear_metadata_on_remove: saved.clear_metadata_on_remove,
             scrape_workers: saved.scrape_workers,
             cover_workers: saved.cover_workers.unwrap_or_else(|| WorkerCount::from(3)),
             cover_provider: provider,
@@ -425,6 +432,19 @@ mod tests {
             assert!(!restored.library.scrape_new_games);
             assert_eq!(restored.library.auto_covers, auto_covers);
         }
+    }
+
+    #[test]
+    fn metadata_cleanup_is_opt_in_in_new_and_existing_libraries() {
+        assert!(!LibraryPreferences::default().clear_metadata_on_remove);
+        let mut prefs: LibraryPreferences = serde_json::from_str(r#"{"list":true}"#).unwrap();
+        assert!(!prefs.clear_metadata_on_remove);
+        prefs.clear_metadata_on_remove = true;
+        let saved = serde_json::to_vec(&prefs).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<LibraryPreferences>(&saved).unwrap(),
+            prefs
+        );
     }
 
     #[test]

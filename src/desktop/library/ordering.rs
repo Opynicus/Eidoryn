@@ -71,10 +71,6 @@ impl Workspace {
 }
 
 impl Desktop {
-    pub(in crate::desktop) fn saving_library_changes(&self) -> bool {
-        !self.library.pending_moves.is_empty() || self.removal_in_progress()
-    }
-
     pub(super) fn reorder_library(&mut self) {
         self.library.reorder(self.preferences.library.sort);
     }
@@ -94,7 +90,9 @@ impl Desktop {
         placement: Placement,
         cx: &mut Context<Self>,
     ) {
-        if source == target || self.library.checked_games.is_some() || self.library.store.is_none()
+        if source == target
+            || !self.library.checked_games.is_empty()
+            || self.library.store.is_none()
         {
             return;
         }
@@ -153,7 +151,8 @@ impl Desktop {
                                 entry.game.manual_position = Some(*rank);
                             }
                         }
-                        view.library.order_revision = view.library.order_revision.wrapping_add(1);
+                        view.library.entries_revision =
+                            view.library.entries_revision.wrapping_add(1);
                     }
                     Err(error) => {
                         view.notice = Some(error);

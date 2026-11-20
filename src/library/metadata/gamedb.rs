@@ -8,7 +8,7 @@ use serde_json::{Value, value::RawValue};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
-        Mutex,
+        Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -20,6 +20,7 @@ const MAX_BYTES: usize = 12 * 1024 * 1024;
 const MAX_AGE: Duration = Duration::from_hours(24);
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 static CACHE: Mutex<CatalogCache> = Mutex::new(CatalogCache {
+    generation: 0,
     catalog: None,
     failure: None,
 });
@@ -27,6 +28,20 @@ static CACHE: Mutex<CatalogCache> = Mutex::new(CatalogCache {
 static DOWNLOAD: RequestLimit = RequestLimit::new(1, Duration::ZERO);
 
 pub(super) struct GameDb;
+
+fn cache() -> MutexGuard<'static, CatalogCache> {
+    CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Release the shared catalog after a user explicitly clears the entire release cache.
+pub(super) fn clear_cache() {
+    let mut cache = cache();
+    cache.generation = cache.generation.wrapping_add(1);
+    cache.catalog = None;
+    cache.failure = None;
+}
 
 pub(super) fn is_supported_serial(serial: &str) -> bool {
     let Some((prefix, number)) = serial.split_once('-') else {
@@ -206,6 +221,7 @@ fn download(
 }
 
 struct CatalogCache {
+    generation: u64,
     catalog: Option<(Instant, Catalog)>,
     failure: Option<(Instant, ProviderError)>,
 }
@@ -279,24 +295,32 @@ impl MetadataProvider for GameDb {
         if cancel.load(Ordering::Relaxed) {
             return Err(ProviderError::Cancelled);
         }
+        let generation = cache().generation;
         let permit = DOWNLOAD.acquire_typed(cancel);
         // A waiting worker can be cancelled while another holds the cache.
         if matches!(permit, Err(ProviderError::Cancelled)) {
             return Err(ProviderError::Cancelled);
         }
-        let mut cache = CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(response) = cache.reuse(serial, Instant::now()) {
-            return response;
-        }
-        let _permit = match permit {
-            Ok(permit) => permit,
-            Err(error) => return cache.stale_or_error(serial, &error),
+        let _permit = {
+            let cache = cache();
+            if cache.generation != generation {
+                return Err(ProviderError::Cancelled);
+            }
+            if let Some(response) = cache.reuse(serial, Instant::now()) {
+                return response;
+            }
+            match permit {
+                Ok(permit) => permit,
+                Err(error) => return cache.stale_or_error(serial, &error),
+            }
         };
         // The public releases URL redirects to GitHub's asset CDN.
         let result =
             transport::art().and_then(|client| download(client, CATALOG, cancel, &DOWNLOAD));
+        let mut cache = cache();
+        if cache.generation != generation {
+            return Err(ProviderError::Cancelled);
+        }
         cache.publish(serial, result, Instant::now())
     }
 }
@@ -383,6 +407,7 @@ mod tests {
         let loaded = Instant::now();
         let now = loaded + MAX_AGE;
         let mut cache = CatalogCache {
+            generation: 0,
             catalog: Some((loaded, Catalog::parse(&fixture()).unwrap())),
             failure: None,
         };

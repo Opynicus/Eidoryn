@@ -1,7 +1,7 @@
 pub(super) mod editor;
 
 use self::editor::Edit;
-use super::{Confirm, Desktop, Entry, MetadataLookup, Text, card, div, label, tasks::Picker};
+use super::{Desktop, Entry, MetadataLookup, Text, card, div, label, tasks::Picker};
 use eidoryn_psx::{
     library::{Location, covers, metadata},
     theme::Palette,
@@ -39,14 +39,16 @@ impl Desktop {
         };
         if matches!(
             self.library.metadata_lookups.get(&id),
-            Some(MetadataLookup::Fetching)
+            Some(MetadataLookup::Fetching(_))
         ) {
             return;
         }
         let generation = self.library.match_generation;
+        self.library.lookup_sequence = self.library.lookup_sequence.wrapping_add(1);
+        let request = self.library.lookup_sequence;
         self.library
             .metadata_lookups
-            .insert(id, MetadataLookup::Fetching);
+            .insert(id, MetadataLookup::Fetching(request));
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -54,13 +56,17 @@ impl Desktop {
                 .await;
             let _ = this.update_in(cx, |v, window, cx| {
                 use metadata::RefreshOutcome;
+                if v.library.metadata_lookups.get(&id) != Some(&MetadataLookup::Fetching(request)) {
+                    return;
+                }
                 let status = match result {
                     Ok(RefreshOutcome::Candidates) => {
                         if v.page == crate::desktop::WorkspacePage::Library
                             && v.library.details
                             && v.library.selected == Some(id)
                             && v.library.editor.is_none()
-                            && v.library.confirmation.is_none()
+                            && v.library.clear_playtime_confirmation.is_none()
+                            && v.library.menu.is_none()
                             && !v.library.settings
                             && !v.graphics.open
                             && !v.presentation.shows_video()
@@ -94,7 +100,7 @@ impl Desktop {
         self.library.close_editor();
         if !matches!(
             self.library.metadata_lookups.get(&id),
-            Some(MetadataLookup::Fetching)
+            Some(MetadataLookup::Fetching(_))
         ) {
             self.library.metadata_lookups.remove(&id);
         }
@@ -104,7 +110,7 @@ impl Desktop {
     pub(in crate::desktop) fn close_detail_dialog(&mut self) -> bool {
         if !self.library.details
             || self.library.settings
-            || (self.library.editor.is_none() && self.library.confirmation.is_none())
+            || (self.library.editor.is_none() && self.library.clear_playtime_confirmation.is_none())
         {
             return false;
         }
@@ -119,11 +125,8 @@ impl Desktop {
         if let Some(editor) = &self.library.editor {
             return Some(self.library_modal(self.tr(editor.title()), self.library_editor(cx), cx));
         }
-        let confirm = self.library.confirmation?;
-        let (id, title, hint) = match confirm {
-            Confirm::Remove(id) => (id, Text::LibraryRemove, Text::LibraryRemoveHint),
-            Confirm::Clear(id) => (id, Text::LibraryClearTime, Text::LibraryClearHint),
-        };
+        let id = self.library.clear_playtime_confirmation?;
+        let title = Text::LibraryClearTime;
         let entry = self
             .library
             .entries
@@ -135,7 +138,11 @@ impl Desktop {
             .flex_col()
             .gap_3()
             .child(div().font(self.fonts.semibold()).child(entry.title.clone()))
-            .child(div().text_color(rgb(p.muted)).child(self.tr(hint)))
+            .child(
+                div()
+                    .text_color(rgb(p.muted))
+                    .child(self.tr(Text::LibraryClearHint)),
+            )
             .child(
                 div()
                     .flex()
@@ -155,10 +162,7 @@ impl Desktop {
                     .child(
                         self.library_button("lib-confirm", title, false, cx, move |v, _, cx| {
                             v.library.close_editor();
-                            match confirm {
-                                Confirm::Remove(id) => v.library_write(cx, move |s| s.remove(id)),
-                                Confirm::Clear(id) => v.clear_playtime(id, cx),
-                            }
+                            v.clear_playtime(id, cx);
                         })
                         .bg(rgb(p.error))
                         .text_color(rgb(p.danger_text())),
@@ -373,7 +377,7 @@ impl Desktop {
             .when_else(
                 matches!(
                     self.library.metadata_lookups.get(&id),
-                    Some(MetadataLookup::Fetching)
+                    Some(MetadataLookup::Fetching(_))
                 ),
                 |s| s.child(label(&p, self.tr(Text::LibraryFetchingMetadata))),
                 |s| {
@@ -672,7 +676,7 @@ impl Desktop {
                 false,
                 cx,
                 move |v, _, cx| {
-                    v.library.confirmation = Some(Confirm::Clear(id));
+                    v.library.clear_playtime_confirmation = Some(id);
                     cx.notify();
                 },
             )))
@@ -691,8 +695,7 @@ impl Desktop {
                         false,
                         cx,
                         move |v, _, cx| {
-                            v.library.confirmation = Some(Confirm::Remove(id));
-                            cx.notify();
+                            v.confirm_game_removal(vec![id], cx);
                         },
                     )
                     .text_color(rgb(p.danger_text()))

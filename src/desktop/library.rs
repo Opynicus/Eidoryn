@@ -130,15 +130,9 @@ impl Entry {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Confirm {
-    Remove(i64),
-    Clear(i64),
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum MetadataLookup {
-    Fetching,
+    Fetching(u64),
     Finished(Text),
     Failed(String),
 }
@@ -153,12 +147,13 @@ pub(super) struct Workspace {
     roots: Vec<ScanRoot>,
     order: Vec<usize>,
     pending_moves: VecDeque<GameMove>,
-    order_revision: u64,
-    checked_games: Option<BTreeSet<i64>>,
+    entries_revision: u64,
+    checked_games: BTreeSet<i64>,
     card_menu: Option<interactions::CardMenu>,
     menu: Option<OverviewMenu>,
     source_menu_open: bool,
     template_field: Option<settings::TemplateField>,
+    cache_clear: settings::CacheClearState,
     task_history_open: bool,
     search: Option<Entity<TextInput>>,
     search_subscription: Option<gpui::Subscription>,
@@ -189,7 +184,8 @@ pub(super) struct Workspace {
     match_generation: u64,
     launch_generation: u64,
     metadata_lookups: HashMap<i64, MetadataLookup>,
-    confirmation: Option<Confirm>,
+    lookup_sequence: u64,
+    clear_playtime_confirmation: Option<i64>,
     settings: bool,
 }
 
@@ -202,12 +198,13 @@ impl Workspace {
             roots: vec![],
             order: vec![],
             pending_moves: VecDeque::new(),
-            order_revision: 0,
-            checked_games: None,
+            entries_revision: 0,
+            checked_games: BTreeSet::new(),
             card_menu: None,
             menu: None,
             source_menu_open: false,
             template_field: None,
+            cache_clear: settings::CacheClearState::Idle,
             task_history_open: false,
             search: None,
             search_subscription: None,
@@ -237,7 +234,8 @@ impl Workspace {
             match_generation: 0,
             launch_generation: 0,
             metadata_lookups: HashMap::new(),
-            confirmation: None,
+            lookup_sequence: 0,
+            clear_playtime_confirmation: None,
             settings: false,
         }
     }
@@ -313,7 +311,7 @@ impl Workspace {
     fn close_editor(&mut self) {
         self.editor = None;
         self.matches.clear();
-        self.confirmation = None;
+        self.clear_playtime_confirmation = None;
         self.match_generation = self.match_generation.wrapping_add(1);
     }
 }
@@ -373,7 +371,7 @@ impl Desktop {
     pub(super) fn enter_library(&mut self, cx: &mut Context<Self>) {
         self.library.details = false;
         self.library.settings = false;
-        self.library.checked_games = None;
+        self.library.checked_games.clear();
         self.library.card_menu = None;
         self.library.menu = None;
         self.library.task_history_open = false;

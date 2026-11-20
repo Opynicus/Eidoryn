@@ -1,0 +1,231 @@
+use super::*;
+use crate::library::covers::Provider;
+
+fn seed(lib: &Library, id: i64, serial: &str) {
+    fixture(lib, id, Some(serial));
+    let mut release = downloaded("Test", "Catalog title");
+    release.serial = serial.to_owned();
+    release.id = format!("Test/{serial}");
+    refresh_with(lib, id, |_| Ok(response(vec![release]))).unwrap();
+}
+
+fn cached(lib: &Library, serial: &str) -> bool {
+    lib.connect()
+        .unwrap()
+        .prepare("SELECT 1 FROM metadata_responses WHERE serial=?")
+        .unwrap()
+        .exists([serial])
+        .unwrap()
+}
+
+#[test]
+fn cleanup_keeps_only_referenced_historical_payloads_for_confirmed_editions() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = Library::open(&root.path().join("index.db")).unwrap();
+    let confirmed = "SLUS-12347";
+    seed(&lib, 4, confirmed);
+    select(&lib, 4, &format!("Test/{confirmed}")).unwrap();
+    let proof = || {
+        lib.connect()
+            .unwrap()
+            .query_row(
+                "SELECT raw_payload FROM metadata_sources WHERE game_id=4",
+                [],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
+            .unwrap()
+    };
+    let chosen_bytes = proof();
+    // Another game refreshes the same serial. The confirmed choice now refers
+    // to a historical revision, while a legacy unreferenced revision can go.
+    fixture(&lib, 5, Some(confirmed));
+    refresh_with(&lib, 5, |_| {
+        let mut release = downloaded("Test", "Refreshed title");
+        release.serial = confirmed.into();
+        release.id = format!("Test/{confirmed}");
+        Ok(response(vec![release]))
+    })
+    .unwrap();
+    lib.connect()
+        .unwrap()
+        .execute(
+            "INSERT INTO referenced_metadata_responses
+         SELECT serial,provider,-1,payload_version,fetched_at,payload
+         FROM metadata_responses WHERE serial=?",
+            [confirmed],
+        )
+        .unwrap();
+    lib.remove_games(&[4]).unwrap();
+    for scope in [CacheScope::Removed, CacheScope::All] {
+        lib.clear_metadata_cache(scope).unwrap();
+        assert_eq!(proof(), chosen_bytes);
+        let history: i64 = lib
+            .connect()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM referenced_metadata_responses WHERE serial=?",
+                [confirmed],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(history, 1);
+    }
+}
+
+#[test]
+fn cleanup_scopes_preserve_shared_editions_user_data_and_covers() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = Library::open(&root.path().join("library.db")).unwrap();
+    let first = "SLUS-12345";
+    let shared = "SLUS-12346";
+    seed(&lib, 1, first);
+    seed(&lib, 2, shared);
+    fixture(&lib, 3, Some(shared));
+    set_override(&lib, 1, Field::Title, Some("My title")).unwrap();
+    set_override(&lib, 3, Field::Date, Some("2000")).unwrap();
+    lib.connect()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO sessions(session_id,game_id,seconds,last_played) VALUES('session',1,3600,100);
+         INSERT INTO cover_assets(game_id,kind,source,original,thumb)
+         VALUES(1,'user','local','custom.png','custom-thumb.png');",
+        )
+        .unwrap();
+    lib.remove_games(&[1]).unwrap();
+    assert!(cached(&lib, first));
+    lib.remove_games_and_clear_metadata(&[2]).unwrap();
+    assert!(cached(&lib, first));
+    assert!(cached(&lib, shared));
+    let rows = list(&lib).unwrap();
+    assert!(rows[&2].release_id.is_none());
+    assert!(rows[&3].release_id.is_some());
+    lib.clear_metadata_cache(CacheScope::Removed).unwrap();
+    assert!(!cached(&lib, first));
+    assert!(cached(&lib, shared));
+    let after = list(&lib).unwrap();
+    assert!(after[&1].date.is_none());
+    assert_eq!(after[&1].title.as_deref(), Some("My title"));
+    assert!(after[&1].manual_cover);
+    assert_eq!(
+        lib.connect()
+            .unwrap()
+            .query_row("SELECT seconds FROM sessions", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        3600
+    );
+
+    // A manually searched serial need not belong to any game.
+    let orphan = "SLUS-12348";
+    search_with(&lib, 3, orphan, |_| {
+        let mut release = downloaded("Orphan", "Search result");
+        release.serial = orphan.into();
+        Ok(response(vec![release]))
+    })
+    .unwrap();
+    assert!(cached(&lib, orphan));
+    for _ in 0..2 {
+        lib.clear_metadata_cache(CacheScope::All).unwrap();
+        assert!(!cached(&lib, orphan));
+        assert!(!cached(&lib, shared));
+        assert!(candidates(&lib, 1, shared).unwrap().is_empty());
+        let rows = list(&lib).unwrap();
+        assert!(rows[&3].release_id.is_none());
+        assert_eq!(rows[&3].date.as_deref(), Some("2000"));
+        assert_eq!(rows[&3].serial.as_deref(), Some(shared));
+    }
+}
+
+#[test]
+fn removing_a_game_retains_candidates_needed_for_another_games_pending_title_match() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = Library::open(&root.path().join("index.db")).unwrap();
+    seed(&lib, 1, TEST_SERIAL);
+    let mut db = lib.connect().unwrap();
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO games(id,fallback_title) VALUES(2,'Catalog title')",
+        [],
+    )
+    .unwrap();
+    identify(&tx, 2, None, None, "Catalog title (USA)").unwrap();
+    tx.commit().unwrap();
+    lib.remove_games_and_clear_metadata(&[1]).unwrap();
+    assert!(list(&lib).unwrap()[&2].pending);
+    assert_eq!(candidates(&lib, 2, "").unwrap().len(), 1);
+    lib.clear_metadata_cache(CacheScope::All).unwrap();
+    assert!(!list(&lib).unwrap()[&2].pending);
+    assert!(candidates(&lib, 2, "").unwrap().is_empty());
+}
+
+#[test]
+fn late_fetch_or_manual_serial_search_cannot_refill_a_cleared_game() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = Library::open(&root.path().join("index.db")).unwrap();
+    seed(&lib, 1, TEST_SERIAL);
+    fixture(&lib, 2, Some(TEST_SERIAL));
+    let batch = Batch::default();
+    let cancel = AtomicBool::new(false);
+    let cached_lookup = batch
+        .prepare_with(&lib, 1, Mode::Incremental, &cancel, |_| {
+            panic!("already cached")
+        })
+        .unwrap();
+    let online_lookup = batch
+        .prepare_with(&lib, 1, Mode::Full, &cancel, |_| {
+            Ok(response(vec![downloaded("New", "New response")]))
+        })
+        .unwrap();
+    crate::library::scrape::enqueue_games(&lib, &[1, 2], Mode::Full, Provider::Libretro).unwrap();
+    lib.remove_games_and_clear_metadata(&[1]).unwrap();
+    assert!(commit_one(&lib, 1, cached_lookup).is_err());
+    assert!(commit_one(&lib, 1, online_lookup).is_err());
+    assert!(list(&lib).unwrap()[&1].release_id.is_none());
+    assert!(cached(&lib, TEST_SERIAL));
+    assert_eq!(
+        crate::library::scrape::due_games(&lib).unwrap(),
+        [(2, Mode::Full)]
+    );
+    assert!(
+        search_with(&lib, 2, "SLUS-45678", |_| {
+            lib.clear_metadata_cache(CacheScope::All)?;
+            let mut release = downloaded("Late", "Stale manual search");
+            release.serial = "SLUS-45678".into();
+            Ok(response(vec![release]))
+        })
+        .is_err()
+    );
+    assert!(!cached(&lib, "SLUS-45678"));
+    assert_eq!(crate::library::scrape::due_games(&lib).unwrap(), []);
+    refresh_with(&lib, 2, |_| {
+        Ok(response(vec![downloaded("New", "New response")]))
+    })
+    .unwrap();
+    assert_eq!(
+        list(&lib).unwrap()[&2].title.as_deref(),
+        Some("New response")
+    );
+}
+
+#[test]
+fn failed_cache_cleanup_rolls_back_a_batch_removal() {
+    let root = tempfile::tempdir().unwrap();
+    let lib = Library::open(&root.path().join("index.db")).unwrap();
+    seed(&lib, 1, TEST_SERIAL);
+    lib.connect()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_clear BEFORE DELETE ON fetched_releases
+         BEGIN SELECT RAISE(ABORT,'cache cleanup failed'); END;",
+        )
+        .unwrap();
+    assert!(lib.remove_games_and_clear_metadata(&[1]).is_err());
+    assert!(
+        !lib.connect()
+            .unwrap()
+            .query_row("SELECT hidden FROM games WHERE id=1", [], |r| r
+                .get::<_, bool>(0))
+            .unwrap()
+    );
+    assert!(list(&lib).unwrap()[&1].release_id.is_some());
+    assert!(cached(&lib, TEST_SERIAL));
+}

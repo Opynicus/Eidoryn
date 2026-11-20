@@ -1,3 +1,7 @@
+mod cache;
+
+pub(super) use cache::CacheClearState;
+
 use super::{Desktop, Text, TextInput, button, card, div, label};
 use crate::desktop::{
     components::{ghost_button, page_heading},
@@ -409,6 +413,7 @@ impl Desktop {
                             .child(self.scrape_concurrency_control(true, cx)),
                         )
                         .child(self.automatic_settings(cx))
+                        .child(self.metadata_cache_settings(cx))
                         .when(self.library.cover.is_some(), |s| {
                             s.child(self.cover_progress(cx))
                         }),

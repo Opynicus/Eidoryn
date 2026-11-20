@@ -137,9 +137,7 @@ impl Desktop {
                     .border_2()
                     .border_color(rgb(if selected { p.primary } else { p.border }))
                     .group_hover("library-card", move |s| s.border_color(rgb(p.primary)))
-                    .when(self.library.checked_games.is_some(), |art| {
-                        art.child(self.game_checkbox(entry, cx).absolute().top_2().right_2())
-                    }),
+                    .child(self.game_checkbox(entry, cx).absolute().top_2().right_2()),
             )
             .child(
                 div()
@@ -348,9 +346,7 @@ impl Desktop {
             .rounded_t_md()
             .bg(rgb(p.surface))
             .border_color(rgb(p.border))
-            .when(self.library.checked_games.is_some(), |row| {
-                row.child(div().size(px(26.)).flex_shrink_0())
-            })
+            .child(div().size(px(26.)).flex_shrink_0())
             .children(
                 headings
                     .into_iter()
@@ -395,9 +391,7 @@ impl Desktop {
             .border_color(rgb(p.border))
             .when(selected, |cell| cell.bg(rgb(p.tonal)))
             .hover(move |s| s.bg(rgb(p.tonal_hover)))
-            .when(self.library.checked_games.is_some(), |row| {
-                row.child(self.game_checkbox(entry, cx))
-            })
+            .child(self.game_checkbox(entry, cx))
             .child(
                 div()
                     .min_w_0()

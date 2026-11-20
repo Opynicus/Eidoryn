@@ -484,13 +484,18 @@ impl Library {
 
     /// Hide all selected cards and ignore their current paths on future directory scans.
     pub fn remove_games(&self, games: &[i64]) -> Result<(), String> {
+        self.hide_games(games, false).map_err(|e| e.to_string())
+    }
+
+    /// Hide the selected games and clear their unshared scraped release data atomically.
+    pub fn remove_games_and_clear_metadata(&self, games: &[i64]) -> Result<(), String> {
+        self.hide_games(games, true).map_err(|e| e.to_string())
+    }
+
+    fn hide_games(&self, games: &[i64], clear_metadata: bool) -> IndexResult<()> {
         if games.is_empty() {
             return Ok(());
         }
-        self.hide_games(games).map_err(|e| e.to_string())
-    }
-
-    fn hide_games(&self, games: &[i64]) -> IndexResult<()> {
         let ids = serde_json::to_string(games)?;
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -504,6 +509,9 @@ impl Library {
             "UPDATE games SET hidden=1 WHERE id IN (SELECT value FROM json_each(?1)) AND NOT hidden",
             [&ids],
         )?;
+        if clear_metadata {
+            metadata::clear_in_transaction(&tx, metadata::CacheScope::Removed, Some(&ids))?;
+        }
         tx.commit()?;
         Ok(())
     }

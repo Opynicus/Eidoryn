@@ -85,12 +85,11 @@ fn placement(list: bool, pointer: Point<Pixels>, center: Point<Pixels>) -> Place
 
 impl Desktop {
     pub(super) fn card_selected(&self, id: i64) -> bool {
-        self.library
-            .checked_games
-            .as_ref()
-            .map_or(self.library.selected == Some(id), |checked| {
-                checked.contains(&id)
-            })
+        if self.library.checked_games.is_empty() {
+            self.library.selected == Some(id)
+        } else {
+            self.library.checked_games.contains(&id)
+        }
     }
 
     pub(super) fn collection_cell(&self, entry: &Entry, cx: &Context<Self>) -> gpui::Stateful<Div> {
@@ -99,7 +98,7 @@ impl Desktop {
         let center = Rc::new(Cell::new(Point::default()));
         let content_center = Rc::clone(&center);
         let cell = div()
-            // The cover spans the grid card's width. The title is vertically centered in a row.
+            // The first child is centered horizontally in a card and vertically in a row.
             .on_children_prepainted(move |children, _, _| {
                 if let Some(first) = children.first() {
                     content_center.set(first.center());
@@ -117,15 +116,20 @@ impl Desktop {
             .cursor_pointer()
             .focus(move |s| s.bg(rgb(p.tonal)))
             .on_click(cx.listener(move |v, event: &gpui::ClickEvent, _, cx| {
-                if v.library.checked_games.is_some() {
+                if !v.library.checked_games.is_empty() {
                     if event.is_keyboard() || event.click_count() == 1 {
                         v.library.toggle_checked_game(id);
+                        if v.library.checked_games.is_empty() && v.library.selected == Some(id) {
+                            v.library.selected = None;
+                        }
                     }
-                } else {
+                } else if event.is_keyboard()
+                    || (event.click_count() >= 2 && v.library.selected == Some(id))
+                {
                     v.library.select(id);
-                    if event.is_keyboard() || event.click_count() >= 2 {
-                        v.launch_library(id, cx);
-                    }
+                    v.launch_library(id, cx);
+                } else if event.click_count() == 1 {
+                    v.library.select(id);
                 }
                 cx.stop_propagation();
                 cx.notify();
@@ -148,7 +152,7 @@ impl Desktop {
                     }
                 }),
             );
-        if self.library.checked_games.is_some() {
+        if !self.library.checked_games.is_empty() {
             return cell;
         }
         cell.on_drag(
@@ -328,7 +332,7 @@ impl Desktop {
     pub(super) fn card_metadata_status(&self, id: i64) -> Option<gpui::Stateful<Div>> {
         let p = self.library_palette();
         let (text, color) = match self.library.metadata_lookups.get(&id)? {
-            MetadataLookup::Fetching => {
+            MetadataLookup::Fetching(_) => {
                 (self.tr(Text::LibraryFetchingMetadata).to_owned(), p.muted)
             }
             MetadataLookup::Finished(key) => (self.tr(*key).to_owned(), p.muted),

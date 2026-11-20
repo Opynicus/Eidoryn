@@ -1,7 +1,7 @@
 //! Selection is scoped to the current results. Confirmations keep a fixed set of game IDs.
 use super::{Desktop, Entry, Text, Workspace, div, icon, label, overview::OverviewMenu};
-use gpui::{Context, Div, Role, Stateful, prelude::*, px, rgb};
-use std::{collections::BTreeSet, sync::Arc};
+use gpui::{Context, Div, MouseButton, Role, prelude::*, px, rgb};
+use std::sync::Arc;
 
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
@@ -20,47 +20,42 @@ enum RemovalState {
 
 impl Workspace {
     pub(super) fn reconcile_checked_games(&mut self) {
-        let Some(checked) = self.checked_games.as_mut() else {
-            return;
-        };
-        if !checked.is_empty() {
-            *checked = self
+        if !self.checked_games.is_empty() {
+            self.checked_games = self
                 .order
                 .iter()
                 .map(|&i| self.entries[i].game.id)
-                .filter(|id| checked.contains(id))
+                .filter(|id| self.checked_games.contains(id))
                 .collect();
         }
     }
 
     fn check_all_results(&mut self) {
-        if let Some(checked) = &mut self.checked_games {
-            checked.extend(self.order.iter().map(|&i| self.entries[i].game.id));
-        }
+        self.checked_games
+            .extend(self.order.iter().map(|&i| self.entries[i].game.id));
     }
 
     pub(super) fn toggle_checked_game(&mut self, id: i64) {
-        if let Some(checked) = &mut self.checked_games
-            && !checked.remove(&id)
-        {
-            checked.insert(id);
+        if self.checked_games.is_empty() {
+            self.menu = None;
+            self.card_menu = None;
+            self.pending_bios = None;
+        }
+        if !self.checked_games.remove(&id) {
+            self.checked_games.insert(id);
         }
     }
 }
 
 impl Desktop {
-    pub(super) fn game_checkbox(&self, entry: &Entry, cx: &Context<Self>) -> Stateful<Div> {
+    pub(super) fn game_checkbox(&self, entry: &Entry, cx: &Context<Self>) -> Div {
         let p = self.library_palette();
         let id = entry.game.id;
-        let checked = self
-            .library
-            .checked_games
-            .as_ref()
-            .is_some_and(|ids| ids.contains(&id));
+        let checked = self.library.checked_games.contains(&id);
         let title = self
             .tr(Text::LibraryCheckGame)
             .replace("{title}", &entry.title);
-        div()
+        let checkbox = div()
             .id(("lib-check", id as u64))
             .debug_selector(move || format!("lib-check-{id}"))
             .role(Role::CheckBox)
@@ -68,8 +63,7 @@ impl Desktop {
             .aria_toggled(checked.into())
             .tab_index(0)
             .cursor_pointer()
-            .flex_shrink_0()
-            .size(px(26.))
+            .size_full()
             .rounded_md()
             .flex()
             .items_center()
@@ -85,15 +79,13 @@ impl Desktop {
                     cx.notify();
                 }
                 cx.stop_propagation();
-            }))
-    }
-
-    pub(super) fn begin_batch_selection(&mut self, cx: &mut Context<Self>) {
-        self.library.menu = None;
-        self.library.card_menu = None;
-        self.library.pending_bios = None;
-        self.library.checked_games = Some(BTreeSet::new());
-        cx.notify();
+            }));
+        // Let the checkbox receive focus, but keep its press from starting a card drag.
+        div()
+            .size(px(26.))
+            .flex_shrink_0()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(checkbox)
     }
 
     pub(super) fn batch_selection_bar(&self, count: usize, cx: &Context<Self>) -> Div {
@@ -147,30 +139,13 @@ impl Desktop {
                             s.opacity(0.45).tab_stop(false).cursor_default()
                         }),
                     )
-                    .child(
-                        self.library_button(
-                            "lib-uncheck-all",
-                            Text::LibraryClearSelection,
-                            false,
-                            cx,
-                            |v, _, cx| {
-                                if let Some(checked) = &mut v.library.checked_games {
-                                    checked.clear();
-                                }
-                                cx.notify();
-                            },
-                        )
-                        .when(count == 0, |s| {
-                            s.opacity(0.45).tab_stop(false).cursor_default()
-                        }),
-                    )
                     .child(self.library_button(
-                        "lib-exit-batch",
-                        Text::LibraryCancel,
+                        "lib-uncheck-all",
+                        Text::LibraryClearSelection,
                         false,
                         cx,
                         |v, _, cx| {
-                            v.library.checked_games = None;
+                            v.library.checked_games.clear();
                             cx.notify();
                         },
                     ))
@@ -181,16 +156,12 @@ impl Desktop {
                             false,
                             cx,
                             |v, _, cx| {
-                                if let Some(checked) = &v.library.checked_games {
-                                    v.confirm_game_removal(checked.iter().copied().collect(), cx);
-                                }
+                                let ids = v.library.checked_games.iter().copied().collect();
+                                v.confirm_game_removal(ids, cx);
                             },
                         )
                         .bg(rgb(p.error))
-                        .text_color(rgb(p.danger_text()))
-                        .when(count == 0, |s| {
-                            s.opacity(0.45).tab_stop(false).cursor_default()
-                        }),
+                        .text_color(rgb(p.danger_text())),
                     ),
             )
     }
@@ -204,9 +175,8 @@ impl Desktop {
         // The summary is bounded even when the entire collection was selected.
         let titles = self
             .library
-            .order
+            .entries
             .iter()
-            .map(|&index| &self.library.entries[index])
             .filter(|e| ids.binary_search(&e.game.id).is_ok())
             .take(5)
             .map(|e| e.title.clone())
@@ -238,6 +208,11 @@ impl Desktop {
         } else {
             self.tr(Text::LibraryRemoveSelectionHint)
                 .replace("{count}", &count.to_string())
+        };
+        let hint = if self.preferences.library.clear_metadata_on_remove {
+            format!("{hint} {}", self.tr(Text::LibraryRemovalClearsMetadata))
+        } else {
+            hint
         };
         let remaining = count - removal.titles.len();
         let saving = matches!(removal.state, RemovalState::Saving);
@@ -330,12 +305,17 @@ impl Desktop {
         }
         removal.state = RemovalState::Saving;
         let ids = Arc::clone(&removal.ids);
+        let clear_metadata = self.preferences.library.clear_metadata_on_remove;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let (ids, result) = cx
                 .background_executor()
                 .spawn(async move {
-                    let result = store.remove_games(&ids);
+                    let result = if clear_metadata {
+                        store.remove_games_and_clear_metadata(&ids)
+                    } else {
+                        store.remove_games(&ids)
+                    };
                     (ids, result)
                 })
                 .await;
@@ -348,14 +328,14 @@ impl Desktop {
                     Ok(()) => {
                         if current {
                             v.library.menu = None;
-                            if let Some(checked) = &mut v.library.checked_games {
-                                checked.retain(|id| ids.binary_search(id).is_err());
-                                if checked.is_empty() {
-                                    v.library.checked_games = None;
-                                }
-                            }
+                            v.library
+                                .checked_games
+                                .retain(|id| ids.binary_search(id).is_err());
                         }
-                        v.reload_library(cx);
+                        for id in ids.iter() {
+                            v.library.metadata_lookups.remove(id);
+                        }
+                        v.reload_after_library_change(cx);
                     }
                     Err(error) => {
                         if let Some(OverviewMenu::Remove(removal)) = &mut v.library.menu

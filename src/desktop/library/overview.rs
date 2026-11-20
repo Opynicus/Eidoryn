@@ -9,6 +9,7 @@ pub(super) enum OverviewMenu {
     Rescan,
     Sort(Rc<Cell<Bounds<Pixels>>>),
     Remove(super::selection::Removal),
+    ClearMetadata(metadata::CacheScope),
 }
 
 impl Desktop {
@@ -158,19 +159,6 @@ impl Desktop {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .when(
-                        self.library.checked_games.is_none() && !self.library.entries.is_empty(),
-                        |row| {
-                            row.child(self.library_action(
-                                "lib-batch-select",
-                                Text::LibraryBatchSelect,
-                                Some("check"),
-                                false,
-                                cx,
-                                |v, _, cx| v.begin_batch_selection(cx),
-                            ))
-                        },
-                    )
                     .child(
                         ghost_icon_button(&p, "lib-refresh-all", "reset", hint)
                             .debug_selector(|| "lib-refresh-all".into())
@@ -199,7 +187,7 @@ impl Desktop {
                         .aria_label(self.tr(Text::LibrarySettings))
                         .on_click(cx.listener(|v, _, _, cx| {
                             v.library.menu = None;
-                            v.library.checked_games = None;
+                            v.library.checked_games.clear();
                             v.library.settings = true;
                             v.library.close_editor();
                             cx.stop_propagation();
@@ -361,8 +349,8 @@ impl Desktop {
     }
 
     fn collection_selection(&self, selected: Option<usize>, cx: &Context<Self>) -> Div {
-        if let Some(checked) = &self.library.checked_games {
-            return self.batch_selection_bar(checked.len(), cx);
+        if !self.library.checked_games.is_empty() {
+            return self.batch_selection_bar(self.library.checked_games.len(), cx);
         }
         let p = self.library_palette();
         let bar = div()
@@ -487,7 +475,7 @@ impl Desktop {
         }
         self.dismiss_library_context_menu()
             || self.library.menu.take().is_some()
-            || self.library.checked_games.take().is_some()
+            || !std::mem::take(&mut self.library.checked_games).is_empty()
     }
 
     pub(in crate::desktop) fn overview_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -496,6 +484,7 @@ impl Desktop {
         let actions = div().flex().flex_wrap().justify_end().gap_2();
         match self.library.menu.as_ref()? {
             OverviewMenu::Remove(removal) => Some(self.removal_dialog(removal, cx)),
+            OverviewMenu::ClearMetadata(scope) => Some(self.metadata_cache_dialog(*scope, cx)),
             OverviewMenu::Sort(_) => None,
             OverviewMenu::Add => Some(
                 self.library_modal(

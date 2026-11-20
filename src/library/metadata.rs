@@ -1,11 +1,14 @@
 //! PlayStation release metadata in the user library and per-field user corrections.
 use super::transport;
+mod cache;
 mod gamedb;
 mod matching;
 mod providers;
 mod refresh;
 mod wikidata;
 pub(crate) use super::transport::ProviderError;
+pub use cache::CacheScope;
+pub(super) use cache::clear_in_transaction;
 pub use matching::candidates;
 use matching::{has_title_candidate, index_names, matching_serial, title_hint};
 use providers::{is_release_serial, lookup_release};
@@ -226,6 +229,7 @@ fn assign(
 }
 
 struct Evidence {
+    cache_generation: i64,
     serial: Option<String>,
     region: Option<String>,
     selected: Option<String>,
@@ -236,7 +240,7 @@ fn evidence(conn: &Connection, id: i64) -> rusqlite::Result<Evidence> {
     conn.query_row(
         "SELECT CASE WHEN confirmed THEN release_serial ELSE disc_serial END,
                 CASE WHEN confirmed THEN auto_region ELSE disc_region END,
-                CASE WHEN confirmed THEN release_id END, filename
+                CASE WHEN confirmed THEN release_id END, filename, cache_generation
          FROM game_metadata WHERE game_id=?",
         [id],
         |r| {
@@ -245,6 +249,7 @@ fn evidence(conn: &Connection, id: i64) -> rusqlite::Result<Evidence> {
                 region: r.get(1)?,
                 selected: r.get(2)?,
                 filename: r.get(3)?,
+                cache_generation: r.get(4)?,
             })
         },
     )
@@ -292,7 +297,7 @@ fn search_with(
             .and_then(|mut stmt| stmt.exists([&serial]))
             .map_err(|e| e.to_string())?;
         if !cached {
-            download_serial(&mut conn, &serial, fetch)?;
+            download_serial(&mut conn, id, &serial, fetch)?;
         }
     }
     candidates(lib, id, query)

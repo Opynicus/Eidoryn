@@ -613,24 +613,43 @@ fn independent_simultaneous_drops_preserve_each_others_changes() {
 }
 
 #[test]
-fn opening_v5_backs_up_existing_games_and_starts_them_without_manual_positions() {
-    let f = Fixture::new();
-    f.image("Original.iso", 1);
-    f.scan();
-    let game = f.db.games().unwrap()[0].id;
-    f.session(game, 26);
-    f.db.connect()
-        .unwrap()
-        .execute_batch("ALTER TABLE games DROP COLUMN manual_position; PRAGMA user_version = 5;")
-        .unwrap();
-    drop(f.db);
-    let migrated = Library::open(&f.root.path().join("index.sqlite3")).unwrap();
-    let old_game = migrated.games().unwrap().remove(0);
-    assert_eq!(
-        (old_game.id, old_game.seconds, old_game.manual_position),
-        (game, 26, None)
-    );
-    assert!(f.root.path().join("index.sqlite3.v5.bak").is_file());
+fn migrating_v5_and_v6_preserves_games_positions_and_playtime() {
+    for (version, position) in [(5, None), (6, Some(7))] {
+        let f = Fixture::new();
+        f.image("Original.iso", 1);
+        f.scan();
+        let game = f.db.games().unwrap()[0].id;
+        f.session(game, 26);
+        let db = f.db.connect().unwrap();
+        db.execute_batch("ALTER TABLE game_metadata DROP COLUMN cache_generation")
+            .unwrap();
+        if version == 5 {
+            db.execute_batch("ALTER TABLE games DROP COLUMN manual_position")
+                .unwrap();
+        } else {
+            db.execute("UPDATE games SET manual_position=?", [position])
+                .unwrap();
+        }
+        db.pragma_update(None, "user_version", version).unwrap();
+        drop(db);
+        drop(f.db);
+
+        let migrated = Library::open(&f.root.path().join("index.sqlite3")).unwrap();
+        let old_game = migrated.games().unwrap().remove(0);
+        assert_eq!(
+            (old_game.id, old_game.seconds, old_game.manual_position),
+            (game, 26, position)
+        );
+        migrated
+            .clear_metadata_cache(super::metadata::CacheScope::All)
+            .unwrap();
+        assert!(
+            f.root
+                .path()
+                .join(format!("index.sqlite3.v{version}.bak"))
+                .is_file()
+        );
+    }
 }
 
 /// Run in isolation with --ignored --nocapture --test-threads=1. Sparse test
