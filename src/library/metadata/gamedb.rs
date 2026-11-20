@@ -210,7 +210,9 @@ fn download(
     cancel: &AtomicBool,
     limit: &RequestLimit,
 ) -> Result<Catalog, ProviderError> {
-    let response = transport::request(client.get(url), MAX_BYTES, cancel)?;
+    // The redirected download contains the entire disc catalog, even for a single serial.
+    let request = client.get(url).timeout(Duration::from_secs(120));
+    let response = transport::request(request, MAX_BYTES, cancel)?;
     if should_defer(response.status(), response.headers()) {
         limit.defer(response.headers());
     }

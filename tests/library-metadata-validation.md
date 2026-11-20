@@ -28,3 +28,14 @@ cargo test --locked --lib --all-features live_library_batch_full_and_incremental
 ```
 
 The local disc test uses six locally supplied CUE/CHD images to verify the five serials above and offline identification with a fresh library. The loopback test requires a local socket. The live tests require internet access and sample individual releases.
+
+## Windows system proxy
+
+On a Windows host that reaches the providers through a proxy configured in Windows Settings, run these tests with `HTTPS_PROXY` and `ALL_PROXY` unset and the provider domains outside `NO_PROXY`. Both tests use temporary libraries.
+
+```powershell
+cargo test --locked --no-default-features --features desktop --lib live_library_batch_full_and_incremental_smoke -- --ignored --nocapture
+cargo test --locked --no-default-features --features desktop --lib live_disc_editions_survive_reopen -- --ignored
+```
+
+The first test fetches a Wikidata release and Libretro cover, then checks cache reuse. The second downloads the GameDB-PSX catalog and checks four discs' release details after reopening the database.
