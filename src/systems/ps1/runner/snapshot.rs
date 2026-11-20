@@ -36,6 +36,7 @@ pub enum SelectedMedia {
     Exe,
     Disc,
     ReopenedDisc,
+    LibraryDisc,
     Demo,
 }
 

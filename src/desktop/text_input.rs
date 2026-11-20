@@ -1,4 +1,4 @@
-//! Single-line editor for snapshot names, including native IME composition.
+//! Single-line editor with native IME composition.
 use eidoryn_psx::theme::Palette;
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler,
@@ -9,6 +9,8 @@ use gpui::{
 use std::ops::Range;
 
 pub(super) struct TextInput {
+    id: &'static str,
+    search_hint: Option<&'static str>,
     focus: FocusHandle,
     text: String,
     anchor: usize,
@@ -23,7 +25,18 @@ pub(super) struct TextInput {
 
 impl TextInput {
     pub(super) fn new(text: String, palette: Palette, cx: &mut Context<Self>) -> Self {
+        Self::named("snapshot-name-input", text, palette, cx)
+    }
+
+    pub(super) fn named(
+        id: &'static str,
+        text: String,
+        palette: Palette,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
+            id,
+            search_hint: None,
             focus: cx.focus_handle().tab_stop(true),
             cursor: text.len(),
             text,
@@ -35,6 +48,34 @@ impl TextInput {
             scroll: px(0.),
             dragging: false,
         }
+    }
+
+    pub(super) fn with_search_hint(mut self, hint: &'static str) -> Self {
+        self.search_hint = Some(hint);
+        self
+    }
+
+    pub(super) fn matches_search_style(&self, palette: Palette, hint: &'static str) -> bool {
+        self.palette == palette && self.search_hint == Some(hint)
+    }
+
+    pub(super) fn set_search_style(
+        &mut self,
+        palette: Palette,
+        hint: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        self.palette = palette;
+        self.search_hint = Some(hint);
+        cx.notify();
+    }
+
+    pub(super) fn clear(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.anchor = 0;
+        self.cursor = self.text.len();
+        self.marked = None;
+        self.replace(None, "");
+        self.changed(window, cx);
     }
 
     pub(super) fn value(&self) -> &str {
@@ -290,9 +331,10 @@ impl Render for TextInput {
         let palette = self.palette;
         let prepaint_input = cx.entity();
         let paint_input = cx.entity();
+        let id = self.id;
         div()
-            .id("snapshot-name-input")
-            .debug_selector(|| "snapshot-name-input".into())
+            .id(id)
+            .debug_selector(move || id.into())
             .w_full()
             .px_3()
             .py_2()
@@ -305,6 +347,28 @@ impl Render for TextInput {
             .cursor_text()
             .track_focus(&self.focus)
             .focus(move |style| style.border_color(rgb(palette.primary)))
+            .when_some(self.search_hint, |field, hint| {
+                field
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .role(gpui::Role::SearchInput)
+                    .aria_label(hint)
+                    .aria_placeholder(hint)
+                    .child(super::icons::icon("search", palette.muted).flex_shrink_0())
+                    .when(self.text.is_empty(), |field| {
+                        field.child(
+                            div()
+                                .absolute()
+                                .left(px(38.))
+                                .right_2()
+                                .truncate()
+                                .text_color(rgb(palette.muted))
+                                .child(hint),
+                        )
+                    })
+            })
             .on_key_down(cx.listener(Self::key))
             .on_mouse_down(
                 MouseButton::Left,
@@ -444,6 +508,7 @@ impl Render for TextInput {
                     },
                 )
                 .w_full()
+                .min_w_0()
                 .h(px(22.)),
             )
     }

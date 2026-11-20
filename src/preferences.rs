@@ -2,6 +2,10 @@
 use crate::{
     i18n::Language,
     keybindings::KeyBindings,
+    library::{
+        covers::{DEFAULT_TEMPLATE, Provider},
+        scrape::WorkerCount,
+    },
     systems::ps1::{
         bus::BIOS_SIZE,
         gpu::{AntiAliasing, ColorDepth, RenderScale, RendererMode},
@@ -23,6 +27,83 @@ pub struct RecentDisc {
     pub path: PathBuf,
     #[serde(default)]
     pub fast_boot: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibrarySort {
+    Manual,
+    Date,
+    Played,
+    Time,
+    #[default]
+    #[serde(other)]
+    Title,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "SavedLibraryPreferences")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each switch is an independent user preference"
+)]
+pub struct LibraryPreferences {
+    pub sort: LibrarySort,
+    pub list: bool,
+    pub auto_covers: bool,
+    pub scrape_new_games: bool,
+    pub clear_metadata_on_remove: bool,
+    pub scrape_workers: WorkerCount,
+    pub cover_workers: WorkerCount,
+    pub cover_provider: Provider,
+    pub cover_template: String,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct SavedLibraryPreferences {
+    sort: LibrarySort,
+    list: bool,
+    auto_covers: bool,
+    scrape_new_games: Option<bool>,
+    clear_metadata_on_remove: bool,
+    scrape_workers: WorkerCount,
+    cover_workers: Option<WorkerCount>,
+    cover_provider: Option<Provider>,
+    cover_template: Option<String>,
+}
+
+impl From<SavedLibraryPreferences> for LibraryPreferences {
+    fn from(saved: SavedLibraryPreferences) -> Self {
+        let template = saved
+            .cover_template
+            .unwrap_or_else(|| DEFAULT_TEMPLATE.to_owned());
+        // Before providers were selectable, a non-default template was a user choice.
+        let provider = saved
+            .cover_provider
+            .unwrap_or(if template == DEFAULT_TEMPLATE {
+                Provider::Libretro
+            } else {
+                Provider::Custom
+            });
+        Self {
+            list: saved.list,
+            sort: saved.sort,
+            auto_covers: saved.auto_covers,
+            scrape_new_games: saved.scrape_new_games.unwrap_or(true),
+            clear_metadata_on_remove: saved.clear_metadata_on_remove,
+            scrape_workers: saved.scrape_workers,
+            cover_workers: saved.cover_workers.unwrap_or_else(|| WorkerCount::from(3)),
+            cover_provider: provider,
+            cover_template: template,
+        }
+    }
+}
+
+impl Default for LibraryPreferences {
+    fn default() -> Self {
+        SavedLibraryPreferences::default().into()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +129,7 @@ pub struct Preferences {
     pub keybindings: KeyBindings,
     pub bios_path: Option<PathBuf>,
     pub recent_discs: Vec<RecentDisc>,
+    pub library: LibraryPreferences,
     pub rewind_enabled: bool,
     pub rewind_seconds: u16,
 }
@@ -71,6 +153,7 @@ impl Default for Preferences {
             keybindings: KeyBindings::default(),
             bios_path: None,
             recent_discs: Vec::new(),
+            library: LibraryPreferences::default(),
             rewind_enabled: false,
             rewind_seconds: DEFAULT_REWIND_SECONDS,
         }
@@ -96,49 +179,7 @@ impl Preferences {
     /// Temporary read failures retain the user's choice.
     /// The caller persists the configuration if `bios_path` changed.
     pub fn validate_saved_bios(&mut self) -> Result<Option<PathBuf>, String> {
-        let Some(path) = self.bios_path.clone() else {
-            return Ok(None);
-        };
-        let check = || -> std::io::Result<PathBuf> {
-            let metadata = std::fs::metadata(&path)?;
-            if !metadata.is_file() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "not a regular file",
-                ));
-            }
-            if metadata.len() != BIOS_SIZE as u64 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "BIOS must be exactly 512 KiB",
-                ));
-            }
-            let mut bytes = Vec::new();
-            std::fs::File::open(&path)?
-                .take(BIOS_SIZE as u64 + 1)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() != BIOS_SIZE {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "BIOS must be exactly 512 KiB",
-                ));
-            }
-            path.canonicalize()
-        };
-        match check() {
-            Ok(path) => {
-                self.bios_path = Some(path.clone());
-                Ok(Some(path))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.bios_path = None;
-                Err(format!(
-                    "Saved BIOS {} is missing or is not a regular file; its default setting was removed. Select a BIOS again.",
-                    path.display()
-                ))
-            }
-            Err(error) => Err(format!("Cannot use saved BIOS {}: {error}", path.display())),
-        }
+        validate_bios_choice(&mut self.bios_path)
     }
 
     pub fn language(&self) -> Language {
@@ -238,9 +279,173 @@ pub fn config_path() -> Option<PathBuf> {
     root.map(|root| root.join("eidoryn/settings.json"))
 }
 
+/// Read and validate a firmware choice. Missing files clear the supplied choice.
+pub fn validate_bios_choice(choice: &mut Option<PathBuf>) -> Result<Option<PathBuf>, String> {
+    let Some(path) = choice.clone() else {
+        return Ok(None);
+    };
+    let check = || -> std::io::Result<PathBuf> {
+        let metadata = std::fs::metadata(&path)?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "not a regular file",
+            ));
+        }
+        if metadata.len() != BIOS_SIZE as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "BIOS must be exactly 512 KiB",
+            ));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)?
+            .take(BIOS_SIZE as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() != BIOS_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "BIOS must be exactly 512 KiB",
+            ));
+        }
+        path.canonicalize()
+    };
+    match check() {
+        Ok(path) => {
+            *choice = Some(path.clone());
+            Ok(Some(path))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            *choice = None;
+            Err(format!(
+                "Saved BIOS {} is missing or is not a regular file; its default setting was removed. Select a BIOS again.",
+                path.display()
+            ))
+        }
+        Err(error) => Err(format!("Cannot use saved BIOS {}: {error}", path.display())),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_or_unknown_library_sort_preserves_the_other_preferences() {
+        for library in [
+            serde_json::json!({"list": true, "scrape_workers": 10}),
+            serde_json::json!({"sort": "future-sort", "list": true, "scrape_workers": 10}),
+        ] {
+            let settings: Preferences =
+                serde_json::from_value(serde_json::json!({"library": library, "volume": 42}))
+                    .unwrap();
+            assert_eq!(settings.library.sort, LibrarySort::Title);
+            assert!(settings.library.list);
+            assert_eq!(settings.library.scrape_workers.get(), 10);
+            assert_eq!(settings.volume, 42);
+        }
+    }
+
+    #[test]
+    fn library_sort_modes_round_trip_through_settings_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut settings = Preferences::load(&path).unwrap();
+        assert_eq!(settings.library.sort, LibrarySort::Title);
+        for (sort, value) in [
+            (LibrarySort::Manual, "manual"),
+            (LibrarySort::Title, "title"),
+            (LibrarySort::Date, "date"),
+            (LibrarySort::Played, "played"),
+            (LibrarySort::Time, "time"),
+        ] {
+            settings.library.sort = sort;
+            settings.save(&path).unwrap();
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["library"]["sort"], value);
+            assert_eq!(Preferences::load(&path).unwrap(), settings);
+        }
+    }
+
+    #[test]
+    fn cover_provider_migration_preserves_existing_custom_templates() {
+        let custom = "https://art.example/${serial}.png";
+        for (template, expected) in [
+            (DEFAULT_TEMPLATE, Provider::Libretro),
+            (custom, Provider::Custom),
+        ] {
+            let saved = serde_json::json!({"list": true, "cover_template": template});
+            let migrated: LibraryPreferences = serde_json::from_value(saved).unwrap();
+            assert!(migrated.list);
+            assert_eq!(migrated.cover_provider, expected);
+            assert_eq!(migrated.cover_template, template);
+        }
+        assert_eq!(
+            LibraryPreferences::default().cover_provider,
+            Provider::Libretro
+        );
+        let selected = LibraryPreferences {
+            cover_provider: Provider::Igdb,
+            cover_template: custom.to_owned(),
+            ..Default::default()
+        };
+        let saved = serde_json::to_value(&selected).unwrap();
+        assert_eq!(
+            serde_json::from_value::<LibraryPreferences>(saved).unwrap(),
+            selected
+        );
+    }
+
+    #[test]
+    fn scrape_concurrency_migrates_clamps_and_round_trips() {
+        assert_eq!(
+            serde_json::from_str::<LibraryPreferences>("{}")
+                .unwrap()
+                .scrape_workers
+                .get(),
+            6
+        );
+        for (saved, count) in [(-1, 1), (0, 1), (1, 1), (8, 8), (20, 20), (300, 20)] {
+            let json = serde_json::json!({"scrape_workers": saved, "list": true});
+            let prefs: LibraryPreferences = serde_json::from_value(json).unwrap();
+            assert_eq!(prefs.scrape_workers.get(), count);
+            assert!(prefs.list);
+            assert_eq!(
+                serde_json::to_value(prefs).unwrap()["scrape_workers"],
+                count
+            );
+        }
+    }
+
+    #[test]
+    fn import_scraping_defaults_on_and_preserves_the_offline_preference() {
+        assert!(Preferences::default().library.scrape_new_games);
+        for auto_covers in [false, true] {
+            let legacy = serde_json::json!({"library": {"auto_covers": auto_covers}});
+            let mut preferences: Preferences = serde_json::from_value(legacy).unwrap();
+            assert!(preferences.library.scrape_new_games);
+            assert_eq!(preferences.library.auto_covers, auto_covers);
+
+            preferences.library.scrape_new_games = false;
+            let saved = serde_json::to_string(&preferences).unwrap();
+            let restored: Preferences = serde_json::from_str(&saved).unwrap();
+            assert!(!restored.library.scrape_new_games);
+            assert_eq!(restored.library.auto_covers, auto_covers);
+        }
+    }
+
+    #[test]
+    fn metadata_cleanup_is_opt_in_in_new_and_existing_libraries() {
+        assert!(!LibraryPreferences::default().clear_metadata_on_remove);
+        let mut prefs: LibraryPreferences = serde_json::from_str(r#"{"list":true}"#).unwrap();
+        assert!(!prefs.clear_metadata_on_remove);
+        prefs.clear_metadata_on_remove = true;
+        let saved = serde_json::to_vec(&prefs).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<LibraryPreferences>(&saved).unwrap(),
+            prefs
+        );
+    }
 
     #[test]
     fn unavailable_language_survives_loading_and_saving_other_preferences() {

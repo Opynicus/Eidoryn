@@ -148,6 +148,9 @@ fn mixed_tracks_skip_padding_and_preserve_pregaps_and_audio() {
         &frames,
     );
     let path = fixture.image("mixed.CHD", &image);
+    let probe = DiscImage::probe(&path).unwrap();
+    assert_eq!(probe.dependencies, [] as [PathBuf; 0]);
+    assert!(probe.serial.is_none());
     let disc = DiscImage::open(&path).unwrap();
     let tracks: Vec<_> = disc.tracks().collect();
     assert_eq!(disc.sectors, 12);

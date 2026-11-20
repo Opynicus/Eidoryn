@@ -20,7 +20,7 @@ struct Key {
 impl Key {
     fn new(desktop: &Desktop) -> Self {
         Self {
-            palette: desktop.themes.active().palette,
+            palette: desktop.workspace_palette(),
             language: desktop.language,
             page: desktop.page,
         }
@@ -155,7 +155,7 @@ impl Desktop {
         width: gpui::Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let p = self.themes.active().palette;
+        let p = self.workspace_palette();
         let hint = self.tr(eidoryn_psx::i18n::Text::ResizeSidebar);
         div()
             .id("sidebar-resize")
@@ -202,8 +202,9 @@ impl Desktop {
     }
 }
 
-const DESTINATIONS: [(&str, &str, Text, WorkspacePage); 4] = [
+const DESTINATIONS: [(&str, &str, Text, WorkspacePage); 5] = [
     ("nav-console", "grid", Text::Console, WorkspacePage::Console),
+    ("nav-library", "disc", Text::Library, WorkspacePage::Library),
     ("nav-game", "screen", Text::GameView, WorkspacePage::Game),
     (
         "nav-save-states",
@@ -216,7 +217,7 @@ const DESTINATIONS: [(&str, &str, Text, WorkspacePage); 4] = [
 
 impl Desktop {
     fn sidebar_content(&self, compact: bool, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
+        let p = &self.workspace_palette();
         div()
             .size_full()
             .flex()

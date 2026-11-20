@@ -68,6 +68,7 @@ impl Desktop {
                 | Command::Load { .. }
                 | Command::LoadDisc { .. }
                 | Command::ReopenDisc { .. }
+                | Command::LaunchLibraryDisc { .. }
                 | Command::RequestClose
         ) || matches!(command, Command::Toggle) && self.snapshot.running
         {
@@ -223,6 +224,9 @@ impl Desktop {
             cx.stop_propagation();
             return;
         }
+        if self.library_dialog_key(key, cx) {
+            return;
+        }
         if key == "f12" {
             self.toggle_clean_fullscreen(cx);
             if !self.graphics.open {
@@ -231,16 +235,12 @@ impl Desktop {
             return;
         }
         if self.graphics.open {
-            match event.keystroke.key.as_str() {
-                "escape" if self.rewind_disable_origin.is_some() => {
-                    self.dismiss_rewind_confirmation(window, cx);
-                }
-                "escape" | "f8" => {
-                    self.close_settings(window, cx);
-                }
-                "left" | "up" => self.move_focus(true, window, cx),
-                "right" | "down" => self.move_focus(false, window, cx),
-                _ => {}
+            self.settings_key(key, window, cx);
+            return;
+        }
+        if self.page == WorkspacePage::Library && self.library_input_focused(window, cx) {
+            if key == "escape" {
+                window.focus(&self.focus, cx);
             }
             return;
         }
@@ -304,6 +304,19 @@ impl Desktop {
             _ => {}
         }
     }
+    fn settings_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match key {
+            "escape" if self.rewind_disable_origin.is_some() => {
+                self.dismiss_rewind_confirmation(window, cx);
+            }
+            "escape" | "f8" => {
+                self.close_settings(window, cx);
+            }
+            "left" | "up" => self.move_focus(true, window, cx),
+            "right" | "down" => self.move_focus(false, window, cx),
+            _ => {}
+        }
+    }
     pub(super) fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.is_fullscreen() {
             match self.presentation.fullscreen {
@@ -325,6 +338,7 @@ impl Desktop {
 
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.snapshot_confirmation = None;
+        self.dismiss_library_context_menu();
         self.stop_rewind(cx);
         if !window.is_fullscreen() {
             self.presentation.fullscreen = FullscreenView::Workspace {
@@ -349,12 +363,17 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         self.snapshot_confirmation = None;
+        self.dismiss_library_context_menu();
         self.stop_rewind(cx);
         if window.is_fullscreen() && self.presentation.shows_video() {
             window.toggle_fullscreen();
         }
         self.presentation.windowed_video = false;
         self.page = page;
+        if page == WorkspacePage::Library {
+            self.release_buttons(cx);
+            self.enter_library(cx);
+        }
         if page == WorkspacePage::SaveStates {
             self.release_buttons(cx);
             self.command(Command::RefreshSaveStates, cx);
@@ -369,6 +388,7 @@ impl Desktop {
 
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.snapshot_confirmation = None;
+        self.dismiss_library_context_menu();
         self.stop_rewind(cx);
         self.release_buttons(cx);
         self.rebinding = None;
@@ -392,7 +412,12 @@ impl Desktop {
             .renaming_state
             .as_ref()
             .map(|state| &state.focus)
-            .or_else(|| self.graphics.open.then_some(&self.settings_focus));
+            .or_else(|| self.graphics.open.then_some(&self.settings_focus))
+            .or_else(|| {
+                self.library_dialog_focus
+                    .open
+                    .then_some(&self.library_dialog_focus.scope)
+            });
         let mut first = None;
         loop {
             if backwards {

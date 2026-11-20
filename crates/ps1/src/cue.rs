@@ -2,7 +2,7 @@
 //! INDEX positions address sectors within their FILE, not within the whole disc.
 use crate::{
     EmuError,
-    disc::{DiscImage, DiscReader, Track, TrackInfo, TrackKind, invalid},
+    disc::{DiscLayout, DiscReader, Track, TrackInfo, TrackKind, invalid},
 };
 use std::{
     fs::File,
@@ -63,7 +63,7 @@ fn filename(text: &str) -> Result<PathBuf, EmuError> {
 }
 
 #[allow(clippy::too_many_lines)] // Parse declarations, validate all extents, then publish the image.
-pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
+pub(crate) fn open(path: &Path) -> Result<DiscLayout, EmuError> {
     let file = File::open(path).map_err(|e| invalid(format!("{}: {e}", path.display())))?;
     if !file
         .metadata()
@@ -241,5 +241,5 @@ pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
         });
         cursor += length;
     }
-    DiscImage::from_tracks(path, result, cursor)
+    Ok(DiscLayout::new(result, cursor, paths))
 }

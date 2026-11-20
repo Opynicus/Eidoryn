@@ -22,7 +22,7 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
 - **Graphics and performance options:** serial and multithreaded software rendering, optional wgpu hardware acceleration with runtime backend detection, enlarged and fullscreen views, and a CRT display filter.
-- **Desktop experience:** English and Simplified Chinese, keyboard navigation, four built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
+- **Desktop experience:** English and Simplified Chinese, keyboard navigation, five built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
 - **Media and saves:** ISO, BIN, multi-track CUE/BIN, and CHD CD images; two memory-card slots with automatic persistence, plus timestamped save states for returning to any saved moment.
 - **Debugging tools:** An optional debugger with CPU registers, disassembly, single stepping, and execution slices; an experimental JIT and a headless CLI. Enable the debugger in its workspace or start with `--debugger`.
 
@@ -48,6 +48,20 @@ Disc swapping is not supported. Memory-card saves use the game's own save points
 - Bring your own BIOS and game images; they are not supplied by this project.
 
 This UI redesign branch produces temporary test releases for Linux x86-64 Wayland, Linux x86-64 X11, and Windows x86-64, with SHA-256 checksums. These prereleases are built from the test branch and do not replace the latest release. On Linux, choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. On Windows, extract the full ZIP and run `eidoryn.exe` from its directory. Windows desktop display, input, and audio still need hands-on validation; native CI covers compilation, tests, and the headless demo. See [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) for available test packages.
+
+### Desktop game library
+
+Open **Game library** in the sidebar and choose **Add game** to import images or scan a folder. You can also drop images directly into the library. Pick the CUE file for a multi-track game. Select a game and click **Start game**, double-click its card, or press Enter. The game view opens once the disc has loaded. If a normal boot needs a BIOS, you can select one from the library and continue.
+
+Drag a game onto either side of another card, or above or below a list row, to change its position. The library switches to **Manual order** and remembers the arrangement. Right-click a game to scrape its metadata, open its details, or remove it. Check the box in the upper-right corner of a card or at the start of a list row to select games. You can then check more games or select all current search results and confirm their removal. Clearing the last check returns to browsing. Removing entries keeps the disc images, memory cards, snapshots and play history.
+
+New discs appear immediately using their filenames or a release already cached on this device. By default, Eidoryn looks up release titles, aliases and dates on Wikidata by PlayStation serial and downloads covers in the background. If Wikidata has no matching edition or regional date, Eidoryn also checks GameDB-PSX by disc serial. Multiple editions require a choice. Use **Scrape metadata** on an existing game to retry a previous miss. Hover over the circular arrow in the library toolbar to see its action. Click it to refresh the entire library, including games outside the current search. In **Details**, you can choose a matching edition, group discs, relocate an image or edit individual fields and the cover. Refreshes preserve manual edits. New imports and their pending jobs are saved together. After a restart, the library resumes outstanding work. Retry an individual game from Details or retry failed games together under **View task history** on the library overview.
+
+**Get cover** downloads artwork for the selected game. Libretro is the default source. On first use, Eidoryn downloads its PlayStation Redump DAT to match disc serials with regional box art. Under **Scraping settings**, choose separate limits for release lookups and cover downloads (1–20 each, initially 6 and 3). The next refresh or import uses these limits. Providers can impose lower request limits. You can also switch the cover source to ScreenScraper, IGDB or a custom HTTPS template. For ScreenScraper and IGDB, set the credential environment variables shown there before starting Eidoryn. To keep imports and browsing entirely offline, turn off **Scrape on import** and **Fill missing covers while browsing**.
+
+Under **Scraping settings → Metadata cache**, **Clear metadata cache** defaults to the entire library. This deletes downloaded covers, release details and cached candidate editions, including details for editions you chose. Each card shows a placeholder and its local image name. The release information in Details stays empty after restarting. Use **Scrape metadata** on a game or refresh the whole library to fetch release details and artwork again, even when automatic cover downloads are off. Eidoryn remembers your edition choice for the next scrape. Choose **Removed games only** to keep the data for games still in your library. **Clear metadata when removing a game** is off by default. Cleanup preserves manual edits, custom covers, disc images, saves and play history.
+
+The user data directory contains `library.sqlite3` with the library index, cached release fields and the source records for each matched edition. The `covers/` folder shares original images and PNG thumbnails by content hash. On Linux it is `$XDG_DATA_HOME/eidoryn` (default `~/.local/share/eidoryn`), on Windows `%LOCALAPPDATA%\eidoryn`, and on macOS `~/Library/Application Support/eidoryn`. Playtime counts time spent running forward, including cutscenes and input-free menus. A normal exit saves the final interval. [Library migration, recovery and performance measurements](tests/library-optimization-validation.md)
 
 ### Build and launch
 
@@ -94,7 +108,7 @@ Choose **Settings → Appearance → Language** to switch immediately and save y
 
 To add a language, create a file named for its language tag, such as `locales/fr.toml`. Set `name` to the native language name and add translations under `[messages]`. An optional top-level `aliases` list adds system locale matches. Rebuild to include the language in settings and the CLI. Omitted keys use English. The build rejects unknown keys and empty translations. See the [English catalog](locales/en.toml) for the full list of keys.
 
-Theme, CRT, volume, mute state, preferred renderer, and fullscreen controls are also saved. CLI options such as `--theme ocean --volume 60 --crt soft` override saved preferences for the current session. **Settings → Graphics → Clean fullscreen** hides the playback controls when the game picture is fullscreen. The equivalent launch options are `--fullscreen --clean-fullscreen`.
+Select **Settings → Appearance → Interface theme → Lemon Green** for a charcoal interface with lime accents. Eidoryn saves the selected theme, CRT, volume, mute state, preferred renderer, and fullscreen controls. CLI options such as `--theme lemon-green --volume 60 --crt soft` override saved preferences for the current session. **Settings → Graphics → Clean fullscreen** hides the playback controls when the game picture is fullscreen. The equivalent launch options are `--fullscreen --clean-fullscreen`.
 
 ### Load a game
 

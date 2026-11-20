@@ -4,7 +4,7 @@ use super::{
 };
 use eidoryn_psx::{
     i18n::Text,
-    systems::ps1::runner::{Command, SelectedMedia, Snapshot},
+    systems::ps1::runner::{SelectedMedia, Snapshot},
 };
 use gpui::{Context, div, prelude::*, px, rgb};
 use std::path::PathBuf;
@@ -304,16 +304,7 @@ impl Desktop {
                 return;
             }
         }
-        if self.validate_disc_bios(fast_boot, cx) {
-            self.command(
-                Command::ReopenDisc {
-                    path,
-                    bios: self.bios.clone(),
-                    fast_boot,
-                },
-                cx,
-            );
-        }
+        self.direct_disc(path, fast_boot, true, cx);
     }
 
     fn remove_missing_recent(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
@@ -331,17 +322,7 @@ impl Desktop {
         fast_boot: bool,
         cx: &mut Context<Self>,
     ) {
-        if !self.validate_disc_bios(fast_boot, cx) {
-            return;
-        }
-        self.command(
-            Command::LoadDisc {
-                path,
-                bios: self.bios.clone(),
-                fast_boot,
-            },
-            cx,
-        );
+        self.direct_disc(path, fast_boot, false, cx);
     }
 
     pub(super) fn validate_disc_bios(&mut self, fast_boot: bool, cx: &mut Context<Self>) -> bool {
@@ -353,6 +334,16 @@ impl Desktop {
             return;
         }
         self.snapshot_menu = None;
+        if snapshot.media_selection == Some(SelectedMedia::LibraryDisc)
+            || self.page == WorkspacePage::Library
+                && matches!(
+                    snapshot.media_selection,
+                    Some(SelectedMedia::Disc | SelectedMedia::ReopenedDisc)
+                )
+        {
+            self.page = WorkspacePage::Game;
+            self.presentation.windowed_video = false;
+        }
         if self.page == WorkspacePage::Console
             && !self.graphics.open
             && !self.presentation.shows_video()
@@ -366,7 +357,7 @@ impl Desktop {
                         self.presentation.windowed_video = true;
                     }
                 }
-                Some(SelectedMedia::Bios) | None => {}
+                Some(SelectedMedia::Bios | SelectedMedia::LibraryDisc) | None => {}
             }
         }
         match snapshot.media_selection {
@@ -380,7 +371,9 @@ impl Desktop {
                     }
                 }
             }
-            Some(SelectedMedia::Disc | SelectedMedia::ReopenedDisc) => {
+            Some(
+                SelectedMedia::Disc | SelectedMedia::ReopenedDisc | SelectedMedia::LibraryDisc,
+            ) => {
                 if let Some(path) = &snapshot.disc_path {
                     match self
                         .preferences

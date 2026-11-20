@@ -6,6 +6,8 @@ pub mod i18n;
 #[cfg(feature = "desktop")]
 pub mod keybindings;
 #[cfg(feature = "desktop")]
+pub mod library;
+#[cfg(feature = "desktop")]
 pub mod preferences;
 pub mod systems;
 #[cfg(feature = "desktop")]

@@ -773,7 +773,7 @@ fn missing_recent_games_are_removed_and_clearing_history_keeps_files(cx: &mut Te
     assert!(discs[0].0.is_file());
 }
 
-fn wait_for_snapshot(
+pub(super) fn wait_for_snapshot(
     view: &gpui::Entity<Desktop>,
     cx: &mut VisualTestContext,
     ready: impl Fn(&Snapshot) -> bool,
@@ -860,6 +860,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
     window.focus(&focus, cx);
     let preferences = eidoryn_psx::preferences::Preferences::default();
     Desktop {
+        library: library::Workspace::new(None),
         sidebar: None,
         navigation: sidebar::Navigation::default(),
         bios_details_open: false,
@@ -872,6 +873,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
         preferences_path: Some(test_config_path()),
         theme_paths: std::collections::HashMap::new(),
         settings_focus: cx.focus_handle(),
+        library_dialog_focus: super::library_ui::DialogFocus::new(cx.focus_handle()),
         runner: Runner::with_snapshot_mode(
             machine,
             false,
@@ -964,7 +966,7 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
         (1600., 1000., 16.),
     ] {
         visual.simulate_resize(size(px(width), px(height)));
-        for theme in ["midnight", "lavender", "ocean", "forest"] {
+        for theme in ["midnight", "lavender", "ocean", "forest", "lemon-green"] {
             for &language in Language::ALL {
                 for (page, settings, tab) in [
                     (WorkspacePage::Console, false, SettingsTab::Graphics),
@@ -1194,7 +1196,7 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
     let _cleanup = TestConfig(path.clone());
     cx.simulate_resize(size(px(1280.), px(900.)));
     cx.run_until_parked();
-    press_keys(cx, "tab tab tab tab enter");
+    press_keys(cx, "tab tab tab tab tab enter");
     assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::Debug);
     assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
     press_keys(cx, "escape f8 tab tab tab enter");
@@ -1230,12 +1232,13 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
             assert!(v.settings_focus.contains_focused(window, cx));
         });
     }
-    view.update(cx, |view, cx| view.select_theme("ocean", cx));
+    click_control(cx, "theme-lemon-green");
+    assert!(view.read_with(cx, |v, _| v.themes.active().id == "lemon-green"));
     assert_eq!(
         eidoryn_psx::preferences::Preferences::load(&path)
             .unwrap()
             .theme,
-        "ocean"
+        "lemon-green"
     );
     press_keys(cx, "escape f12");
     assert!(!view.read_with(cx, |v, _| v.clean_fullscreen));

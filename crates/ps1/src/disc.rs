@@ -92,10 +92,29 @@ pub(crate) struct Track {
 
 #[derive(Clone, Debug)]
 pub struct DiscImage {
-    pub(crate) tracks: Vec<Track>,
+    layout: DiscLayout,
     pub sectors: u32,
     source: PathBuf,
     identity: String,
+}
+
+/// Bounded evidence for a desktop index. Only `DiscImage::open` produces a
+/// verified save-state identity.
+#[derive(Debug)]
+pub struct DiscProbe {
+    pub dependencies: Vec<PathBuf>,
+    pub serial: Option<String>,
+    pub boot_value: Option<String>,
+    pub region: Option<DiscRegion>,
+    /// Layout and a few sample sectors; a candidate key, never proof of equality.
+    pub sample: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DiscLayout {
+    tracks: Vec<Track>,
+    sectors: u32,
+    dependencies: Vec<PathBuf>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -134,10 +153,17 @@ pub(crate) fn invalid(message: impl Into<String>) -> EmuError {
 
 impl DiscImage {
     pub(crate) fn heap_bytes(&self) -> usize {
-        self.tracks.capacity() * size_of::<Track>()
+        self.layout.tracks.capacity() * size_of::<Track>()
             + self.source.capacity()
             + self.identity.capacity()
             + self
+                .layout
+                .dependencies
+                .iter()
+                .map(PathBuf::capacity)
+                .sum::<usize>()
+            + self
+                .layout
                 .tracks
                 .iter()
                 .map(|track| {
@@ -151,6 +177,108 @@ impl DiscImage {
     }
 
     pub fn open(path: &Path) -> Result<Self, EmuError> {
+        let layout = DiscLayout::open(path)?;
+        let source = path
+            .canonicalize()
+            .map_err(|error| invalid(error.to_string()))?;
+        let identity = layout.identity()?;
+        Ok(Self {
+            sectors: layout.sectors,
+            layout,
+            source,
+            identity,
+        })
+    }
+
+    /// Read the layout, license sector and bounded ISO boot configuration without
+    /// reading the executable or hashing the complete image.
+    pub fn probe(path: &Path) -> Result<DiscProbe, EmuError> {
+        let layout = DiscLayout::open(path)?;
+        // A naked BIN has no descriptor. Sector-aligned firmware and arbitrary
+        // PCM are common in game folders. Accept cooked BIN only when its ISO
+        // volume is recognizable; raw data BIN already passed header checks.
+        if path
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("bin"))
+            && layout.tracks.first().is_some_and(|t| t.cooked)
+        {
+            layout.root()?;
+        }
+        let region = layout.license_region()?;
+        let boot_value = layout.boot_value().ok().flatten();
+        let serial = boot_value.as_deref().and_then(normalize_boot_serial);
+        let mut sample = Sha256::new();
+        sample.update(layout.sectors.to_le_bytes());
+        for t in &layout.tracks {
+            sample.update([t.info.number, t.info.kind as u8]);
+            for lba in [t.info.index0_lba, t.info.start_lba, t.info.end_lba] {
+                sample.update(lba.to_le_bytes());
+            }
+        }
+        // Sampling is bounded independently of the disc size and track count.
+        for lba in [0, 4, 16, layout.sectors / 2, layout.sectors - 1] {
+            if lba < layout.sectors {
+                sample.update(layout.read_sector(lba)?);
+            }
+        }
+        Ok(DiscProbe {
+            dependencies: layout.dependencies,
+            boot_value,
+            serial,
+            region,
+            sample: format!("{:x}", sample.finalize()),
+        })
+    }
+
+    /// List the dependencies of a validated CUE layout without reading track sectors.
+    pub fn cue_dependencies(path: &Path) -> Result<Vec<PathBuf>, EmuError> {
+        Ok(crate::cue::open(path)?.dependencies)
+    }
+
+    pub fn supports_path(path: &Path) -> bool {
+        path.extension().is_some_and(|ext| {
+            ["cue", "chd", "iso", "bin"]
+                .iter()
+                .any(|v| ext.eq_ignore_ascii_case(v))
+        })
+    }
+
+    /// Content and track-layout identity, independent of the image's filename.
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    pub fn tracks(&self) -> impl Iterator<Item = &TrackInfo> {
+        self.layout.tracks()
+    }
+    pub fn track_at(&self, lba: u32) -> Option<&TrackInfo> {
+        self.layout.track_at(lba)
+    }
+    pub fn license_region(&self) -> Result<Option<DiscRegion>, EmuError> {
+        self.layout.license_region()
+    }
+    pub fn read_sector(&self, lba: u32) -> Result<[u8; 2352], EmuError> {
+        self.layout.read_sector(lba)
+    }
+    pub fn read_data(&self, lba: u32) -> Result<[u8; 2048], EmuError> {
+        self.layout.read_data(lba)
+    }
+    pub fn read_file(&self, path: &str, limit: usize) -> Result<Vec<u8>, EmuError> {
+        self.layout.read_file(path, limit)
+    }
+    /// Host-assisted homebrew boot, explicitly bypassing BIOS initialization.
+    pub fn boot_executable(&self) -> Result<Vec<u8>, EmuError> {
+        let boot = self.layout.boot_value()?;
+        let path = match boot.as_deref() {
+            Some(boot) => boot_file(boot)?,
+            None => "PSX.EXE;1",
+        };
+        self.read_file(path, RAM_SIZE + 0x800)
+    }
+}
+
+impl DiscLayout {
+    fn open(path: &Path) -> Result<Self, EmuError> {
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
         if ext.eq_ignore_ascii_case("cue") {
             return crate::cue::open(path);
@@ -183,8 +311,7 @@ impl DiscImage {
             ));
         }
         let sectors = (metadata.len() / size) as u32;
-        Self::from_tracks(
-            path,
+        Ok(Self::new(
             vec![Track {
                 info: TrackInfo {
                     number: 1,
@@ -203,22 +330,24 @@ impl DiscImage {
                 cooked: !raw,
             }],
             sectors,
-        )
+            vec![],
+        ))
     }
 
-    pub(crate) fn from_tracks(
-        path: &Path,
-        tracks: Vec<Track>,
-        sectors: u32,
-    ) -> Result<Self, EmuError> {
-        let source = path
-            .canonicalize()
-            .map_err(|error| invalid(error.to_string()))?;
+    pub(crate) fn new(tracks: Vec<Track>, sectors: u32, dependencies: Vec<PathBuf>) -> Self {
+        Self {
+            tracks,
+            sectors,
+            dependencies,
+        }
+    }
+
+    fn identity(&self) -> Result<String, EmuError> {
         let mut digest = Sha256::new();
         digest.update(b"Eidoryn disc identity v1");
-        digest.update(sectors.to_le_bytes());
+        digest.update(self.sectors.to_le_bytes());
         let mut files = Vec::new();
-        for track in &tracks {
+        for track in &self.tracks {
             digest.update([
                 track.info.number,
                 track.info.kind as u8,
@@ -268,17 +397,7 @@ impl DiscImage {
                 remaining -= count as u64;
             }
         }
-        Ok(Self {
-            tracks,
-            sectors,
-            source,
-            identity: format!("{:x}", digest.finalize()),
-        })
-    }
-
-    /// Content and track-layout identity, independent of the image's filename.
-    pub fn identity(&self) -> &str {
-        &self.identity
+        Ok(format!("{:x}", digest.finalize()))
     }
 
     pub fn tracks(&self) -> impl Iterator<Item = &TrackInfo> {
@@ -481,30 +600,57 @@ impl DiscImage {
         self.extent(&entry, limit)
     }
 
-    /// Host-assisted homebrew boot, explicitly bypassing BIOS initialization.
-    pub fn boot_executable(&self) -> Result<Vec<u8>, EmuError> {
-        let path = if let Some(config) = self.find("SYSTEM.CNF;1")? {
-            let bytes = self.extent(&config, 4096)?;
-            let text =
-                std::str::from_utf8(&bytes).map_err(|_| invalid("Invalid SYSTEM.CNF text"))?;
-            let boot = text
-                .lines()
-                .filter_map(|line| line.split_once('='))
-                .find(|(key, _)| key.trim().eq_ignore_ascii_case("BOOT"))
-                .map(|(_, value)| value.trim().trim_matches('"'))
-                .ok_or_else(|| invalid("SYSTEM.CNF has no BOOT entry"))?;
-            let (device, file) = boot
-                .split_once(':')
-                .ok_or_else(|| invalid("BOOT must use cdrom:"))?;
-            if !device.eq_ignore_ascii_case("cdrom") {
-                return Err(invalid("Unsupported BOOT device"));
-            }
-            file.to_owned()
-        } else {
-            "PSX.EXE;1".into()
+    fn boot_value(&self) -> Result<Option<String>, EmuError> {
+        let Some(config) = self.find("SYSTEM.CNF;1")? else {
+            return Ok(None);
         };
-        self.read_file(&path, RAM_SIZE + 0x800)
+        let bytes = self.extent(&config, 4096)?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| invalid("Invalid SYSTEM.CNF text"))?;
+        let value = text
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(key, _)| key.trim().eq_ignore_ascii_case("BOOT"))
+            .map(|(_, value)| value.trim().trim_matches('"'))
+            .ok_or_else(|| invalid("SYSTEM.CNF has no BOOT entry"))?;
+        Ok(Some(value.to_owned()))
     }
+}
+
+fn boot_file(boot: &str) -> Result<&str, EmuError> {
+    let (device, file) = boot
+        .split_once(':')
+        .ok_or_else(|| invalid("BOOT must use cdrom:"))?;
+    if !device.eq_ignore_ascii_case("cdrom") {
+        return Err(invalid("Unsupported BOOT device"));
+    }
+    Ok(file)
+}
+
+fn normalize_boot_serial(boot: &str) -> Option<String> {
+    let filename = boot_file(boot)
+        .ok()?
+        .rsplit(['/', '\\'])
+        .next()?
+        .split(';')
+        .next()?;
+    let bytes = filename.as_bytes();
+    if bytes.len() != 11
+        || !bytes[..4].iter().all(u8::is_ascii_alphabetic)
+        || !matches!(bytes[4], b'_' | b'-')
+        || bytes[8] != b'.'
+        || !bytes[5..8]
+            .iter()
+            .chain(&bytes[9..])
+            .all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    Some(format!(
+        "{}-{}{}",
+        filename[..4].to_ascii_uppercase(),
+        &filename[5..8],
+        &filename[9..]
+    ))
 }
 
 struct Entry {
@@ -653,5 +799,25 @@ mod tests {
                 assert_eq!(super::edc(bytes), super::bitwise_edc(bytes));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod library_probe_tests {
+    use super::normalize_boot_serial;
+
+    #[test]
+    fn serial_is_derived_only_from_a_standard_iso_boot_filename() {
+        assert_eq!(
+            normalize_boot_serial(r"cdrom:\SLUS_000.67;1").as_deref(),
+            Some("SLUS-00067")
+        );
+        assert_eq!(
+            normalize_boot_serial("CDROM:/boot/slps_999.99;1").as_deref(),
+            Some("SLPS-99999")
+        );
+        assert_eq!(normalize_boot_serial(r"cdrom:\HOMEBREW.EXE;1"), None);
+        assert_eq!(normalize_boot_serial(r"host:\SLUS_000.67;1"), None);
+        assert_eq!(normalize_boot_serial(r"cdrom:\SLUS_000.670;1"), None);
     }
 }

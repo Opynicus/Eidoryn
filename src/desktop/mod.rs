@@ -9,6 +9,8 @@ mod drawer;
 mod fonts;
 mod graphics;
 mod icons;
+mod library;
+mod library_ui;
 mod probe;
 mod ps1_inspector;
 mod recent_games;
@@ -56,6 +58,7 @@ pub struct Options {
     pub bios: Option<std::path::PathBuf>,
     pub fullscreen: bool,
     pub game_view: bool,
+    pub initial_disc: Option<(std::path::PathBuf, bool)>,
     pub theme: Option<String>,
     pub theme_plugin: Option<std::path::PathBuf>,
     pub crt: Option<eidoryn_psx::video_filter::CrtFilter>,
@@ -97,6 +100,23 @@ pub fn run_with_probe(
     } else {
         SnapshotMode::Display
     };
+    let library = if probe.is_none() {
+        match library::open() {
+            Ok(mut library) => {
+                let prefs = &startup.preferences.library;
+                library.configure_import_scraping(
+                    prefs.scrape_new_games.then_some(prefs.cover_provider),
+                );
+                Some(library)
+            }
+            Err(error) => {
+                append_notice(&mut startup.notice, error);
+                None
+            }
+        }
+    } else {
+        None
+    };
     let runner = Runner::with_snapshot_mode(
         machine,
         options.auto_run,
@@ -110,6 +130,13 @@ pub fn run_with_probe(
         .ok_or("Missing initial emulator snapshot")?;
     if let Some(warning) = snapshot.presentation_warning.take() {
         append_notice(&mut startup.notice, warning);
+    }
+    let library = library::Workspace::new(library);
+    if let Some(library) = &library.store {
+        runner.send(Command::TrackLibrary {
+            library: library.clone(),
+            initial_disc: options.initial_disc.clone(),
+        })?;
     }
     runner.send(Command::SetTurbo(startup.preferences.turbo()?))?;
     runner.send(Command::SetRewindSeconds(
@@ -125,7 +152,7 @@ pub fn run_with_probe(
         volume: startup.volume,
         dragging: false,
     };
-    open_window(runner, snapshot, options, startup, audio, probe)
+    open_window(runner, snapshot, options, startup, audio, probe, library)
 }
 
 #[allow(clippy::too_many_lines)] // Keep window setup and the Desktop initializer together.
@@ -137,6 +164,7 @@ fn open_window(
     startup: settings::Startup,
     audio: AudioControls,
     probe: Option<probe::Probe>,
+    library: library::Workspace,
 ) -> Result<(), String> {
     let startup_error = Rc::new(RefCell::new(None));
     let error_slot = Rc::clone(&startup_error);
@@ -169,7 +197,8 @@ fn open_window(
                                 window,
                                 |view: &mut Desktop, window, cx| {
                                     if !window.is_window_active() {
-                                        if view.snapshot_menu.take().is_some() {
+                                        let library_menu = view.dismiss_library_context_menu();
+                                        if view.snapshot_menu.take().is_some() || library_menu {
                                             cx.notify();
                                         }
                                         view.stop_input(cx);
@@ -188,7 +217,15 @@ fn open_window(
                             .is_err()
                         });
                         Desktop::start_snapshot_updates(cx);
+                        if let Some(store) = library.store.clone() {
+                            Desktop::start_library(
+                                store,
+                                startup.preferences.recent_discs.clone(),
+                                cx,
+                            );
+                        }
                         Desktop {
+                            library,
                             sidebar: None,
                             navigation: sidebar::Navigation::default(),
                             bios_details_open: false,
@@ -205,6 +242,7 @@ fn open_window(
                             theme_paths: startup.theme_paths,
                             clean_fullscreen: startup.clean_fullscreen,
                             settings_focus: cx.focus_handle(),
+                            library_dialog_focus: library_ui::DialogFocus::new(cx.focus_handle()),
                             runner,
                             snapshot_mode: snapshot.mode,
                             snapshot,
@@ -258,6 +296,7 @@ fn open_window(
 
 #[allow(clippy::struct_excessive_bools)] // Independent view, debugger, and appearance preferences.
 struct Desktop {
+    library: library::Workspace,
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
     navigation: sidebar::Navigation,
     bios_details_open: bool,
@@ -270,6 +309,7 @@ struct Desktop {
     theme_paths: std::collections::HashMap<String, std::path::PathBuf>,
     clean_fullscreen: bool,
     settings_focus: FocusHandle,
+    library_dialog_focus: library_ui::DialogFocus,
     runner: Runner,
     snapshot: Snapshot,
     image: Option<VideoImage>,
@@ -300,6 +340,12 @@ struct Desktop {
     _subscriptions: Vec<gpui::Subscription>,
 }
 
+impl Drop for Desktop {
+    fn drop(&mut self) {
+        self.library.shutdown();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SettingsTab {
     #[default]
@@ -313,6 +359,7 @@ enum SettingsTab {
 enum WorkspacePage {
     #[default]
     Console,
+    Library,
     Game,
     SaveStates,
     Debug,
@@ -385,6 +432,43 @@ impl Presentation {
 }
 
 impl Desktop {
+    fn start_library(
+        store: eidoryn_psx::library::Library,
+        recent: Vec<eidoryn_psx::preferences::RecentDisc>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    store.wait_until_ready()?;
+                    let imported = store.migrate_recents(&recent);
+                    let cleaned = eidoryn_psx::library::covers::collect_orphans(&store);
+                    Ok::<_, String>(imported.and(cleaned.map(|_| ())).err())
+                })
+                .await;
+            let _ = this.update(cx, |view: &mut Desktop, cx| {
+                match result {
+                    Ok(warning) => {
+                        if let Some(warning) = warning {
+                            append_notice(&mut view.notice, warning);
+                        }
+                        view.poll_library_scrape(cx);
+                        if view.page == WorkspacePage::Library {
+                            view.reload_library(cx);
+                        }
+                    }
+                    Err(error) => {
+                        view.library.store = None;
+                        append_notice(&mut view.notice, error);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn start_snapshot_updates(cx: &mut gpui::Context<Self>) {
         cx.spawn(async |this, cx| {
             // Poll more often than one guest field. A relative 16 ms sleep plus
@@ -411,6 +495,8 @@ impl Desktop {
     }
 
     fn receive_snapshot(&mut self, cx: &mut gpui::Context<Self>) {
+        self.tick_library_scrape(cx);
+        self.refresh_playing_library(cx);
         if let Some(command) = self.probe.as_mut().and_then(probe::Probe::input) {
             self.command(command, cx);
         }

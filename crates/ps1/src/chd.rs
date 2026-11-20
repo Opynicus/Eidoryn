@@ -2,7 +2,7 @@
 //! Track metadata and audio byte order follow MAME's src/lib/util/cdrom.cpp.
 use crate::{
     EmuError,
-    disc::{DiscImage, DiscReader, SYNC, Track, TrackInfo, TrackKind, edc, invalid, msf},
+    disc::{DiscLayout, DiscReader, SYNC, Track, TrackInfo, TrackKind, edc, invalid, msf},
 };
 use chd::{Chd, header::Header, metadata::MetadataTag};
 use std::{
@@ -186,7 +186,7 @@ impl Reader {
 }
 
 #[allow(clippy::too_many_lines)] // Validate metadata and track extents before publishing the image.
-pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
+pub(crate) fn open(path: &Path) -> Result<DiscLayout, EmuError> {
     let mut file =
         File::open(path).map_err(|error| invalid(format!("{}: {error}", path.display())))?;
     if !file
@@ -350,5 +350,5 @@ pub(crate) fn open(path: &Path) -> Result<DiscImage, EmuError> {
             cooked: false,
         })
         .collect();
-    DiscImage::from_tracks(path, tracks, cursor)
+    Ok(DiscLayout::new(tracks, cursor, vec![]))
 }
