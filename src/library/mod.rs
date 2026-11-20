@@ -97,7 +97,7 @@ impl Library {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version = tx.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))?;
-        if version > 2 {
+        if version > 3 {
             return Err(format!("Unsupported library schema version {version}").into());
         }
         if version == 0 {
@@ -107,7 +107,10 @@ impl Library {
         if version < 2 {
             tx.execute_batch(include_str!("metadata/online.sql"))?;
             tx.execute_batch(include_str!("covers/libretro.sql"))?;
-            tx.pragma_update(None, "user_version", 2)?;
+        }
+        if version < 3 {
+            metadata::migrate_local_cache(&tx)?;
+            tx.pragma_update(None, "user_version", 3)?;
         }
         tx.commit()?;
         db.pragma_update(None, "journal_mode", "WAL")?;

@@ -1,56 +1,57 @@
 use super::*;
 
+const TEST_SERIAL: &str = "SCUS-94900";
+
+fn response(releases: Vec<Release>) -> wikidata::Download {
+    let bindings: Vec<_> = releases.iter().map(|r| serde_json::json!({
+        "game": {"value": format!("http://www.wikidata.org/entity/{}", r.id.split('/').next().unwrap())},
+        "title": {"value": r.title},
+    })).collect();
+    let raw =
+        serde_json::to_vec_pretty(&serde_json::json!({"results":{"bindings":bindings}})).unwrap();
+    wikidata::Download { releases, raw }
+}
+
 #[test]
-fn snapshot_fields_and_acceptance_sample() {
-    let mut ids = std::collections::HashSet::new();
-    for r in CATALOG.iter() {
-        assert!(ids.insert(&r.id), "duplicate edition {}", r.id);
-        assert_eq!(r.serial.len(), 10);
-        assert_ne!(r.title, "");
-        assert!(r.work_date.is_empty() || valid_date(&r.work_date));
-        assert!(
-            r.date.is_empty() || valid_date(&r.date),
-            "bad date for {}",
-            r.id
-        );
-    }
-    for (serial, region, title, date) in [
-        ("SCUS-94900", "USA", "Crash Bandicoot", "1996-09-09"),
-        (
-            "SCPS-10031",
-            "Japan",
-            "クラッシュ・バンディクー",
-            "1996-12-06",
-        ),
-        ("SLPS-00001", "Japan", "リッジレーサー", "1994-12-03"),
-        ("SCUS-94300", "USA", "Ridge Racer", "1995-09-09"),
-        ("SLES-00943", "Europe", "Lucky Luke", "1998-04"),
-        ("SLPS-01776", "Japan", "スーパーヒーロー作戦", "1999"),
+fn import_uses_only_local_release_data_and_names_are_suggestions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let rows = list(&lib).unwrap();
+    assert!(rows[&1].release_id.is_none());
+    assert!(rows[&1].source.is_none());
+    assert!(!rows[&1].pending);
+    assert!(candidates(&lib, 1, TEST_SERIAL).unwrap().is_empty());
+    let mut release = downloaded("Q1", "Test Adventure");
+    release.aliases = "Midnight|北の大地".into();
+    refresh_with(&lib, 1, |_| Ok(response(vec![release]))).unwrap();
+    let mut db = lib.connect().unwrap();
+    let tx = db.transaction().unwrap();
+    for (id, serial, region, name) in [
+        (2, None, None, "北の大地 [copy]"),
+        (3, Some(TEST_SERIAL), Some("Japan"), "Conflicting region"),
+        (4, None, None, "Unrelated"),
     ] {
-        let r = matching_serial(&CATALOG, Some(serial), Some(region)).unwrap();
-        assert_eq!(
-            (r.title.as_str(), r.date.as_str()),
-            (title, date),
-            "{serial}"
-        );
+        tx.execute(
+            "INSERT INTO games(id,fallback_title) VALUES(?,?)",
+            params![id, name],
+        )
+        .unwrap();
+        identify(&tx, id, serial, region, name).unwrap();
     }
-    assert!(matching_serial(&CATALOG, Some("SCUS-94900"), Some("Japan")).is_none());
-    assert!(CATALOG.iter().any(|r| r.suggested(Some("SCUS-94900"), "")));
-    assert!(matching_serial(&CATALOG, None, None).is_none());
-    assert!(
-        CATALOG
-            .iter()
-            .any(|r| r.suggested(None, &title_hint("Crash Bandicoot (Japan)")))
-    );
-    assert!(
-        matching_serial(&CATALOG, Some("SLUS-00402"), Some("USA")).is_none(),
-        "Tekken 3 should exercise a real catalog miss"
-    );
-    assert!(
-        !CATALOG
-            .iter()
-            .any(|r| r.suggested(None, "my homebrew game"))
-    );
+    tx.commit().unwrap();
+    let rows = list(&lib).unwrap();
+    for id in [2, 3] {
+        assert!(rows[&id].pending);
+        assert!(rows[&id].release_id.is_none());
+        assert_eq!(candidates(&lib, id, "").unwrap().len(), 1);
+    }
+    assert!(!rows[&4].pending);
+    assert!(candidates(&lib, 4, "").unwrap().is_empty());
+    assert_eq!(candidates(&lib, 4, "midn").unwrap().len(), 1);
+    select(&lib, 2, "Q1/SCUS-94900").unwrap();
+    set_override(&lib, 2, Field::Region, Some("User region")).unwrap();
+    set_override(&lib, 2, Field::Date, Some("2000")).unwrap();
     for invalid in [
         "0000",
         "2021-02-29",
@@ -59,49 +60,17 @@ fn snapshot_fields_and_acceptance_sample() {
         "2022-5-5",
         "199--1",
     ] {
-        assert!(!valid_date(invalid), "{invalid}");
+        assert!(
+            set_override(&lib, 2, Field::Date, Some(invalid)).is_err(),
+            "{invalid}"
+        );
     }
-}
-
-#[test]
-fn field_edits_and_confirmed_matches_survive_reimport_refresh_and_restart() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("library.sqlite3");
-    let lib = Library::open(&path).unwrap();
-    let mut conn = lib.connect().unwrap();
-    let tx = conn.transaction().unwrap();
-    tx.execute(
-        "INSERT INTO games(id,fallback_title) VALUES(1,'Test'),(2,'Crash Bandicoot')",
-        [],
-    )
-    .unwrap();
-    identify(&tx, 1, Some("SCUS-94900"), Some("USA"), "Test").unwrap();
-    identify(&tx, 2, None, None, "Crash Bandicoot").unwrap();
-    tx.commit().unwrap();
-    assert!(needs_match(&conn, 2).unwrap());
-    assert!(candidates(&lib, 2, "").unwrap().len() >= 2);
-    set_override(&lib, 1, Field::Title, Some("Preferred")).unwrap();
-    set_override(&lib, 1, Field::Region, Some("My region")).unwrap();
-    set_override(&lib, 1, Field::Date, Some("2000")).unwrap();
-    let tx = conn.transaction().unwrap();
-    identify(&tx, 1, Some("SCPS-10031"), Some("Japan"), "Moved").unwrap();
-    tx.commit().unwrap();
-    select(&lib, 1, "Q719176/SCPS-10031").unwrap();
-    let reopened = Library::open(&path).unwrap();
-    refresh(&reopened, 1).unwrap();
-    let m = &list(&reopened).unwrap()[&1];
-    assert_eq!(m.title.as_deref(), Some("Preferred"));
-    assert_eq!(m.region.as_deref(), Some("My region"));
-    assert_eq!(m.date.as_deref(), Some("2000"));
-    assert!(m.aliases.iter().any(|a| a == "Crash Bandicoot"));
-    assert_eq!(m.release_id.as_deref(), Some("Q719176/SCPS-10031"));
-    assert_eq!(m.source.as_deref(), Some(SNAPSHOT));
-    assert!(m.refreshed.is_some());
-    set_override(&reopened, 1, Field::Date, None).unwrap();
-    assert_eq!(
-        list(&reopened).unwrap()[&1].date.as_deref(),
-        Some("1996-12-06")
-    );
+    refresh(&lib, 2).unwrap();
+    let rows = list(&lib).unwrap();
+    assert_eq!(rows[&2].region.as_deref(), Some("User region"));
+    assert_eq!(rows[&2].date.as_deref(), Some("2000"));
+    set_override(&lib, 2, Field::Date, None).unwrap();
+    assert_eq!(list(&lib).unwrap()[&2].date.as_deref(), Some("1996"));
 }
 
 #[test]
@@ -109,34 +78,39 @@ fn field_edits_and_confirmed_matches_survive_reimport_refresh_and_restart() {
 fn local_ps1_image_sample() {
     use eidoryn_ps1::disc::{DiscImage, DiscRegion};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let paths = [
-        "Castlevania - Symphony of the Night (USA).chd",
-        "Castlevania - Symphony of the Night.cue",
-        "Crash Bandicoot (USA).cue",
-        "Resident Evil 2 (USA) (Disc 1).chd",
-        "Resident Evil 2 (USA) (Disc 2).chd",
-        "Tekken 3 (USA).cue",
-    ];
-    for name in paths {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    for (id, (name, serial)) in (1..).zip([
+        (
+            "Castlevania - Symphony of the Night (USA).chd",
+            "SLUS-00067",
+        ),
+        ("Castlevania - Symphony of the Night.cue", "SLUS-00067"),
+        ("Crash Bandicoot (USA).cue", "SCUS-94900"),
+        ("Resident Evil 2 (USA) (Disc 1).chd", "SLUS-00421"),
+        ("Resident Evil 2 (USA) (Disc 2).chd", "SLUS-00592"),
+        ("Tekken 3 (USA).cue", "SLUS-00402"),
+    ]) {
         let probe = DiscImage::probe(&root.join(name)).unwrap();
         assert_eq!(probe.region, Some(DiscRegion::America), "{name}");
-        let serial = probe.serial.as_deref().unwrap_or("unknown");
-        let found = matching_serial(&CATALOG, Some(serial), Some("USA"));
-        if name.starts_with("Crash") {
-            assert_eq!(found.unwrap().title, "Crash Bandicoot");
-        }
-        println!(
-            "{name} | {serial} | {}",
-            found.map_or("no match", |r| r.title.as_str())
-        );
+        assert_eq!(probe.serial.as_deref(), Some(serial), "{name}");
+        fixture(&lib, id, probe.serial.as_deref());
+        assert!(list(&lib).unwrap()[&id].release_id.is_none(), "{name}");
     }
 }
 
 #[test]
 fn work_publication_is_distinct_from_the_regional_release_date() {
-    let release = matching_serial(&CATALOG, Some("SLUS-01524"), Some("USA")).unwrap();
-    assert_eq!(release.date, "");
-    assert_eq!(release.work_date, "2002");
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let mut release = downloaded("Q1", "Test Adventure");
+    release.date.clear();
+    release.work_date = "2002".into();
+    refresh_with(&lib, 1, |_| Ok(response(vec![release]))).unwrap();
+    let rows = list(&lib).unwrap();
+    assert!(rows[&1].date.is_none());
+    assert_eq!(rows[&1].work_date.as_deref(), Some("2002"));
 }
 
 fn fixture(lib: &Library, id: i64, serial: Option<&str>) {
@@ -174,7 +148,7 @@ fn online_results_survive_reopen_and_seed_new_offline_entries() {
     assert_eq!(
         refresh_with(&lib, 1, |s| {
             assert_eq!(s, "SCUS-94900");
-            Ok(vec![release.clone()])
+            Ok(response(vec![release.clone()]))
         })
         .unwrap(),
         RefreshOutcome::Updated
@@ -192,11 +166,22 @@ fn online_results_survive_reopen_and_seed_new_offline_entries() {
     assert_eq!(choices.len(), 1);
     assert_eq!(choices[0].title, "Source title");
     assert_eq!(
-        refresh_with(&lib, 1, |_| Ok(Vec::new())).unwrap(),
+        refresh_with(&lib, 1, |_| Ok(response(Vec::new()))).unwrap(),
         RefreshOutcome::NotFound
     );
     assert!(refresh_with(&lib, 1, |_| Err("offline".into())).is_err());
+    let raw = response(vec![release.clone()]).raw;
     assert_eq!(list(&lib).unwrap()[&1].release_id, Some(release.id));
+    let bytes: Vec<u8> = lib
+        .connect()
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM metadata_responses WHERE serial=?",
+            [TEST_SERIAL],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bytes, raw);
 }
 
 #[test]
@@ -212,7 +197,7 @@ fn conflicts_are_persistent_and_a_newer_manual_match_wins() {
     let a = downloaded("Q1", "Edition A");
     let b = downloaded("Q2", "Edition B");
     assert_eq!(
-        refresh_with(&lib, 1, |_| Ok(vec![a.clone(), b.clone()])).unwrap(),
+        refresh_with(&lib, 1, |_| Ok(response(vec![a.clone(), b.clone()]))).unwrap(),
         RefreshOutcome::Candidates
     );
     assert!(list(&lib).unwrap()[&1].pending);
@@ -220,28 +205,48 @@ fn conflicts_are_persistent_and_a_newer_manual_match_wins() {
     select(&lib, 1, &b.id).unwrap();
     assert!(!list(&lib).unwrap()[&1].pending);
     assert_eq!(
-        refresh_with(&lib, 1, |_| Ok(vec![a.clone(), b.clone()])).unwrap(),
+        refresh_with(&lib, 1, |_| Ok(response(vec![a.clone(), b.clone()]))).unwrap(),
         RefreshOutcome::Updated
     );
     assert_eq!(list(&lib).unwrap()[&1].title.as_deref(), Some("Edition B"));
 
+    let japanese = Release {
+        id: "Q20/SCPS-10031".into(),
+        serial: "SCPS-10031".into(),
+        region: "Japan".into(),
+        ..downloaded("Q20", "Edition JP")
+    };
+    let mut db = lib.connect().unwrap();
+    let tx = db.transaction().unwrap();
+    cache_releases(&tx, "SCPS-10031", &[japanese]).unwrap();
+    tx.commit().unwrap();
     let later = refresh_with(&lib, 1, |_| {
-        select(&lib, 1, "Q719176/SCPS-10031")?;
-        Ok(vec![a.clone()])
+        select(&lib, 1, "Q20/SCPS-10031")?;
+        Ok(response(vec![a.clone()]))
     });
     assert!(later.is_err());
     assert_eq!(
         list(&lib).unwrap()[&1].release_id.as_deref(),
-        Some("Q719176/SCPS-10031")
+        Some("Q20/SCPS-10031")
     );
 
     select(&lib, 1, &a.id).unwrap();
     let stale = refresh_with(&lib, 1, |_| {
-        refresh_with(&lib, 1, |_| Ok(vec![downloaded("Q1", "Latest")]))?;
-        Ok(vec![a.clone()])
+        refresh_with(&lib, 1, |_| Ok(response(vec![downloaded("Q1", "Latest")])))?;
+        Ok(response(vec![a.clone()]))
     });
     assert!(stale.is_err());
     assert_eq!(list(&lib).unwrap()[&1].title.as_deref(), Some("Latest"));
+    let stored: Vec<u8> = lib
+        .connect()
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM metadata_responses WHERE serial=?",
+            [TEST_SERIAL],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, response(vec![downloaded("Q1", "Latest")]).raw);
 }
 
 #[test]
@@ -270,7 +275,7 @@ fn v1_upgrade_preserves_user_edits_and_session_rows() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        2
+        3
     );
 }
 
@@ -298,7 +303,7 @@ fn shared_serial_is_fetched_once_and_applied_to_each_game_independently() {
                         .refresh_with(lib, id, Mode::Full, cancel, |key| {
                             count.fetch_add(1, Ordering::Relaxed);
                             assert_eq!(key, serial);
-                            Ok(vec![downloaded("Q100", "Shared lookup")])
+                            Ok(response(vec![downloaded("Q100", "Shared lookup")]))
                         })
                         .unwrap(),
                     RefreshOutcome::Updated
@@ -321,10 +326,9 @@ fn shared_serial_is_fetched_once_and_applied_to_each_game_independently() {
     );
     assert_eq!(
         Batch::default()
-            .refresh_with(&lib, 1, Mode::Full, &cancel, |_| Ok(vec![downloaded(
-                "Q100",
-                "Refreshed title"
-            )]))
+            .refresh_with(&lib, 1, Mode::Full, &cancel, |_| Ok(response(vec![
+                downloaded("Q100", "Refreshed title")
+            ])))
             .unwrap(),
         RefreshOutcome::Updated
     );
@@ -332,4 +336,80 @@ fn shared_serial_is_fetched_once_and_applied_to_each_game_independently() {
         list(&lib).unwrap()[&1].title.as_deref(),
         Some("Refreshed title")
     );
+}
+
+#[test]
+fn manual_serial_search_populates_candidates_before_selection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, None);
+    for query in [
+        "",
+        "My local image",
+        "/media/SLUS-00000.iso",
+        "SCUS-9",
+        "FAKE-12345",
+    ] {
+        assert!(
+            search_with(&lib, 1, query, |_| panic!("non-serial query sent upstream"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let choices = search_with(&lib, 1, " scus-94900 ", |s| {
+        assert_eq!(s, TEST_SERIAL);
+        Ok(response(vec![downloaded("Q1", "Test Adventure")]))
+    })
+    .unwrap();
+    assert_eq!(choices.len(), 1);
+    assert!(list(&lib).unwrap()[&1].release_id.is_none());
+    for query in ["scus-94900", "Adventure"] {
+        let cached = search_with(&lib, 1, query, |_| panic!("unexpected network access")).unwrap();
+        assert_eq!(cached[0].id, choices[0].id);
+    }
+    select(&lib, 1, &choices[0].id).unwrap();
+    assert_eq!(
+        list(&lib).unwrap()[&1].title.as_deref(),
+        Some("Test Adventure")
+    );
+}
+
+#[test]
+fn old_local_matches_keep_provenance_and_overrides_until_fetched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("index.db");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(crate::library::SCHEMA).unwrap();
+    db.execute_batch(SCHEMA).unwrap();
+    db.execute_batch(include_str!("online.sql")).unwrap();
+    db.execute_batch(include_str!("../covers/libretro.sql"))
+        .unwrap();
+    db.execute_batch(
+        "PRAGMA user_version=2;
+         INSERT INTO games(id,fallback_title) VALUES(1,'Local'),(2,'Unmatched');
+         INSERT INTO game_metadata(game_id,filename,release_id,release_serial,auto_region,
+             auto_title,auto_date,source,user_title,confirmed) VALUES
+             (1,'Local','Q1/SCUS-94900','SCUS-94900','USA','Saved title','2001','Old snapshot','Personal title',1);
+         INSERT INTO game_metadata(game_id,filename,pending) VALUES(2,'Unknown',1);",
+    ).unwrap();
+    drop(db);
+    let lib = Library::open(&path).unwrap();
+    let rows = list(&lib).unwrap();
+    assert_eq!(rows[&1].source.as_deref(), Some("Old snapshot"));
+    assert_eq!(rows[&1].title.as_deref(), Some("Personal title"));
+    assert!(!rows[&2].pending);
+    assert_eq!(candidates(&lib, 1, "Saved").unwrap().len(), 1);
+    fixture(&lib, 3, Some(TEST_SERIAL));
+    let rows = list(&lib).unwrap();
+    assert_eq!(rows[&3].title.as_deref(), Some("Saved title"));
+    assert_eq!(rows[&3].source.as_deref(), Some("Old snapshot"));
+    let updated = Batch::default()
+        .refresh_with(&lib, 1, Mode::Incremental, &AtomicBool::new(false), |_| {
+            Ok(response(vec![downloaded("Q1", "Online title")]))
+        })
+        .unwrap();
+    assert_eq!(updated, RefreshOutcome::Updated);
+    let rows = list(&lib).unwrap();
+    assert_eq!(rows[&1].title.as_deref(), Some("Personal title"));
+    assert_eq!(rows[&1].source.as_deref(), Some(LIVE));
 }

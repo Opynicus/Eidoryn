@@ -252,6 +252,24 @@ fn cover_settings_persist_provider_and_keep_custom_template(cx: &mut TestAppCont
         view.read_with(cx, |v, _| v.preferences.library.cover_provider),
         Provider::Libretro,
     );
+    click_control(cx, "lib-workers-up");
+    assert_eq!(
+        Preferences::load(&settings)
+            .unwrap()
+            .library
+            .scrape_workers
+            .get(),
+        4
+    );
+    click_control(cx, "lib-workers-down");
+    assert_eq!(
+        Preferences::load(&settings)
+            .unwrap()
+            .library
+            .scrape_workers
+            .get(),
+        3
+    );
     assert!(view.read_with(cx, |v, _| v.preferences.library.scrape_new_games));
     click_control(cx, "lib-scrape-new");
     assert!(
@@ -383,6 +401,14 @@ fn scrape_refreshes_all_games_and_only_new_imports(cx: &mut TestAppContext) {
         .scan_files(&[image("Third.iso", 4)], &AtomicBool::default(), |_| {})
         .unwrap();
     assert_eq!(view.read_with(cx, |v, _| v.library.entries.len()), 2);
+    let refresh = cx.debug_bounds("lib-refresh-all").unwrap();
+    assert_eq!(refresh.size, size(px(36.), px(36.)));
+    let hint = "tooltip-刷新所有游戏的发行资料和封面";
+    assert!(cx.debug_bounds(hint).is_none());
+    cx.simulate_mouse_move(refresh.center(), None, Modifiers::none());
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds(hint).is_some());
     click_control(cx, "lib-refresh-all");
     wait_for_batch(&view, cx, Mode::Full, 3);
 

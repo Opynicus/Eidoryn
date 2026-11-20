@@ -3,7 +3,7 @@ use super::{
     div, label, tasks::Picker,
 };
 use crate::desktop::components::pair;
-use eidoryn_psx::library::{covers, metadata};
+use eidoryn_psx::library::{covers, metadata, scrape::WorkerCount};
 use gpui::{Context, Div, Focusable, Window, prelude::*, px};
 
 impl Desktop {
@@ -34,7 +34,7 @@ impl Desktop {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { metadata::candidates(&store, id, &query) })
+                .spawn(async move { metadata::search_candidates(&store, id, &query) })
                 .await;
             let _ = this.update(cx, |v, cx| {
                 if generation == v.library.match_generation {
@@ -692,6 +692,34 @@ impl Desktop {
         cx.notify();
     }
 
+    fn scrape_concurrency_control(&self, cx: &Context<Self>) -> Div {
+        let current = self.preferences.library.scrape_workers;
+        let p = &self.themes.active().palette;
+        let step = |id: &'static str, sign: &'static str, delta: i64| {
+            let next = WorkerCount::from(i64::from(current.get()) + delta);
+            button(&self.fonts, p, id, sign, false)
+                .debug_selector(move || id.into())
+                .when(next == current, |b| {
+                    b.opacity(0.45).cursor_default().tab_index(-1)
+                })
+                .when(next != current, |b| {
+                    b.on_click(cx.listener(move |view, _, _, cx| {
+                        view.preferences.library.scrape_workers = next;
+                        view.save_preferences();
+                        cx.notify();
+                    }))
+                })
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(self.tr(Text::LibraryScrapeConcurrency))
+            .child(step("lib-workers-down", "−", -1))
+            .child(label(p, current.get().to_string()))
+            .child(step("lib-workers-up", "+", 1))
+    }
+
     pub(super) fn cover_settings(&self, cx: &Context<Self>) -> Div {
         use covers::Provider;
         let p = self.themes.active().palette;
@@ -762,6 +790,7 @@ impl Desktop {
             Provider::Igdb => block.child(label(&p, self.tr(Text::LibraryIgdbCredentials))),
             Provider::Libretro => block,
         };
+        block = block.child(self.scrape_concurrency_control(cx));
         block = block.child(self.library_button(
             "lib-scrape-new",
             Text::LibraryScrapeNewGames,

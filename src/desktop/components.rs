@@ -183,6 +183,7 @@ impl gpui::Render for Tooltip {
         _: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         div()
+            .debug_selector(|| format!("tooltip-{}", self.text))
             .px_3()
             .py_2()
             .rounded_md()

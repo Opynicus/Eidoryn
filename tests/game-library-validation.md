@@ -4,7 +4,7 @@ Validated on Linux x86-64, kernel 7.3.4-1-cachyos, AMD Ryzen 9 8945H, 32 GB RAM 
 
 ## Offline import and launch
 
-Added a generated, BIOS-independent ISO, the multi-track US Castlevania CUE and a US Resident Evil 2 CHD to an empty library. Selecting the CUE's BIN files in the same batch produced three launch entries. A second import returned three existing entries, and reopening the database retained all three with zero seconds and no last-played timestamp. The scanner extracted SLUS-00067 and SLUS-00421 from the two retail discs. Both were outside the bundled catalog, and the cards retained their filenames.
+Added a generated, BIOS-independent ISO, the multi-track US Castlevania CUE and a US Resident Evil 2 CHD to an empty library. Selecting the CUE's BIN files in the same batch produced three launch entries. A second import returned three existing entries, and reopening the database retained all three with zero seconds and no last-played timestamp. The scanner extracted SLUS-00067 and SLUS-00421 from the two retail discs. In this offline import the cards initially displayed their filenames.
 
 The runner integration test starts the generated ISO, attempts to reopen a missing image while the game is running, pauses, steps and exits. It verifies the original media receipt and the single persistent game association. Index coverage also includes grouping, relocation, removal, reimport, changed media and incremental scanning. See [index acceptance and 1,000-image measurements](library-index-validation.md), [metadata and artwork validation](library-metadata-validation.md) and [desktop interaction and scrolling](library-ui-validation.md).
 

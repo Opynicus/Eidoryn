@@ -425,6 +425,23 @@ fn live_library_batch_full_and_incremental_smoke() {
         thumbnail.clone()
     };
     let first = run(scrape::Mode::Full);
+    let raw: Vec<u8> = lib
+        .connect()
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM metadata_responses WHERE serial=?",
+            [SERIAL],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let response: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    assert!(
+        response["results"]["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["title"]["value"] == "Crash Bandicoot")
+    );
     assert_eq!(run(scrape::Mode::Incremental), first);
     let refreshed = run(scrape::Mode::Full);
     assert_ne!(refreshed, first);

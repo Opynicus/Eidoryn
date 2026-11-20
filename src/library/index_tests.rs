@@ -255,8 +255,16 @@ fn candidate_copies_are_independent_until_verified() {
 #[test]
 fn unresolved_metadata_survives_incremental_rescans() {
     let f = Fixture::new();
-    f.image("Crash Bandicoot.iso", 3);
-    assert_eq!(f.scan().pending, 1); // name-only catalog candidate
+    f.db.connect()
+        .unwrap()
+        .execute(
+            "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date)
+         VALUES('Q1/SCUS-00001','SCUS-00001','USA','Test Adventure','','','')",
+            [],
+        )
+        .unwrap();
+    f.image("Test Adventure.iso", 3);
+    assert_eq!(f.scan().pending, 1); // name-only cached candidate
     let cached = f.scan();
     assert_eq!((cached.existing, cached.pending), (1, 1));
 }

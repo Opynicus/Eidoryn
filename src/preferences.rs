@@ -2,7 +2,10 @@
 use crate::{
     i18n::Language,
     keybindings::KeyBindings,
-    library::covers::{DEFAULT_TEMPLATE, Provider},
+    library::{
+        covers::{DEFAULT_TEMPLATE, Provider},
+        scrape::WorkerCount,
+    },
     systems::ps1::{
         bus::BIOS_SIZE,
         gpu::{AntiAliasing, ColorDepth, RenderScale, RendererMode},
@@ -32,6 +35,7 @@ pub struct LibraryPreferences {
     pub list: bool,
     pub auto_covers: bool,
     pub scrape_new_games: bool,
+    pub scrape_workers: WorkerCount,
     pub cover_provider: Provider,
     pub cover_template: String,
 }
@@ -42,6 +46,7 @@ struct SavedLibraryPreferences {
     list: bool,
     auto_covers: bool,
     scrape_new_games: Option<bool>,
+    scrape_workers: WorkerCount,
     cover_provider: Option<Provider>,
     cover_template: Option<String>,
 }
@@ -63,6 +68,7 @@ impl From<SavedLibraryPreferences> for LibraryPreferences {
             list: saved.list,
             auto_covers: saved.auto_covers,
             scrape_new_games: saved.scrape_new_games.unwrap_or(true),
+            scrape_workers: saved.scrape_workers,
             cover_provider: provider,
             cover_template: template,
         }
@@ -321,6 +327,27 @@ mod tests {
             serde_json::from_value::<LibraryPreferences>(saved).unwrap(),
             selected
         );
+    }
+
+    #[test]
+    fn scrape_concurrency_migrates_clamps_and_round_trips() {
+        assert_eq!(
+            serde_json::from_str::<LibraryPreferences>("{}")
+                .unwrap()
+                .scrape_workers
+                .get(),
+            3
+        );
+        for (saved, count) in [(-1, 1), (0, 1), (1, 1), (8, 8), (20, 20), (300, 20)] {
+            let json = serde_json::json!({"scrape_workers": saved, "list": true});
+            let prefs: LibraryPreferences = serde_json::from_value(json).unwrap();
+            assert_eq!(prefs.scrape_workers.get(), count);
+            assert!(prefs.list);
+            assert_eq!(
+                serde_json::to_value(prefs).unwrap()["scrape_workers"],
+                count
+            );
+        }
     }
 
     #[test]

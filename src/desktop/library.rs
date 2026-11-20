@@ -7,7 +7,7 @@ mod tests;
 
 use super::{
     Desktop,
-    components::{button, card, label},
+    components::{button, card, icon_button, label},
     icons::icon,
     text_input::TextInput,
 };
@@ -462,19 +462,21 @@ impl Desktop {
                 .debug_selector(|| "library-add-folder".into()),
             )
             .when(!self.library.entries.is_empty(), |s| {
+                let hint = self.tr(Text::LibraryRefreshAllHint);
                 s.child(
-                    self.library_button(
-                        "lib-refresh-all",
-                        Text::LibraryRefreshAll,
-                        false,
-                        cx,
-                        |v, _, cx| v.refresh_library_data(cx),
-                    )
-                    .opacity(if self.library.scraping.full_requested() {
-                        0.5
-                    } else {
-                        1.0
-                    }),
+                    icon_button(&p, "lib-refresh-all", "reset", hint)
+                        .debug_selector(|| "lib-refresh-all".into())
+                        .role(gpui::Role::Button)
+                        .aria_label(hint)
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.refresh_library_data(cx);
+                            cx.stop_propagation();
+                        }))
+                        .opacity(if self.library.scraping.full_requested() {
+                            0.5
+                        } else {
+                            1.0
+                        }),
                 )
             })
             .when(!self.library.roots.is_empty(), |s| {

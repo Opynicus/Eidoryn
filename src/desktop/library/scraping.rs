@@ -154,17 +154,21 @@ impl Desktop {
         state.last = None;
         let prefs = &self.preferences.library;
         let provider = prefs.cover_provider;
+        let workers = prefs.scrape_workers;
         let template = prefs.cover_template.clone();
         cx.spawn(async move |this, cx| {
             let (report, cancelled) = cx
                 .background_executor()
                 .spawn(async move {
-                    let report = scrape::run(
+                    let report = scrape::run_with_options(
                         &store,
                         &ids_to_run,
-                        mode,
-                        provider,
-                        &template,
+                        scrape::Options {
+                            mode,
+                            provider,
+                            template: &template,
+                            workers,
+                        },
                         &cancel,
                         |finished, _| {
                             done.store(finished, Ordering::Relaxed);

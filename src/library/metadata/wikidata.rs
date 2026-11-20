@@ -1,18 +1,19 @@
 //! Query the source catalog by PS1 serial and preserve the reported date precision.
 use super::{Release, valid_date};
-use crate::library::http_retry::{retry_deadline, seconds};
+use crate::library::http_retry::RequestLimit;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
-    sync::atomic::{AtomicI64, Ordering},
-    time::{Duration, SystemTime},
+    sync::atomic::AtomicBool,
+    time::Duration,
 };
 
 const ENDPOINT: &str = "https://query.wikidata.org/sparql";
 const MAX_RESPONSE: u64 = 1024 * 1024;
-static RETRY_AFTER: AtomicI64 = AtomicI64::new(0);
+// The public Wikidata Query Service accepts five concurrent queries per IP.
+static REQUESTS: RequestLimit = RequestLimit::new(5, Duration::ZERO);
 const RATE_LIMITED: &str = "Wikidata rate limit reached. Retry later.";
 
 // The serial and all substitutions below come from checked identifiers and fixed tables.
@@ -81,8 +82,13 @@ fn territory(serial: &str) -> Result<Territory, String> {
     })
 }
 
+pub(super) fn is_supported_serial(serial: &str) -> bool {
+    territory(serial).is_ok()
+}
+
 fn query(serial: &str, territory: &Territory) -> String {
-    // Individually reviewed unqualified identifiers from the bundled catalog generator.
+    // These reviewed disc identifiers also occur on works listing later ports.
+    // This allows lookup of their live records when the serial statement omits a platform.
     let reviewed = match serial {
         "SCES-00344" | "SCPS-10031" | "SCUS-94900" => "wd:Q719176",
         "SCES-00001" | "SLPS-00001" | "SCUS-94300" => "wd:Q15087581",
@@ -211,11 +217,19 @@ fn parse(bytes: &[u8], serial: &str, region: &str) -> Result<Vec<Release>, Strin
     Ok(releases)
 }
 
-pub(super) fn fetch(serial: &str) -> Result<Vec<Release>, String> {
+#[derive(Debug)]
+pub(super) struct Download {
+    pub(super) releases: Vec<Release>,
+    pub(super) raw: Vec<u8>,
+}
+
+pub(super) fn fetch(serial: &str) -> Result<Download, String> {
+    fetch_cancellable(serial, &AtomicBool::new(false))
+}
+
+pub(super) fn fetch_cancellable(serial: &str, cancel: &AtomicBool) -> Result<Download, String> {
     let territory = territory(serial)?;
-    if RETRY_AFTER.load(Ordering::Relaxed) > seconds(SystemTime::now()) {
-        return Err(RATE_LIMITED.into());
-    }
+    let _permit = REQUESTS.acquire(cancel)?;
     let response = Client::builder()
         .https_only(true)
         .connect_timeout(Duration::from_secs(5))
@@ -238,14 +252,7 @@ pub(super) fn fetch(serial: &str) -> Result<Vec<Release>, String> {
         })
         .map_err(|e| format!("Wikidata request failed: {}", e.without_url()))?;
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        let after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|h| h.to_str().ok());
-        RETRY_AFTER.fetch_max(
-            retry_deadline(after, seconds(SystemTime::now())),
-            Ordering::Relaxed,
-        );
+        REQUESTS.defer(&response);
         return Err(RATE_LIMITED.into());
     }
     let response = response
@@ -259,7 +266,11 @@ pub(super) fn fetch(serial: &str) -> Result<Vec<Release>, String> {
     if bytes.len() as u64 > MAX_RESPONSE {
         return Err("Wikidata response exceeded 1 MiB".into());
     }
-    parse(&bytes, serial, territory.region)
+    let releases = parse(&bytes, serial, territory.region)?;
+    Ok(Download {
+        releases,
+        raw: bytes,
+    })
 }
 
 #[cfg(test)]
@@ -319,7 +330,15 @@ mod tests {
     #[test]
     #[ignore = "requires the public Wikidata Query Service"]
     fn live_wikidata_serial_metadata() {
-        let releases = fetch("SCUS-94900").unwrap();
+        let Download { releases, raw } = fetch("SCUS-94900").unwrap();
+        let response: Response = serde_json::from_slice(&raw).unwrap();
+        assert!(
+            response
+                .results
+                .bindings
+                .iter()
+                .any(|row| row.title.value == "Crash Bandicoot")
+        );
         let crash = releases
             .iter()
             .find(|r| r.id == "Q719176/SCUS-94900")

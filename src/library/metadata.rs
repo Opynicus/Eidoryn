@@ -1,17 +1,16 @@
-//! Bundled and downloaded PlayStation release records and per-field user corrections.
+//! PlayStation release metadata in the user library and per-field user corrections.
 mod wikidata;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 use super::{Library, scrape::Mode};
 
 pub(super) const SCHEMA: &str = include_str!("metadata/schema.sql");
-const SNAPSHOT: &str = "Wikidata/PS1/2026-11-20";
 
 const LIVE: &str = "Wikidata (online)";
 
@@ -24,38 +23,6 @@ pub struct Release {
     pub date: String,
     aliases: String,
     work_date: String,
-}
-
-// Every line is validated by the catalog test, including IDs, date precision and aliases.
-static CATALOG: LazyLock<Vec<Release>> = LazyLock::new(|| {
-    include_str!("metadata/ps1.tsv")
-        .lines()
-        .map(|line| {
-            let mut fields = line.split('\t');
-            let mut next = || {
-                fields
-                    .next()
-                    .expect("bundled release has seven fields")
-                    .to_owned()
-            };
-            Release {
-                id: next(),
-                serial: next(),
-                region: next(),
-                title: next(),
-                date: next(),
-                aliases: next(),
-                work_date: next(),
-            }
-        })
-        .collect()
-});
-
-impl Release {
-    fn names(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.title.as_str())
-            .chain(self.aliases.split('|').filter(|name| !name.is_empty()))
-    }
 }
 
 #[derive(Debug)]
@@ -106,6 +73,11 @@ fn title_hint(title: &str) -> String {
 }
 
 impl Release {
+    fn names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.title.as_str())
+            .chain(self.aliases.split('|').filter(|name| !name.is_empty()))
+    }
+
     fn suggested(&self, serial: Option<&str>, normalized_hint: &str) -> bool {
         Some(self.serial.as_str()) == serial
             || (!normalized_hint.is_empty()
@@ -167,21 +139,58 @@ fn match_evidence(
         .map(|s| cached_for(conn, s))
         .transpose()?
         .unwrap_or_default();
-    let (rows, source) = if cached.is_empty() {
-        (CATALOG.as_slice(), SNAPSHOT)
+    if let Some(release) = matching_serial(&cached, serial, region) {
+        assign(conn, id, &release.id, false)?;
     } else {
-        (cached.as_slice(), LIVE)
-    };
-    let release = matching_serial(rows, serial, region);
-    if let Some(release) = release {
-        assign(conn, id, release, source, false)?;
-    } else {
-        let hint = title_hint(title);
-        let pending = rows.iter().any(|r| r.suggested(serial, &hint));
+        // A title or alias is only a suggestion. Never assign an edition from a filename.
+        let pending = !cached.is_empty() || has_title_candidate(conn, &title_hint(title))?;
         conn.execute(
             "UPDATE game_metadata SET pending=? WHERE game_id=?",
             params![pending, id],
         )?;
+    }
+    Ok(())
+}
+
+fn has_title_candidate(conn: &Connection, hint: &str) -> rusqlite::Result<bool> {
+    if hint.is_empty() {
+        return Ok(false);
+    }
+    let mut stmt = conn.prepare_cached("SELECT title,aliases FROM fetched_releases")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let title = row.get_ref(0)?.as_str()?;
+        let aliases = row.get_ref(1)?.as_str()?;
+        if std::iter::once(title)
+            .chain(aliases.split('|'))
+            .any(|n| n.to_lowercase() == hint)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(super) fn migrate_local_cache(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(include_str!("metadata/local_cache.sql"))?;
+    // Unassigned name-only matches in older libraries could refer to an edition
+    // the user never fetched or saved. Re-evaluate them against their own cache.
+    let mut stmt = tx.prepare(
+        "SELECT game_id,disc_serial,disc_region,filename FROM game_metadata
+         WHERE pending AND NOT confirmed AND release_id IS NULL",
+    )?;
+    let pending = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, serial, region, title) in pending {
+        match_evidence(tx, id, serial.as_deref(), region.as_deref(), &title)?;
     }
     Ok(())
 }
@@ -197,28 +206,17 @@ pub(super) fn needs_match(conn: &Connection, id: i64) -> rusqlite::Result<bool> 
 fn assign(
     conn: &Connection,
     id: i64,
-    release: &Release,
-    source: &str,
+    release_id: &str,
     confirmed: bool,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<usize> {
     conn.execute(
-        "UPDATE game_metadata SET release_id=?2, release_serial=?3, auto_title=?4, auto_region=?5,
-         auto_date=NULLIF(?6,''), aliases=?7, source=?8, refreshed=unixepoch(), confirmed=?9,
-         work_date=NULLIF(?10,''), pending=0 WHERE game_id=?1",
-        params![
-            id,
-            release.id,
-            release.serial,
-            release.title,
-            release.region,
-            release.date,
-            release.aliases,
-            source,
-            confirmed,
-            release.work_date
-        ],
-    )?;
-    Ok(())
+        "UPDATE game_metadata SET release_id=r.id, release_serial=r.serial,
+            auto_title=r.title, auto_region=r.region, auto_date=NULLIF(r.date,''),
+            aliases=r.aliases, source=r.source, refreshed=unixepoch(), confirmed=?3,
+            work_date=NULLIF(r.work_date,''), pending=0
+         FROM fetched_releases AS r WHERE game_metadata.game_id=?1 AND r.id=?2",
+        params![id, release_id, confirmed],
+    )
 }
 
 struct Evidence {
@@ -246,29 +244,6 @@ fn evidence(conn: &Connection, id: i64) -> rusqlite::Result<Evidence> {
     )
 }
 
-fn release_by_id(
-    conn: &Connection,
-    key: &str,
-) -> rusqlite::Result<Option<(Release, &'static str)>> {
-    let cached = conn
-        .query_row(
-            "SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases WHERE id=?",
-            [key],
-            Release::from_row,
-        )
-        .optional()?;
-    if let Some(cached) = cached {
-        return Ok(Some((cached, LIVE)));
-    }
-    let Some(bundled) = CATALOG.iter().find(|r| r.id == key) else {
-        return Ok(None);
-    };
-    let superseded = conn
-        .prepare_cached("SELECT 1 FROM fetched_releases WHERE serial=?")?
-        .exists([&bundled.serial])?;
-    Ok((!superseded).then(|| (bundled.clone(), SNAPSHOT)))
-}
-
 pub fn refresh(lib: &Library, id: i64) -> Result<(), String> {
     let mut conn = lib.connect()?;
     let tx = conn
@@ -276,9 +251,7 @@ pub fn refresh(lib: &Library, id: i64) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let evidence = evidence(&tx, id).map_err(|e| e.to_string())?;
     if let Some(key) = evidence.selected {
-        if let Some((release, source)) = release_by_id(&tx, &key).map_err(|e| e.to_string())? {
-            assign(&tx, id, &release, source, true).map_err(|e| e.to_string())?;
-        }
+        assign(&tx, id, &key, true).map_err(|e| e.to_string())?;
     } else {
         match_evidence(
             &tx,
@@ -308,7 +281,7 @@ pub fn refresh_online(lib: &Library, id: i64) -> Result<RefreshOutcome, String> 
 fn refresh_with(
     lib: &Library,
     id: i64,
-    fetch: impl FnOnce(&str) -> Result<Vec<Release>, String>,
+    fetch: impl FnOnce(&str) -> Result<wikidata::Download, String>,
 ) -> Result<RefreshOutcome, String> {
     apply_lookup(lib, id, |conn, serial| download_serial(conn, serial, fetch))
 }
@@ -330,7 +303,9 @@ impl Batch {
         mode: Mode,
         cancel: &AtomicBool,
     ) -> Result<RefreshOutcome, String> {
-        self.refresh_with(lib, id, mode, cancel, wikidata::fetch)
+        self.refresh_with(lib, id, mode, cancel, |serial| {
+            wikidata::fetch_cancellable(serial, cancel)
+        })
     }
 
     fn refresh_with(
@@ -339,7 +314,7 @@ impl Batch {
         id: i64,
         mode: Mode,
         cancel: &AtomicBool,
-        fetch: impl FnOnce(&str) -> Result<Vec<Release>, String>,
+        fetch: impl FnOnce(&str) -> Result<wikidata::Download, String>,
     ) -> Result<RefreshOutcome, String> {
         apply_lookup(lib, id, |conn, serial| {
             let lookup = self
@@ -352,8 +327,10 @@ impl Batch {
             let found = lookup.get_or_init(|| {
                 if mode == Mode::Incremental
                     && conn
-                        .prepare_cached("SELECT 1 FROM fetched_releases WHERE serial=?")
-                        .and_then(|mut q| q.exists([serial]))
+                        .prepare_cached(
+                            "SELECT 1 FROM fetched_releases WHERE serial=?1 AND source=?2",
+                        )
+                        .and_then(|mut q| q.exists([serial, LIVE]))
                         .map_err(|e| e.to_string())?
                 {
                     return Ok(true);
@@ -380,7 +357,7 @@ impl Batch {
 fn download_serial(
     conn: &mut Connection,
     serial: &str,
-    fetch: impl FnOnce(&str) -> Result<Vec<Release>, String>,
+    fetch: impl FnOnce(&str) -> Result<wikidata::Download, String>,
 ) -> Result<bool, String> {
     let revision: i64 = conn
         .query_row(
@@ -390,8 +367,8 @@ fn download_serial(
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    let releases = fetch(serial)?;
-    if releases.is_empty() {
+    let download = fetch(serial)?;
+    if download.releases.is_empty() {
         return Ok(false);
     }
     let tx = conn
@@ -407,7 +384,13 @@ fn download_serial(
     if current != revision {
         return Err("A newer metadata request superseded this one".into());
     }
-    cache_releases(&tx, serial, &releases).map_err(|e| e.to_string())?;
+    cache_releases(&tx, serial, &download.releases).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO metadata_responses(serial,payload,fetched_at) VALUES(?1,?2,unixepoch())
+         ON CONFLICT(serial) DO UPDATE SET payload=excluded.payload,fetched_at=excluded.fetched_at",
+        params![serial, download.raw],
+    )
+    .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -440,7 +423,7 @@ fn apply_lookup(
         matching_serial(&releases, Some(&serial), evidence.region.as_deref())
     };
     let outcome = if let Some(release) = release {
-        assign(&tx, id, release, LIVE, evidence.selected.is_some()).map_err(|e| e.to_string())?;
+        assign(&tx, id, &release.id, evidence.selected.is_some()).map_err(|e| e.to_string())?;
         RefreshOutcome::Updated
     } else {
         tx.execute("UPDATE game_metadata SET pending=1 WHERE game_id=?", [id])
@@ -479,34 +462,54 @@ pub fn candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, S
     let conn = lib.connect()?;
     let evidence = evidence(&conn, id).map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases")
+        .prepare("SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases ORDER BY id")
         .map_err(|e| e.to_string())?;
-    let fetched: Vec<Release> = stmt
-        .query_map([], Release::from_row)
-        .and_then(Iterator::collect)
-        .map_err(|e| e.to_string())?;
-    let fetched_serials: std::collections::HashSet<&str> =
-        fetched.iter().map(|r| r.serial.as_str()).collect();
     let needle = query.trim().to_lowercase();
     let hint = title_hint(&evidence.filename);
-    let matches = |r: &&Release| {
-        if needle.is_empty() {
-            r.suggested(evidence.serial.as_deref(), &hint)
+    let mut candidates = Vec::new();
+    for row in stmt
+        .query_map([], Release::from_row)
+        .map_err(|e| e.to_string())?
+    {
+        let release = row.map_err(|e| e.to_string())?;
+        let matches = if needle.is_empty() {
+            release.suggested(evidence.serial.as_deref(), &hint)
         } else {
-            r.serial.to_lowercase().contains(&needle)
-                || r.names().any(|n| n.to_lowercase().contains(&needle))
+            release.serial.to_lowercase().contains(&needle)
+                || release
+                    .names()
+                    .any(|name| name.to_lowercase().contains(&needle))
+        };
+        if matches {
+            candidates.push(release);
         }
-    };
-    // A network result for a serial supersedes that serial's snapshot candidates.
-    let mut rows: Vec<_> = CATALOG
-        .iter()
-        .filter(|r| !fetched_serials.contains(r.serial.as_str()))
-        .chain(fetched.iter())
-        .filter(matches)
-        .cloned()
-        .collect();
-    rows.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(rows)
+    }
+    Ok(candidates)
+}
+
+/// Search the local release cache, querying Wikidata for an uncached, complete disc serial.
+pub fn search_candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, String> {
+    search_with(lib, id, query, wikidata::fetch)
+}
+
+fn search_with(
+    lib: &Library,
+    id: i64,
+    query: &str,
+    fetch: impl FnOnce(&str) -> Result<wikidata::Download, String>,
+) -> Result<Vec<Release>, String> {
+    let serial = query.trim().to_ascii_uppercase();
+    if wikidata::is_supported_serial(&serial) {
+        let mut conn = lib.connect()?;
+        let cached = conn
+            .prepare_cached("SELECT 1 FROM fetched_releases WHERE serial=?")
+            .and_then(|mut stmt| stmt.exists([&serial]))
+            .map_err(|e| e.to_string())?;
+        if !cached {
+            download_serial(&mut conn, &serial, fetch)?;
+        }
+    }
+    candidates(lib, id, query)
 }
 
 pub fn select(lib: &Library, id: i64, release_id: &str) -> Result<(), String> {
@@ -514,10 +517,9 @@ pub fn select(lib: &Library, id: i64, release_id: &str) -> Result<(), String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    let (release, source) = release_by_id(&tx, release_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Unknown release")?;
-    assign(&tx, id, &release, source, true).map_err(|e| e.to_string())?;
+    if assign(&tx, id, release_id, true).map_err(|e| e.to_string())? == 0 {
+        return Err("Unknown game or cached release".into());
+    }
     tx.commit().map_err(|e| e.to_string())
 }
 

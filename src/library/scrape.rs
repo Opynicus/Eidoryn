@@ -1,6 +1,6 @@
 //! Background scraping of release metadata and regional cover art.
+use serde::{Deserialize, Serialize};
 use std::sync::{
-    Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc,
 };
@@ -31,11 +31,41 @@ enum Outcome {
     Failed(String),
 }
 
-// Keep some network requests in flight without allocating a thread per game.
-const WORKERS: usize = 3;
+/// Number of game entries that a single batch can process concurrently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "i64")]
+pub struct WorkerCount(u8);
 
-/// Run on a background executor. Progress is delivered sequentially on the calling thread.
-/// Cancelling stops new work and lets pending network requests reach their timeout.
+impl WorkerCount {
+    pub const MAX: u8 = 20;
+
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl From<i64> for WorkerCount {
+    fn from(value: i64) -> Self {
+        Self(value.clamp(1, i64::from(Self::MAX)) as u8)
+    }
+}
+
+impl Default for WorkerCount {
+    fn default() -> Self {
+        Self(3)
+    }
+}
+
+/// Settings captured when a batch starts.
+#[derive(Clone, Copy, Debug)]
+pub struct Options<'a> {
+    pub mode: Mode,
+    pub provider: covers::Provider,
+    pub template: &'a str,
+    pub workers: WorkerCount,
+}
+
+/// Run a batch using the default worker count.
 pub fn run(
     lib: &Library,
     ids: &[i64],
@@ -45,10 +75,37 @@ pub fn run(
     cancel: &AtomicBool,
     progress: impl FnMut(usize, usize),
 ) -> Report {
+    run_with_options(
+        lib,
+        ids,
+        Options {
+            mode,
+            provider,
+            template,
+            workers: WorkerCount::default(),
+        },
+        cancel,
+        progress,
+    )
+}
+
+/// Run on a background executor. Progress is delivered sequentially on the calling thread.
+/// Cancelling stops new work and lets pending network requests reach their timeout.
+pub fn run_with_options(
+    lib: &Library,
+    ids: &[i64],
+    options: Options<'_>,
+    cancel: &AtomicBool,
+    progress: impl FnMut(usize, usize),
+) -> Report {
+    let Options {
+        mode,
+        provider,
+        template,
+        workers,
+    } = options;
     let metadata = metadata::Batch::default();
-    // ScreenScraper's standard accounts allow one simultaneous media request.
-    let screenscraper = Mutex::new(());
-    dispatch(ids, cancel, progress, |id| {
+    dispatch(ids, workers, cancel, progress, |id| {
         let release = metadata.refresh(lib, id, mode, cancel);
         if matches!(
             release,
@@ -59,11 +116,6 @@ pub fn run(
         if cancel.load(Ordering::Relaxed) {
             return Outcome::Skipped;
         }
-        let _permit = (provider == covers::Provider::ScreenScraper).then(|| {
-            screenscraper
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
         let cover = covers::scrape(lib, id, provider, template, mode, cancel);
         if release == Ok(metadata::RefreshOutcome::NotFound) && cover.as_deref() == Ok("not_found")
         {
@@ -93,6 +145,7 @@ pub fn run(
 
 fn dispatch(
     ids: &[i64],
+    workers: WorkerCount,
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, usize),
     job: impl Fn(i64) -> Outcome + Sync,
@@ -111,7 +164,7 @@ fn dispatch(
     let next = AtomicUsize::new(0);
     thread::scope(|scope| {
         let (send, recv) = mpsc::channel();
-        for _ in 0..WORKERS.min(ids.len()) {
+        for _ in 0..usize::from(workers.get()).min(ids.len()) {
             let send = send.clone();
             let ids = &ids;
             let next = &next;
@@ -150,7 +203,7 @@ fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Barrier;
+    use std::sync::{Barrier, Mutex};
 
     #[test]
     fn incremental_run_reuses_metadata_and_cover_cache_only_for_given_games() {
@@ -193,12 +246,13 @@ mod tests {
 
     #[test]
     fn workers_overlap_and_visit_only_distinct_requested_entries() {
-        let barrier = Barrier::new(WORKERS);
+        let barrier = Barrier::new(3);
         let seen = Mutex::new(Vec::new());
         let mut progress = Vec::new();
         let cancel = AtomicBool::new(false);
         let report = dispatch(
             &[5, 2, 5, 1],
+            WorkerCount::default(),
             &cancel,
             |n, total| progress.push((n, total)),
             |id| {
@@ -220,6 +274,39 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_uses_the_configured_number_of_workers() {
+        use std::{collections::HashSet, sync::Condvar, time::Duration};
+
+        for limit in [1, 7, 20] {
+            let workers = WorkerCount::from(limit);
+            let expected = usize::from(workers.get());
+            let ids: Vec<_> = (1..=limit * 2).collect();
+            let reached = Condvar::new();
+            let threads = Mutex::new(HashSet::new());
+            let report = dispatch(
+                &ids,
+                workers,
+                &AtomicBool::new(false),
+                |_, _| {},
+                |_| {
+                    let mut threads = threads.lock().unwrap();
+                    threads.insert(thread::current().id());
+                    reached.notify_all();
+                    let (threads, _) = reached
+                        .wait_timeout_while(threads, Duration::from_secs(3), |ids| {
+                            ids.len() < expected
+                        })
+                        .unwrap();
+                    assert_eq!(threads.len(), expected, "worker limit {limit}");
+                    Outcome::Done
+                },
+            );
+            assert_eq!(report.finished, ids.len());
+            assert_eq!(threads.into_inner().unwrap().len(), expected);
+        }
+    }
+
+    #[test]
     fn cancellation_stops_the_queue_and_joins_in_flight_workers() {
         let cancel = AtomicBool::new(false);
         let started = AtomicUsize::new(0);
@@ -227,6 +314,7 @@ mod tests {
         ids.push(1);
         let report = dispatch(
             &ids,
+            WorkerCount::default(),
             &cancel,
             |_, _| {},
             |_| {
@@ -235,7 +323,7 @@ mod tests {
                 Outcome::Done
             },
         );
-        assert!(started.load(Ordering::Relaxed) <= WORKERS);
+        assert!(started.load(Ordering::Relaxed) <= 3);
         assert_eq!((report.finished, report.total), (0, 99));
     }
 }

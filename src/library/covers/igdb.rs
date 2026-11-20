@@ -2,13 +2,17 @@
 //! Its covers have no platform field, so a shared multi-platform entry cannot
 //! establish that the image is the PlayStation box.
 
-use std::io::Read;
+use std::{io::Read, sync::atomic::AtomicBool, time::Duration};
 
 use reqwest::Url;
 use reqwest::blocking::{Client, Response};
 use serde::Deserialize;
 
 use super::Lookup;
+use crate::library::http_retry::RequestLimit;
+
+// The IGDB API allows four requests per second and eight simultaneous connections.
+static REQUESTS: RequestLimit = RequestLimit::new(8, Duration::from_millis(250));
 
 const GAMES: &str = "https://api.igdb.com/v4/games";
 const MAX_RESULTS: usize = 50;
@@ -56,7 +60,12 @@ struct Cover {
     image_id: String,
 }
 
-pub(super) fn resolve(client: &Client, title: &str, region: &str) -> Result<Lookup, String> {
+pub(super) fn resolve(
+    client: &Client,
+    title: &str,
+    region: &str,
+    cancel: &AtomicBool,
+) -> Result<Lookup, String> {
     let title = title.trim();
     let Some(query) = query(title) else {
         return Ok(Lookup::Missing);
@@ -68,14 +77,19 @@ pub(super) fn resolve(client: &Client, title: &str, region: &str) -> Result<Look
             .filter(|v| !v.trim().is_empty())
             .ok_or(configured)
     };
-    let response = client
+    let request = client
         .post(GAMES)
         .header("Client-ID", credential("EIDORYN_IGDB_CLIENT_ID")?)
         .bearer_auth(credential("EIDORYN_IGDB_ACCESS_TOKEN")?)
         .header("Accept", "application/json")
-        .body(query)
+        .body(query);
+    let _permit = REQUESTS.acquire(cancel)?;
+    let response = request
         .send()
         .map_err(|error| format!("IGDB request failed: {}", error.without_url()))?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        REQUESTS.defer(&response);
+    }
     lookup(response, title, region)
 }
 

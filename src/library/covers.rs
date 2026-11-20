@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use super::{
     Library,
-    http_retry::{RETRY_SECONDS, retry_deadline, seconds},
+    http_retry::{RETRY_SECONDS, RequestLimit, retry_deadline, seconds},
     scrape::Mode,
 };
 
@@ -45,6 +45,9 @@ const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PIXELS: u64 = 16 * 1024 * 1024;
 const THUMB_SIZE: u32 = 256;
 const NOT_FOUND_SECONDS: i64 = 86_400;
+
+// ScreenScraper's standard account allowance is shared by batch and individual lookups.
+static SCREENSCRAPER_REQUESTS: RequestLimit = RequestLimit::new(1, Duration::ZERO);
 
 fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
@@ -435,12 +438,15 @@ fn fetch_edition(
         Remote::Matching(serial)
     };
     let key = provider_key(provider, template, serial, title, region)?;
+    let _permit = (provider == Provider::ScreenScraper)
+        .then(|| SCREENSCRAPER_REQUESTS.acquire(cancel))
+        .transpose()?;
     fetch_url(lib, id, art, &key, cancel, || {
         let client = http_client(reqwest::redirect::Policy::none())?;
         let result = match provider {
             Provider::Libretro => libretro::resolve(lib, &client, serial, region, cancel)?,
             Provider::ScreenScraper => screenscraper::resolve(&client, serial, region)?,
-            Provider::Igdb => igdb::resolve(&client, title, region)?,
+            Provider::Igdb => igdb::resolve(&client, title, region, cancel)?,
             Provider::Custom => Lookup::Image(key.clone()),
         };
         check_cancel(cancel)?;
