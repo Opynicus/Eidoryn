@@ -1,5 +1,6 @@
 use super::{Desktop, components::button};
 use eidoryn_psx::i18n::Text;
+use eidoryn_psx::shortcuts::ShortcutAction;
 use eidoryn_psx::{
     systems::ps1::runner::Snapshot,
     video_filter::{CrtFilter, OverlayKey},
@@ -92,7 +93,11 @@ impl Desktop {
             &self.fonts,
             &self.themes.active().palette,
             "crt-filter",
-            format!("CRT  {}", crt_label(self.language, self.crt.filter)),
+            self.shortcut_label(
+                format!("CRT  {}", crt_label(self.language, self.crt.filter)),
+                ShortcutAction::Crt,
+                None,
+            ),
             self.crt.filter != CrtFilter::Off,
         )
         .on_click(cx.listener(|view, _, _, cx| view.toggle_crt(cx)))

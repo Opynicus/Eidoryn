@@ -3,6 +3,7 @@ use super::{
     components::{action, button, card, heading, label, page_heading, pair},
 };
 use eidoryn_psx::i18n::Text;
+use eidoryn_psx::shortcuts::ShortcutAction;
 use eidoryn_psx::systems::ps1::{
     cpu::REGISTER_NAMES,
     runner::{Command, SnapshotMode},
@@ -36,7 +37,7 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_4()
-            .child(self.debug_header(cx))
+            .child(self.debug_header(window, cx))
             .child(self.capture_controls(cx));
         if !self.debugger_enabled {
             return page.child(
@@ -96,8 +97,14 @@ impl Desktop {
         })
     }
 
-    fn debug_header(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn debug_header(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let back = self.tr(Text::ReturnToGame);
+        let back = if window.is_fullscreen() {
+            back.into()
+        } else {
+            self.shortcut_label(back, ShortcutAction::Enlarge, None)
+        };
         div()
             .flex()
             .flex_wrap()
@@ -112,22 +119,15 @@ impl Desktop {
                 self.tr(Text::DebugHint),
             ))
             .child(
-                action(
-                    &self.fonts,
-                    p,
-                    "debug-back",
-                    self.tr(Text::ReturnToGame),
-                    Some("back"),
-                    false,
-                )
-                .debug_selector(|| "debug-back".into())
-                .on_click(cx.listener(|view, _, window, cx| {
-                    if window.is_fullscreen() {
-                        view.show_page(WorkspacePage::Game, window, cx);
-                    } else {
-                        view.toggle_view(window, cx);
-                    }
-                })),
+                action(&self.fonts, p, "debug-back", back, Some("back"), false)
+                    .debug_selector(|| "debug-back".into())
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        if window.is_fullscreen() {
+                            view.show_page(WorkspacePage::Game, window, cx);
+                        } else {
+                            view.toggle_view(window, cx);
+                        }
+                    })),
             )
     }
 
@@ -181,13 +181,17 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "debug-run",
-                    self.tr(if self.snapshot.rewinding {
-                        Text::EndRewind
-                    } else if self.snapshot.running {
-                        Text::Pause
-                    } else {
-                        Text::Run
-                    }),
+                    self.shortcut_label(
+                        self.tr(if self.snapshot.rewinding {
+                            Text::EndRewind
+                        } else if self.snapshot.running {
+                            Text::Pause
+                        } else {
+                            Text::Run
+                        }),
+                        ShortcutAction::Toggle,
+                        None,
+                    ),
                     Some(if self.snapshot.running || self.snapshot.rewinding {
                         "pause"
                     } else {
@@ -241,23 +245,33 @@ impl Desktop {
                             &self.fonts,
                             p,
                             "debug-step",
-                            self.tr(Text::Step),
+                            self.shortcut_label(self.tr(Text::Step), ShortcutAction::Step, None)
+                                .hint(),
                             Some("skip"),
                             false,
                         )
                         .on_click(cx.listener(|view, _, _, cx| view.command(Command::Step, cx))),
                     )
                     .child(
-                        button(&self.fonts, p, "debug-slice", self.tr(Text::Slice), false)
-                            .on_click(
-                                cx.listener(|view, _, _, cx| view.command(Command::Slice, cx)),
-                            ),
+                        button(
+                            &self.fonts,
+                            p,
+                            "debug-slice",
+                            self.shortcut_label(self.tr(Text::Slice), ShortcutAction::Slice, None)
+                                .hint(),
+                            false,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Slice, cx))),
                     )
                     .child(
-                        button(&self.fonts, p, "debug-reset", self.tr(Text::Reset), false)
-                            .on_click(
-                                cx.listener(|view, _, _, cx| view.command(Command::Reset, cx)),
-                            ),
+                        button(
+                            &self.fonts,
+                            p,
+                            "debug-reset",
+                            self.shortcut_label(self.tr(Text::Reset), ShortcutAction::Reset, None),
+                            false,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Reset, cx))),
                     ),
             )
     }

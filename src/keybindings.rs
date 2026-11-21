@@ -129,15 +129,13 @@ impl KeyBindings {
     }
 }
 
-fn supported_key(key: &str) -> bool {
+pub(crate) fn supported_key(key: &str) -> bool {
     if key.chars().count() == 1 {
         return key.chars().all(|c| !c.is_control() && !c.is_whitespace())
             && key == key.to_lowercase();
     }
     if let Some(number) = key.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
-        return (1..=24).contains(&number)
-            && !(5..=12).contains(&number)
-            && key == format!("f{number}");
+        return (1..=24).contains(&number) && key == format!("f{number}");
     }
     matches!(
         key,
@@ -171,9 +169,7 @@ mod tests {
         assert_eq!(bindings.button("z"), Some(PadButton::Cross));
         assert_eq!(bindings.button("X"), Some(PadButton::Square));
         bindings.validate().unwrap();
-        for key in [
-            "f5", "tab", "escape", "f6", "f8", "f12", "ctrl-r", "shift", "", "J",
-        ] {
+        for key in ["f25", "tab", "escape", "ctrl-r", "shift", "", "J"] {
             assert!(bindings.rebind(PadButton::Square, key).is_err());
         }
         assert_eq!(bindings.key(PadButton::Square), "x");
@@ -190,7 +186,7 @@ mod tests {
         assert_eq!(bindings.button("w").unwrap().mask(), 0x0010);
         assert_eq!(bindings.button("enter").unwrap().mask(), 0x0008);
         assert_eq!(bindings.button("x"), None);
-        for json in [r#"{"cross":"z"}"#, r#"{"cross":"f5"}"#] {
+        for json in [r#"{"cross":"z"}"#, r#"{"cross":"tab"}"#] {
             let bindings: KeyBindings = serde_json::from_str(json).unwrap();
             assert!(bindings.validate().is_err());
         }

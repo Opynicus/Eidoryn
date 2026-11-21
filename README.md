@@ -141,7 +141,7 @@ Select **New snapshot** on the **Save states** page or press **Ctrl+S** to captu
 
 In **Game view**, open **Snapshots** and select one of the current game’s three most recent snapshots to load it. Select **Manage snapshots** at the bottom of the menu, or **Save states** in the sidebar, to see the full history. Each row shows the snapshot name and time and offers load, rename, and delete actions. To permanently remove a snapshot file, select **Delete snapshot**, check its name and time, and confirm. Loading preserves the previous execution state. A running game continues, and a paused game stays paused. This restores CPU, memory, graphics, audio, device timing, disc-drive state, and connected memory-card contents together; it also works with memory cards disabled. Original disc images must remain available when restoring disc sessions. Save states use a versioned format and are not guaranteed to work across incompatible emulator versions.
 
-Use **Quick save** (**Ctrl+Shift+S**) and **Quick load** (**Ctrl+Shift+L**) alongside the snapshot controls for a dedicated slot at `saves/<game>/quick/slot.ps1state`. Each game has one quick-save slot: saving replaces that slot without creating additional files or overwriting timestamped history. Quick loading follows the same rule: running games continue, while paused or stopped games remain paused. **Ctrl+S** still creates a separate timestamped snapshot. The Quick save button asks before overwriting an occupied slot and shows its timestamp. The keyboard shortcut saves immediately.
+Use **Quick save** (**Ctrl+Shift+S**) and **Quick load** (**Ctrl+Shift+L**) alongside the snapshot controls for a dedicated slot at `saves/<game>/quick/slot.ps1state`. Each game has one quick-save slot: saving replaces that slot without creating additional files or overwriting timestamped history. Quick loading follows the same rule: running games continue, while paused or stopped games remain paused. **Ctrl+S** still creates a separate timestamped snapshot. Both the Quick save button and the keyboard shortcut save immediately.
 
 To rename a snapshot, use the rename button on its history row. The new name must be unique within the current game's save directory; existing files are never overwritten. Renaming keeps the `.ps1state` extension and the captured state unchanged. Newly created snapshots still receive timestamped names.
 
@@ -178,11 +178,13 @@ See [dependency provenance](THIRD_PARTY.md).
 | `Q` / `E` | L1 / R1 |
 | `A` / `F` | L2 / R2 |
 
-Open **Settings (F8) → Controller → Keyboard bindings**, select a controller button, then press its new keyboard key. All 14 digital controller buttons can be remapped. Duplicate keys are allowed while editing and are highlighted, so you can swap bindings directly. Click **Confirm changes** to validate, apply, and save the completed mapping; unresolved duplicates prevent confirmation. The game keeps using the last confirmed mapping until then. **Esc** cancels capture; **Reset keyboard bindings** stages the defaults above for confirmation without changing turbo settings. **Discard changes** or closing settings abandons unconfirmed edits. Tab, Esc, F5–F12, and modifier combinations remain reserved for interface shortcuts. Space can be bound to a controller button.
+Open **Settings (F8) → Controller → Keyboard bindings**, select a controller button, then press its new keyboard key. All 14 digital controller buttons can be remapped. Duplicate keys are allowed while editing and are highlighted, so you can swap bindings directly. Click **Confirm changes** to validate, apply, and save the completed mapping; unresolved duplicates prevent confirmation. The game keeps using the last confirmed mapping until then. **Esc** cancels capture; **Reset keyboard bindings** stages the defaults above for confirmation without changing turbo settings. **Discard changes** or closing settings abandons unconfirmed edits. Controller buttons accept single keys, including Space and function keys. Reassign or clear a conflicting application shortcut before using its key for the controller. Tab and Esc are reserved for navigation.
 
 Open **Settings (F8) → Controller** to enable turbo for individual action or shoulder buttons. Hold the corresponding keyboard key to repeat; release to stop. Choose 5, 10, 15, or 20 presses per second. Turbo is off by default, and button/rate choices are saved. Directions, Start, and Select keep their normal behavior.
 
-| Shortcut | Action |
+Open **Settings → Shortcuts**, select an action, then press the key or key combination you want to use. You can clear an individual binding or restore the defaults for all actions. Resolve any conflicts with other shortcuts or controller keys, then select **Confirm changes**. Buttons and the status bar show the saved bindings.
+
+| Default shortcut | Action |
 | --- | --- |
 | `F5` | Run / pause |
 | `F6` | Enlarge the Game view workspace to fill the screen or restore the window |

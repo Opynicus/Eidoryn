@@ -1,10 +1,11 @@
 use super::{
     Desktop,
-    components::{button, ghost_button, label, pair},
+    components::{button, ghost_button, label, pair, shortcut},
     graphics::switch,
 };
 use eidoryn_psx::{
     i18n::Text,
+    shortcuts::ShortcutAction,
     systems::ps1::runner::{Command, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS},
 };
 use gpui::{Context, MouseButton, div, prelude::*, px, relative, rgb};
@@ -81,7 +82,8 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "rewind-hold",
-                    self.tr(Text::RewindHold),
+                    self.shortcut_label(self.tr(Text::RewindHold), ShortcutAction::Rewind, None)
+                        .hint(),
                     self.snapshot.rewinding,
                 )
                 .debug_selector(|| "rewind-hold".into())
@@ -177,7 +179,7 @@ impl Desktop {
                                         &self.fonts,
                                         p,
                                         "rewind-cancel",
-                                        self.tr(Text::RenameCancel),
+                                        shortcut(self.tr(Text::RenameCancel), "Esc"),
                                         None,
                                     )
                                     .debug_selector(|| "rewind-cancel".into())

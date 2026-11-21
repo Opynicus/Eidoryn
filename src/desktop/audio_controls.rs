@@ -1,7 +1,7 @@
 //! Volume control shared by the inspector and game views.
 use super::{
     Desktop,
-    components::{button, icon_button},
+    components::{button, icon_button, tooltip},
 };
 use eidoryn_psx::audio::{AudioBuffer, output::AudioOutput};
 use eidoryn_psx::i18n::Text;
@@ -20,7 +20,9 @@ pub(super) struct AudioControls {
 
 impl Desktop {
     pub(super) fn audio_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
+        let palette = self.themes.active().palette;
+        let p = &palette;
+        let volume_hint = self.tr(Text::VolumeKeysHint);
         let sound = if self.audio.output.is_none() {
             button(&self.fonts, p, "mute", self.tr(Text::EnableSound), false)
         } else {
@@ -42,6 +44,7 @@ impl Desktop {
                     .id("volume-slider")
                     .debug_selector(|| "volume-slider".into())
                     .tab_index(0)
+                    .tooltip(move |_, cx| tooltip(palette, volume_hint.into(), cx))
                     .border_1()
                     .border_color(rgb(p.surface))
                     .focus({

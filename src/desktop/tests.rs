@@ -914,6 +914,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
         rewind_disable_origin: None,
         rebinding: None,
         keybindings_draft: None,
+        shortcut_editor: shortcuts::ShortcutEditor::default(),
         probe: None,
         _subscriptions: Vec::new(),
     }
@@ -977,6 +978,7 @@ fn workspace_renders_across_sizes_and_theme_changes(cx: &mut TestAppContext) {
                     (WorkspacePage::Console, true, SettingsTab::Appearance),
                     (WorkspacePage::Console, true, SettingsTab::Controller),
                     (WorkspacePage::Console, true, SettingsTab::Rewind),
+                    (WorkspacePage::Console, true, SettingsTab::Shortcuts),
                 ] {
                     window
                         .update(&mut visual, |view, window, cx| {
@@ -1204,7 +1206,7 @@ fn keyboard_navigation_switches_language_and_traps_drawer_focus(cx: &mut TestApp
         view.read_with(cx, |v, _| v.settings_tab),
         SettingsTab::Appearance
     );
-    press_keys(cx, "tab tab tab tab enter");
+    press_keys(cx, "tab tab tab tab tab enter");
     let first = Language::ALL[0];
     assert_eq!(view.read_with(cx, |v, _| v.language), first);
     assert_eq!(
@@ -1293,8 +1295,8 @@ fn turbo_settings_persist_and_input_releases_at_ui_boundaries(cx: &mut TestAppCo
     press_keys(cx, "z");
     assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
     press_keys(cx, "f8 tab tab tab tab enter");
-    // Pass the rewind tab, both group headings and the bindings to reach Square.
-    press_keys(cx, &"tab ".repeat(19));
+    // Pass the remaining tabs, group headings and bindings to reach Square.
+    press_keys(cx, &"tab ".repeat(20));
     press_keys(cx, "enter");
     assert_eq!(
         view.read_with(cx, |v, _| v.settings_tab),
@@ -1369,6 +1371,45 @@ fn f5_resumes_with_live_input_without_space_pausing_the_game(cx: &mut TestAppCon
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+#[gpui::test]
+fn shortcuts_follow_the_applied_bindings_and_respect_settings_focus(cx: &mut TestAppContext) {
+    use eidoryn_psx::shortcuts::{ShortcutAction, ShortcutChord};
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = desktop(window, cx);
+        view.preferences_path = None;
+        for (action, keys) in [
+            (ShortcutAction::Settings, "ctrl-j"),
+            (ShortcutAction::Crt, "shift-s"),
+        ] {
+            let stroke = gpui::Keystroke::parse(keys).unwrap();
+            view.preferences.shortcuts.set(
+                action,
+                Some(ShortcutChord::from_keystroke(&stroke).unwrap()),
+            );
+        }
+        view
+    });
+    let initial = view.read_with(cx, |view, _| view.crt_filter());
+    press_keys(cx, "f8 f7 ctrl-alt-j");
+    assert!(!view.read_with(cx, |view, _| view.graphics.open));
+    assert_eq!(view.read_with(cx, |view, _| view.crt_filter()), initial);
+
+    press_keys(cx, "ctrl-j");
+    assert!(view.read_with(cx, |view, _| view.graphics.open));
+    press_keys(cx, "shift-s f8");
+    assert!(view.read_with(cx, |view, _| view.graphics.open));
+    assert_eq!(view.read_with(cx, |view, _| view.crt_filter()), initial);
+
+    press_keys(cx, "ctrl-j");
+    assert!(!view.read_with(cx, |view, _| view.graphics.open));
+    cx.simulate_keystrokes("shift-s");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.crt_filter()),
+        initial.next()
+    );
+    assert_eq!(view.read_with(cx, |view, _| view.pressed_buttons), 0);
 }
 
 #[gpui::test]
@@ -1459,9 +1500,9 @@ fn binding_capture_handles_cancel_and_keyboard_activation(cx: &mut TestAppContex
     });
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1280.), px(1000.)));
-    press_keys(cx, "f8 tab tab tab tab enter tab tab tab enter");
+    press_keys(cx, "f8 tab tab tab tab enter tab tab tab tab enter");
     assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
-    for key in ["f5", "tab", "f8", "f11", "f12", "ctrl-r", "shift-j"] {
+    for key in ["tab", "ctrl-r", "shift-j"] {
         press_keys(cx, key);
         assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
         assert!(view.read_with(cx, |v, _| v.graphics.open));

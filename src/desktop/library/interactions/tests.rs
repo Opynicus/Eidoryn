@@ -332,9 +332,17 @@ fn double_click_launches_only_when_the_first_click_was_browsing(cx: &mut TestApp
 #[gpui::test]
 fn keyboard_context_menu_moves_focus_within_the_actions(cx: &mut TestAppContext) {
     let (_dir, view, cx) = collection(cx, 3);
+    let entry = cx.debug_bounds("library-entry-2").unwrap();
+    let hint = "tooltip-打开焦点所在游戏的菜单 · Shift+F10";
+    cx.simulate_mouse_move(entry.center(), None, Modifiers::none());
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds(hint).is_some());
     click_control(cx, "library-entry-2");
     press_keys(cx, "shift-f10 escape shift-f10");
     assert!(cx.debug_bounds("lib-card-menu").is_some());
+    assert!(cx.debug_bounds(hint).is_none());
     press_keys(cx, "shift-tab");
     assert!(view.read_with(cx, |v, _| {
         v.library.card_menu.as_ref().is_some_and(|m| m.active == 2)

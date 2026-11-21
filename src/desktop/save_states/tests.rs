@@ -267,6 +267,33 @@ fn delete_reports_a_snapshot_changed_during_confirmation(cx: &mut TestAppContext
 }
 
 #[gpui::test]
+fn save_buttons_show_their_shortcuts_on_hover(cx: &mut TestAppContext) {
+    use eidoryn_psx::shortcuts::ShortcutAction;
+    let (view, cx, _files) = history_window(cx, []);
+    view.update(cx, |view, cx| {
+        let bindings = &mut view.preferences.shortcuts;
+        bindings.set(
+            ShortcutAction::QuickSave,
+            Some("alt-k".to_string().try_into().unwrap()),
+        );
+        bindings.set(ShortcutAction::QuickLoad, None);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    for (id, hint) in [
+        ("save-state", "tooltip-新建快照 · Ctrl+S"),
+        ("quick-save", "tooltip-快速保存 · Alt+K"),
+        ("quick-load", "tooltip-快速加载"),
+    ] {
+        let button = cx.debug_bounds(id).unwrap();
+        cx.simulate_mouse_move(button.center(), None, Modifiers::none());
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds(hint).is_some(), "{id}");
+    }
+}
+
+#[gpui::test]
 fn quick_controls_reuse_one_slot_without_using_the_snapshot_selection(cx: &mut TestAppContext) {
     let (view, cx, files) = history_window(cx, []);
     let quick = files.original.parent().unwrap().join("quick/slot.ps1state");
@@ -282,12 +309,7 @@ fn quick_controls_reuse_one_slot_without_using_the_snapshot_selection(cx: &mut T
         } else {
             let button = cx.debug_bounds("quick-save").unwrap();
             cx.simulate_click(button.center(), Modifiers::none());
-            assert!(cx.debug_bounds("confirm-quick-save").is_some());
-            press_keys(cx, "escape");
-            assert!(cx.debug_bounds("confirm-quick-save").is_none());
-            assert_eq!(fs::read(&quick).ok(), before);
-            cx.simulate_click(button.center(), Modifiers::none());
-            press_keys(cx, "tab enter");
+            assert!(view.read_with(cx, |view, _| view.snapshot_confirmation.is_none()));
         }
         receive_until(&view, cx, |_| {
             fs::read(&quick).is_ok_and(|bytes| before.as_ref().is_none_or(|old| old != &bytes))

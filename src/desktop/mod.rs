@@ -17,6 +17,7 @@ mod recent_games;
 mod rewind;
 mod save_states;
 mod settings;
+mod shortcuts;
 mod sidebar;
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
@@ -272,6 +273,7 @@ fn open_window(
                             rewind_disable_origin: None,
                             rebinding: None,
                             keybindings_draft: None,
+                            shortcut_editor: shortcuts::ShortcutEditor::default(),
                             probe,
                             _subscriptions: subscriptions,
                         }
@@ -332,6 +334,7 @@ struct Desktop {
     rewind_disable_origin: Option<FocusHandle>,
     rebinding: Option<eidoryn_psx::keybindings::PadButton>,
     keybindings_draft: Option<eidoryn_psx::keybindings::KeyBindings>,
+    shortcut_editor: shortcuts::ShortcutEditor,
     probe: Option<probe::Probe>,
     themes: ThemeCatalog,
     settings_tab: SettingsTab,
@@ -353,6 +356,7 @@ enum SettingsTab {
     Appearance,
     Controller,
     Rewind,
+    Shortcuts,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

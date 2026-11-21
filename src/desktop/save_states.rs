@@ -3,10 +3,11 @@ pub(super) use menu::SnapshotMenu;
 
 use super::{
     Desktop,
-    components::{button, card, ghost_button, label, page_heading},
+    components::{button, card, ghost_button, label, page_heading, shortcut},
 };
 use eidoryn_psx::{
     i18n::Text,
+    shortcuts::ShortcutAction,
     systems::ps1::{
         runner::{Command, QuickSlot},
         state_file::{SaveStateInfo, checkpoint_time},
@@ -14,17 +15,8 @@ use eidoryn_psx::{
 };
 use gpui::{Context, Focusable, Window, div, prelude::*, px, rgb, rgba};
 
-enum SnapshotAction {
-    OverwriteQuick {
-        slot: std::time::SystemTime,
-        revision: u64,
-        game: String,
-    },
-    Delete(SaveStateInfo),
-}
-
 pub(super) struct SnapshotConfirmation {
-    action: SnapshotAction,
+    state: SaveStateInfo,
     cancel: gpui::FocusHandle,
     confirm: gpui::FocusHandle,
 }
@@ -53,9 +45,15 @@ impl Desktop {
                 self.tr(Text::SaveStatesHint),
             ))
             .child(
-                button(&self.fonts, p, "save-state", self.tr(Text::SaveState), true)
-                    .debug_selector(|| "save-state".into())
-                    .on_click(cx.listener(|view, _, _, cx| view.command(Command::SaveState, cx))),
+                button(
+                    &self.fonts,
+                    p,
+                    "save-state",
+                    self.shortcut_label(self.tr(Text::SaveState), ShortcutAction::Snapshot, None),
+                    true,
+                )
+                .debug_selector(|| "save-state".into())
+                .on_click(cx.listener(|view, _, _, cx| view.command(Command::SaveState, cx))),
             );
         let side = div()
             .min_w_0()
@@ -258,11 +256,7 @@ impl Desktop {
                 .text_color(rgb(p.danger_text()))
                 .debug_selector(move || format!("delete-snapshot-{index}"))
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    view.confirm_snapshot_action(
-                        SnapshotAction::Delete(delete_target.clone()),
-                        window,
-                        cx,
-                    );
+                    view.confirm_delete_snapshot(delete_target.clone(), window, cx);
                 })),
             )
     }
@@ -321,12 +315,9 @@ impl Desktop {
 
     pub(super) fn quick_state_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let can_load = matches!(self.snapshot.quick_slot, QuickSlot::Saved(_));
-        if let Some(pending) = &self.snapshot_confirmation
-            && matches!(pending.action, SnapshotAction::OverwriteQuick { .. })
-        {
-            return self.snapshot_confirmation_controls(pending, cx);
-        }
+        let slot = self.snapshot.quick_slot;
+        let revision = self.snapshot.quick_slot_revision;
+        let can_load = matches!(slot, QuickSlot::Saved(_));
         div()
             .flex()
             .flex_wrap()
@@ -337,29 +328,25 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "quick-save",
-                    self.tr(Text::QuickSave),
+                    self.shortcut_label(self.tr(Text::QuickSave), ShortcutAction::QuickSave, None),
                     false,
                 )
                 .debug_selector(|| "quick-save".into())
-                .when(
-                    self.snapshot.quick_slot == QuickSlot::Unavailable,
-                    |button| button.tab_index(-1).opacity(0.45).cursor_default(),
-                )
-                .when(
-                    self.snapshot.quick_slot != QuickSlot::Unavailable,
-                    |button| {
-                        button.on_click(
-                            cx.listener(|view, _, window, cx| view.request_quick_save(window, cx)),
-                        )
-                    },
-                ),
+                .when(slot == QuickSlot::Unavailable, |button| {
+                    button.tab_index(-1).opacity(0.45).cursor_default()
+                })
+                .when(slot != QuickSlot::Unavailable, |button| {
+                    button.on_click(cx.listener(move |view, _, _, cx| {
+                        view.command(Command::QuickSaveIfUnchanged { revision, slot }, cx);
+                    }))
+                }),
             )
             .child(
                 button(
                     &self.fonts,
                     p,
                     "quick-load",
-                    self.tr(Text::QuickLoad),
+                    self.shortcut_label(self.tr(Text::QuickLoad), ShortcutAction::QuickLoad, None),
                     false,
                 )
                 .debug_selector(|| "quick-load".into())
@@ -374,27 +361,9 @@ impl Desktop {
             )
     }
 
-    fn request_quick_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let slot = self.snapshot.quick_slot;
-        let revision = self.snapshot.quick_slot_revision;
-        match slot {
-            QuickSlot::Unavailable => {}
-            QuickSlot::Empty => self.command(Command::QuickSaveIfUnchanged { revision, slot }, cx),
-            QuickSlot::Saved(slot) => self.confirm_snapshot_action(
-                SnapshotAction::OverwriteQuick {
-                    slot,
-                    revision,
-                    game: self.display_title().to_owned(),
-                },
-                window,
-                cx,
-            ),
-        }
-    }
-
-    fn confirm_snapshot_action(
+    fn confirm_delete_snapshot(
         &mut self,
-        action: SnapshotAction,
+        state: SaveStateInfo,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -402,7 +371,7 @@ impl Desktop {
         let cancel = cx.focus_handle();
         window.focus(&cancel, cx);
         self.snapshot_confirmation = Some(SnapshotConfirmation {
-            action,
+            state,
             cancel,
             confirm: cx.focus_handle(),
         });
@@ -414,9 +383,6 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> Option<gpui::Stateful<gpui::Div>> {
         let pending = self.snapshot_confirmation.as_ref()?;
-        if !matches!(pending.action, SnapshotAction::Delete(_)) {
-            return None;
-        }
         Some(
             div()
                 .id("delete-snapshot-overlay")
@@ -443,24 +409,8 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let deleting = matches!(pending.action, SnapshotAction::Delete(_));
-        let (name, modified, title, confirm_label, confirm_id) = match &pending.action {
-            SnapshotAction::OverwriteQuick { game, slot, .. } => (
-                game,
-                *slot,
-                Text::OverwriteQuickSlotTitle,
-                Text::OverwriteQuickSlotAction,
-                "confirm-quick-save",
-            ),
-            SnapshotAction::Delete(state) => (
-                &state.name,
-                state.modified,
-                Text::DeleteSnapshotPrompt,
-                Text::DeleteSnapshot,
-                "confirm-delete-snapshot",
-            ),
-        };
-        let time = checkpoint_time(modified)
+        let name = &pending.state.name;
+        let time = checkpoint_time(pending.state.modified)
             .unwrap_or_else(|| self.tr(Text::SnapshotTimeUnknown).to_owned());
         div()
             .on_mouse_down_out(cx.listener(|view, _, window, cx| {
@@ -475,7 +425,11 @@ impl Desktop {
             .border_1()
             .border_color(rgb(p.dialog_border()))
             .bg(rgb(p.dialog_surface()))
-            .child(div().font(self.fonts.semibold()).child(self.tr(title)))
+            .child(
+                div()
+                    .font(self.fonts.semibold())
+                    .child(self.tr(Text::DeleteSnapshotPrompt)),
+            )
             .child(label(p, format!("{name}  ·  {time}")))
             .child(
                 div()
@@ -487,7 +441,7 @@ impl Desktop {
                             &self.fonts,
                             p,
                             "cancel-snapshot-action",
-                            self.tr(Text::RenameCancel),
+                            shortcut(self.tr(Text::RenameCancel), "Esc"),
                             None,
                         )
                         .debug_selector(|| "cancel-snapshot-action".into())
@@ -500,12 +454,12 @@ impl Desktop {
                         button(
                             &self.fonts,
                             p,
-                            confirm_id,
-                            self.tr(confirm_label),
-                            !deleting,
+                            "confirm-delete-snapshot",
+                            self.tr(Text::DeleteSnapshot),
+                            false,
                         )
-                        .when(deleting, |button| button.text_color(rgb(p.danger_text())))
-                        .debug_selector(move || confirm_id.into())
+                        .text_color(rgb(p.danger_text()))
+                        .debug_selector(|| "confirm-delete-snapshot".into())
                         .track_focus(&pending.confirm)
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.finish_snapshot_action(true, window, cx);
@@ -551,19 +505,13 @@ impl Desktop {
         if let Some(pending) = self.snapshot_confirmation.take()
             && confirmed
         {
-            let command = match pending.action {
-                SnapshotAction::OverwriteQuick { slot, revision, .. } => {
-                    Command::QuickSaveIfUnchanged {
-                        revision,
-                        slot: QuickSlot::Saved(slot),
-                    }
-                }
-                SnapshotAction::Delete(state) => Command::DeleteState {
-                    path: state.path,
-                    modified: state.modified,
+            self.command(
+                Command::DeleteState {
+                    path: pending.state.path,
+                    modified: pending.state.modified,
                 },
-            };
-            self.command(command, cx);
+                cx,
+            );
         }
         window.focus(&self.focus, cx);
         cx.notify();
@@ -682,7 +630,7 @@ impl Desktop {
                                     &self.fonts,
                                     p,
                                     "rename-cancel",
-                                    self.tr(Text::RenameCancel),
+                                    shortcut(self.tr(Text::RenameCancel), "Esc"),
                                     None,
                                 )
                                 .on_click(cx.listener(
@@ -696,7 +644,7 @@ impl Desktop {
                                     &self.fonts,
                                     p,
                                     "rename-confirm",
-                                    self.tr(Text::RenameConfirm),
+                                    shortcut(self.tr(Text::RenameConfirm), "Enter"),
                                     true,
                                 )
                                 .debug_selector(|| "rename-confirm".into())

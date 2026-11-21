@@ -4,6 +4,7 @@ use super::{
     components::{ghost_icon_button, label},
 };
 use eidoryn_psx::i18n::Text;
+use eidoryn_psx::shortcuts::ShortcutAction;
 use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
 
 impl Desktop {
@@ -55,10 +56,19 @@ impl Desktop {
                             ),
                     )
                     .child(
-                        ghost_icon_button(p, "close-settings", "close", self.tr(Text::Close))
-                            .on_click(
-                                cx.listener(|view, _, window, cx| view.close_settings(window, cx)),
+                        ghost_icon_button(
+                            p,
+                            "close-settings",
+                            "close",
+                            self.shortcut_label(
+                                self.tr(Text::Close),
+                                ShortcutAction::Settings,
+                                Some("Esc"),
                             ),
+                        )
+                        .on_click(
+                            cx.listener(|view, _, window, cx| view.close_settings(window, cx)),
+                        ),
                     ),
             )
             .child(self.settings_tabs(cx))
@@ -69,6 +79,7 @@ impl Desktop {
                         SettingsTab::Appearance => "appearance-content",
                         SettingsTab::Controller => "controller-content",
                         SettingsTab::Rewind => "rewind-content",
+                        SettingsTab::Shortcuts => "shortcuts-content",
                     })
                     .flex_1()
                     .min_h_0()
@@ -86,6 +97,7 @@ impl Desktop {
                                 SettingsTab::Appearance => self.appearance(cx),
                                 SettingsTab::Controller => self.controller_panel(cx),
                                 SettingsTab::Rewind => self.rewind_settings(cx),
+                                SettingsTab::Shortcuts => self.shortcuts_panel(cx),
                             }),
                     ),
             )
@@ -95,10 +107,11 @@ impl Desktop {
                     .py_3()
                     .border_t_1()
                     .border_color(rgb(p.border))
-                    .child(if self.settings_tab == SettingsTab::Controller {
-                        self.binding_actions(cx)
-                    } else {
-                        label(p, self.tr(Text::KeyboardHint))
+                    .child(match self.settings_tab {
+                        SettingsTab::Controller | SettingsTab::Shortcuts => {
+                            self.binding_actions(cx)
+                        }
+                        _ => label(p, self.tr(Text::KeyboardHint)),
                     }),
             )
     }
@@ -118,6 +131,7 @@ impl Desktop {
                     ("tab-appearance", Text::Appearance, SettingsTab::Appearance),
                     ("tab-controller", Text::Controller, SettingsTab::Controller),
                     ("tab-rewind", Text::Rewind, SettingsTab::Rewind),
+                    ("tab-shortcuts", Text::Shortcuts, SettingsTab::Shortcuts),
                 ]
                 .into_iter()
                 .map(|(id, title, tab)| {
@@ -140,6 +154,7 @@ impl Desktop {
                         .child(self.tr(title))
                         .on_click(cx.listener(move |view, _, _, cx| {
                             view.rebinding = None;
+                            view.shortcut_editor.recording = None;
                             view.rewind_disable_origin = None;
                             view.settings_tab = tab;
                             cx.notify();

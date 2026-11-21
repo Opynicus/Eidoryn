@@ -110,6 +110,10 @@ impl Desktop {
             .role(gpui::Role::Button)
             .aria_label(entry.title.clone())
             .aria_selected(self.card_selected(id))
+            .when(self.library.card_menu.is_none(), |cell| {
+                let title = self.tr(Text::LibraryGameMenu);
+                cell.tooltip(move |_, cx| shortcut(title, "Shift+F10").tooltip(p, cx))
+            })
             .flex_1()
             .min_w_0()
             .flex()
@@ -147,8 +151,11 @@ impl Desktop {
             .on_key_down(
                 cx.listener(move |v, event: &gpui::KeyDownEvent, window, cx| {
                     let key = &event.keystroke;
-                    if key.key == "menu" || (key.key == "f10" && key.modifiers.shift) {
+                    if key.key == "menu"
+                        || (key.key == "f10" && key.modifiers == gpui::Modifiers::shift())
+                    {
                         v.open_card_menu(id, keyboard_center.get(), window, cx);
+                        cx.stop_propagation();
                     }
                 }),
             );

@@ -103,6 +103,31 @@ fn keyboard_rewind_stops_on_release_and_window_deactivation(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn rebound_rewind_stops_when_its_modifier_is_released(cx: &mut TestAppContext) {
+    use eidoryn_psx::shortcuts::{ShortcutAction, ShortcutChord};
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut view = desktop(window, cx);
+        view.preferences_path = None;
+        let keys = Keystroke::parse("shift-j").unwrap();
+        view.preferences.shortcuts.set(
+            ShortcutAction::Rewind,
+            Some(ShortcutChord::from_keystroke(&keys).unwrap()),
+        );
+        view
+    });
+    enable_recording(&view, cx);
+    press_keys(cx, "f9");
+    receive_until(&view, cx, |view| view.snapshot.rewind_states > 0);
+    cx.simulate_keystrokes("ctrl-z");
+    assert_eq!(view.read_with(cx, |view, _| view.rewind_sources), 0);
+    cx.simulate_keystrokes("shift-j");
+    receive_until(&view, cx, |view| view.snapshot.rewinding);
+    cx.simulate_event(gpui::ModifiersChangedEvent::default());
+    receive_until(&view, cx, |view| !view.snapshot.rewinding);
+    assert_eq!(view.read_with(cx, |view, _| view.rewind_sources), 0);
+}
+
+#[gpui::test]
 fn run_control_finishes_rewind_without_toggling_prior_execution(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut view = desktop(window, cx);
@@ -269,7 +294,7 @@ fn recording_is_opt_in_and_settings_persist_duration_and_enabled_state(cx: &mut 
     );
 
     // From the drawer focus, traverse its tabs and reach the recording switch.
-    press_keys(cx, "f8 tab tab tab tab tab enter tab tab enter");
+    press_keys(cx, "f8 tab tab tab tab tab enter tab tab tab enter");
     assert!(cx.debug_bounds("rewind-confirm").is_some());
     press_keys(cx, "tab enter");
     assert!(cx.debug_bounds("rewind-confirm").is_none());

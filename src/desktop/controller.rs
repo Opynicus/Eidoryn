@@ -1,10 +1,12 @@
 use super::{
-    Desktop,
+    Desktop, SettingsTab,
     components::{button, label},
+    shortcuts::action_title,
 };
 use eidoryn_psx::{
     i18n::Text,
     keybindings::{KeyBindings, PadButton},
+    shortcuts::ShortcutAction,
     systems::ps1::{
         input::{TURBO_RATES, TurboConfig},
         runner::Command,
@@ -50,6 +52,10 @@ impl Desktop {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(action) = self.shortcut_editor.recording {
+            self.capture_shortcut(action, event, cx);
+            return;
+        }
         let Some(button) = self.rebinding else {
             return;
         };
@@ -81,7 +87,7 @@ impl Desktop {
             return;
         };
         self.rebinding = None;
-        if bindings.validate().is_err() {
+        if bindings.validate().is_err() || self.preferences.shortcuts.validate(bindings).is_err() {
             self.notice = Some(self.tr(Text::BindingInvalid).into());
         } else if let Some(bindings) = self.keybindings_draft.take() {
             self.release_buttons(cx);
@@ -113,12 +119,31 @@ impl Desktop {
             .keybindings_draft
             .as_ref()
             .unwrap_or(&self.preferences.keybindings);
+        let occupied: Vec<_> = ShortcutAction::ALL
+            .into_iter()
+            .filter_map(|action| {
+                let chord = self.preferences.shortcuts.binding(action)?;
+                Some((chord.pad_conflict(bindings)?, self.tr(action_title(action))))
+            })
+            .collect();
         let conflicts = PadButton::ALL
             .into_iter()
-            .filter(|&pad| bindings.conflict(pad).is_some())
-            .map(|pad| format!("{} · {}", pad.name(), bindings.key(pad).to_uppercase()))
-            .collect::<Vec<_>>()
-            .join(" / ");
+            .filter_map(|pad| {
+                let other = bindings.conflict(pad).map(PadButton::name).or_else(|| {
+                    occupied
+                        .iter()
+                        .find_map(|&(button, title)| (button == pad).then_some(title))
+                })?;
+                Some((
+                    pad,
+                    format!(
+                        "{} · {} ({other})",
+                        pad.name(),
+                        bindings.key(pad).to_uppercase()
+                    ),
+                ))
+            })
+            .collect::<Vec<_>>();
         div()
             .flex()
             .flex_col()
@@ -129,16 +154,18 @@ impl Desktop {
             .child(label(p, self.tr(Text::KeyBindingsHint)))
             .child(label(p, self.tr(Text::BindingCancelHint)))
             .when(!conflicts.is_empty(), |panel| {
+                let details = conflicts
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" / ");
                 panel.child(
-                    label(
-                        p,
-                        format!("{}: {conflicts}", self.tr(Text::BindingConflict)),
-                    )
-                    .debug_selector(|| "bindings-conflict".into())
-                    .p_3()
-                    .rounded_md()
-                    .bg(rgb(p.error))
-                    .text_color(rgb(p.on_error)),
+                    label(p, format!("{}: {details}", self.tr(Text::BindingConflict)))
+                        .debug_selector(|| "bindings-conflict".into())
+                        .p_3()
+                        .rounded_md()
+                        .bg(rgb(p.error))
+                        .text_color(rgb(p.on_error)),
                 )
             })
             .child(
@@ -165,12 +192,15 @@ impl Desktop {
                                     .border_color(rgb(p.primary))
                                     .text_color(rgb(p.on_tonal))
                             })
-                            .when(bindings.conflict(pad).is_some(), |button| {
-                                button
-                                    .border_color(rgb(p.on_error))
-                                    .bg(rgb(p.error))
-                                    .text_color(rgb(p.on_error))
-                            })
+                            .when(
+                                conflicts.iter().any(|(button, _)| *button == pad),
+                                |button| {
+                                    button
+                                        .border_color(rgb(p.on_error))
+                                        .bg(rgb(p.error))
+                                        .text_color(rgb(p.on_error))
+                                },
+                            )
                             .child(
                                 div()
                                     .min_w_0()
@@ -193,15 +223,17 @@ impl Desktop {
 
     pub(super) fn binding_actions(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let shortcuts = self.settings_tab == SettingsTab::Shortcuts;
+        let [apply, reset, cancel] = if shortcuts {
+            ["shortcuts-apply", "shortcuts-reset", "shortcuts-cancel"]
+        } else {
+            ["bindings-apply", "bindings-reset", "bindings-cancel"]
+        };
         div().flex().flex_wrap().gap_2().children(
             [
-                (BindingAction::Apply, "bindings-apply", Text::ApplyBindings),
-                (BindingAction::Reset, "bindings-reset", Text::ResetBindings),
-                (
-                    BindingAction::Cancel,
-                    "bindings-cancel",
-                    Text::CancelBindings,
-                ),
+                (BindingAction::Apply, apply, Text::ApplyBindings),
+                (BindingAction::Reset, reset, Text::ResetBindings),
+                (BindingAction::Cancel, cancel, Text::CancelBindings),
             ]
             .into_iter()
             .map(|(action, id, text)| {
@@ -215,13 +247,19 @@ impl Desktop {
                 .debug_selector(move || id.into())
                 .on_click(cx.listener(move |view, _, _, cx| {
                     view.rebinding = None;
+                    view.shortcut_editor.recording = None;
                     view.notice = None;
-                    match action {
-                        BindingAction::Apply => view.apply_bindings(cx),
-                        BindingAction::Reset => {
-                            view.keybindings_draft = Some(KeyBindings::default());
+                    match (shortcuts, action) {
+                        (true, BindingAction::Apply) => view.apply_shortcuts(cx),
+                        (true, BindingAction::Reset) => {
+                            view.shortcut_editor.draft = Some(Default::default())
                         }
-                        BindingAction::Cancel => view.keybindings_draft = None,
+                        (true, BindingAction::Cancel) => view.shortcut_editor.draft = None,
+                        (false, BindingAction::Apply) => view.apply_bindings(cx),
+                        (false, BindingAction::Reset) => {
+                            view.keybindings_draft = Some(KeyBindings::default())
+                        }
+                        (false, BindingAction::Cancel) => view.keybindings_draft = None,
                     }
                     cx.notify();
                 }))
