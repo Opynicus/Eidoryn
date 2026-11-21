@@ -1,6 +1,6 @@
 use super::{
     Desktop,
-    components::{button, ghost_button, label, pair},
+    components::{button, ghost_button, label, pair, shortcut},
     graphics::switch,
 };
 use eidoryn_psx::{
@@ -177,7 +177,7 @@ impl Desktop {
                                         &self.fonts,
                                         p,
                                         "rewind-cancel",
-                                        self.tr(Text::RenameCancel),
+                                        shortcut(self.tr(Text::RenameCancel), "Esc"),
                                         None,
                                     )
                                     .debug_selector(|| "rewind-cancel".into())

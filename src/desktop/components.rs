@@ -4,11 +4,42 @@ use gpui::{SharedString, div, prelude::*, px, rgb};
 
 pub(super) const ACTION_HEIGHT: gpui::Pixels = px(36.);
 
+pub(super) struct ButtonLabel {
+    text: SharedString,
+    shortcut: Option<&'static str>,
+}
+
+impl<T: Into<SharedString>> From<T> for ButtonLabel {
+    fn from(text: T) -> Self {
+        Self {
+            text: text.into(),
+            shortcut: None,
+        }
+    }
+}
+
+pub(super) fn shortcut(text: impl Into<SharedString>, keys: &'static str) -> ButtonLabel {
+    ButtonLabel {
+        text: text.into(),
+        shortcut: Some(keys),
+    }
+}
+
+impl ButtonLabel {
+    pub(super) fn tooltip(&self, palette: Palette, cx: &mut gpui::App) -> gpui::AnyView {
+        let hint = match self.shortcut {
+            Some(keys) => format!("{} · {keys}", self.text).into(),
+            None => self.text.clone(),
+        };
+        tooltip(palette, hint, cx)
+    }
+}
+
 pub(super) fn button(
     fonts: &Fonts,
     p: &Palette,
     id: impl Into<gpui::ElementId>,
-    text: impl Into<SharedString>,
+    text: impl Into<ButtonLabel>,
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
     action(fonts, p, id, text, None, primary)
@@ -18,7 +49,7 @@ pub(super) fn action(
     fonts: &Fonts,
     p: &Palette,
     id: impl Into<gpui::ElementId>,
-    text: impl Into<SharedString>,
+    text: impl Into<ButtonLabel>,
     symbol: Option<&'static str>,
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
@@ -36,7 +67,7 @@ pub(super) fn ghost_button(
     fonts: &Fonts,
     p: &Palette,
     id: impl Into<gpui::ElementId>,
-    text: impl Into<SharedString>,
+    text: impl Into<ButtonLabel>,
     symbol: Option<&'static str>,
 ) -> gpui::Stateful<gpui::Div> {
     with_label(
@@ -61,14 +92,14 @@ pub(super) fn dropdown_button(
 fn with_label(
     button: gpui::Stateful<gpui::Div>,
     p: &Palette,
-    text: impl Into<SharedString>,
+    text: impl Into<ButtonLabel>,
 ) -> gpui::Stateful<gpui::Div> {
-    let text = text.into();
-    let hint = text.clone();
+    let hint = text.into();
+    let text = hint.text.clone();
     let palette = *p;
     button
-        .when(!hint.is_empty(), |button| {
-            button.tooltip(move |_, cx| tooltip(palette, hint.clone(), cx))
+        .when(!text.is_empty(), |button| {
+            button.tooltip(move |_, cx| hint.tooltip(palette, cx))
         })
         .child(text)
 }
@@ -118,7 +149,7 @@ pub(super) fn icon_button(
     p: &Palette,
     id: impl Into<gpui::ElementId>,
     symbol: &'static str,
-    title: &'static str,
+    title: impl Into<ButtonLabel>,
 ) -> gpui::Stateful<gpui::Div> {
     let hover = p.tonal_hover;
     icon_button_content(p, id, symbol, title)
@@ -130,7 +161,7 @@ pub(super) fn ghost_icon_button(
     p: &Palette,
     id: impl Into<gpui::ElementId>,
     symbol: &'static str,
-    title: &'static str,
+    title: impl Into<ButtonLabel>,
 ) -> gpui::Stateful<gpui::Div> {
     ghost(icon_button_content(p, id, symbol, title), p)
 }
@@ -139,9 +170,10 @@ fn icon_button_content(
     p: &Palette,
     id: impl Into<gpui::ElementId>,
     symbol: &'static str,
-    title: &'static str,
+    title: impl Into<ButtonLabel>,
 ) -> gpui::Stateful<gpui::Div> {
     let palette = *p;
+    let title = title.into();
     div()
         .id(id)
         .tab_index(0)
@@ -154,7 +186,7 @@ fn icon_button_content(
         .border_1()
         .border_color(rgb(p.border))
         .focus(move |style| style.border_color(rgb(palette.primary)))
-        .tooltip(move |_, cx| tooltip(palette, title.into(), cx))
+        .tooltip(move |_, cx| title.tooltip(palette, cx))
         .cursor_pointer()
         .active(move |style| style.bg(rgb(palette.tonal_pressed)))
         .child(icon(symbol, p.text))

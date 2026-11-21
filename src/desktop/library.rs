@@ -15,7 +15,7 @@ use self::detail::editor::Editor;
 use self::overview::OverviewMenu;
 use super::{
     Desktop,
-    components::{action, button, card, label},
+    components::{action, button, card, label, shortcut},
     icons::icon,
     text_input::TextInput,
 };
@@ -373,16 +373,21 @@ impl Desktop {
         callback: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> gpui::Stateful<Div> {
         let id = id.into();
+        let title = self.tr(key);
+        let caption = match key {
+            Text::LibraryClearSelection => shortcut(title, "Esc"),
+            _ => title.into(),
+        };
         action(
             &self.fonts,
             &self.library_palette(),
             id.clone(),
-            self.tr(key),
+            caption,
             symbol,
             primary,
         )
         .role(gpui::Role::Button)
-        .aria_label(self.tr(key))
+        .aria_label(title)
         .debug_selector(move || id.to_string())
         .on_click(cx.listener(move |view, _, window, cx| {
             callback(view, window, cx);

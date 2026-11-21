@@ -1,4 +1,7 @@
-use super::{Desktop, components::button};
+use super::{
+    Desktop,
+    components::{button, shortcut},
+};
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
     systems::ps1::runner::Snapshot,
@@ -92,7 +95,10 @@ impl Desktop {
             &self.fonts,
             &self.themes.active().palette,
             "crt-filter",
-            format!("CRT  {}", crt_label(self.language, self.crt.filter)),
+            shortcut(
+                format!("CRT  {}", crt_label(self.language, self.crt.filter)),
+                "F7",
+            ),
             self.crt.filter != CrtFilter::Off,
         )
         .on_click(cx.listener(|view, _, _, cx| view.toggle_crt(cx)))

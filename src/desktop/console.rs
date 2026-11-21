@@ -2,7 +2,7 @@ use super::{
     Desktop,
     components::{
         action, button, card, ghost_button, ghost_icon_button, heading, icon_button, label,
-        page_heading,
+        page_heading, shortcut,
     },
 };
 use eidoryn_psx::{i18n::Text, systems::ps1::runner::Command};
@@ -221,7 +221,7 @@ impl Desktop {
             &self.fonts,
             &self.themes.active().palette,
             "transport-run",
-            self.tr(text),
+            shortcut(self.tr(text), "F5"),
             Some(symbol),
             true,
         )
@@ -334,10 +334,13 @@ impl Desktop {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        ghost_icon_button(p, "transport-reset", "reset", self.tr(Text::Reset))
-                            .on_click(
-                                cx.listener(|view, _, _, cx| view.command(Command::Reset, cx)),
-                            ),
+                        ghost_icon_button(
+                            p,
+                            "transport-reset",
+                            "reset",
+                            shortcut(self.tr(Text::Reset), "Ctrl+R"),
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Reset, cx))),
                     )
                     .child(self.crt_control(cx))
                     .child(self.fullscreen_button(window, cx))
@@ -351,16 +354,16 @@ impl Desktop {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (id, icon, label) = if window.is_fullscreen() {
-            ("restore-game", "back", Text::RestoreGame)
+        let (id, icon, label, keys) = if window.is_fullscreen() {
+            ("restore-game", "back", Text::RestoreGame, "F6 / Esc")
         } else {
-            ("enlarge-game", "screen", Text::EnlargeGame)
+            ("enlarge-game", "screen", Text::EnlargeGame, "F6")
         };
         ghost_button(
             &self.fonts,
             &self.themes.active().palette,
             id,
-            self.tr(label),
+            shortcut(self.tr(label), keys),
             Some(icon),
         )
         .debug_selector(move || id.into())
@@ -372,14 +375,19 @@ impl Desktop {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (id, icon, label) = if window.is_fullscreen() && self.presentation.shows_video() {
-            ("exit-fullscreen", "back", Text::ExitFullscreen)
+        let (id, icon, label, keys) = if window.is_fullscreen() && self.presentation.shows_video() {
+            ("exit-fullscreen", "back", Text::ExitFullscreen, "F11 / Esc")
         } else {
-            ("enter-fullscreen", "expand", Text::Fullscreen)
+            ("enter-fullscreen", "expand", Text::Fullscreen, "F11")
         };
-        icon_button(&self.themes.active().palette, id, icon, self.tr(label))
-            .debug_selector(move || id.into())
-            .on_click(cx.listener(|view, _, window, cx| view.toggle_fullscreen(window, cx)))
+        icon_button(
+            &self.themes.active().palette,
+            id,
+            icon,
+            shortcut(self.tr(label), keys),
+        )
+        .debug_selector(move || id.into())
+        .on_click(cx.listener(|view, _, window, cx| view.toggle_fullscreen(window, cx)))
     }
 
     fn memory_card(&self, cx: &mut Context<Self>) -> gpui::Div {

@@ -1,5 +1,8 @@
 //! Shared presentation and keyboard scope for library pages and their dialogs.
-use super::{Desktop, WorkspacePage, components::ghost_icon_button};
+use super::{
+    Desktop, WorkspacePage,
+    components::{ghost_icon_button, shortcut},
+};
 use eidoryn_psx::{
     i18n::Text,
     theme::{DEFAULT_THEME_ID, Palette},
@@ -99,6 +102,12 @@ impl Desktop {
     ) -> Div {
         let p = self.library_palette();
         let title = title.into();
+        let close_label = self.tr(Text::Close);
+        let close_hint = if self.removal_in_progress() {
+            close_label.into()
+        } else {
+            shortcut(close_label, "Esc")
+        };
         let close = cx.listener(|view, _, _, cx| {
             view.close_library_dialog(cx);
         });
@@ -155,20 +164,13 @@ impl Desktop {
                                     .child(title),
                             )
                             .child(
-                                ghost_icon_button(
-                                    &p,
-                                    "lib-close-dialog",
-                                    "close",
-                                    self.tr(Text::Close),
-                                )
-                                .debug_selector(|| "lib-close-dialog".into())
-                                .role(Role::Button)
-                                .aria_label(self.tr(Text::Close))
-                                .on_click(cx.listener(
-                                    |view, _, _, cx| {
+                                ghost_icon_button(&p, "lib-close-dialog", "close", close_hint)
+                                    .debug_selector(|| "lib-close-dialog".into())
+                                    .role(Role::Button)
+                                    .aria_label(close_label)
+                                    .on_click(cx.listener(|view, _, _, cx| {
                                         view.close_library_dialog(cx);
-                                    },
-                                )),
+                                    })),
                             ),
                     )
                     .child(

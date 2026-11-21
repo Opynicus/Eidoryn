@@ -1,7 +1,7 @@
 //! Preferences overlay and its collapsible sections.
 use super::{
     Desktop, SettingsTab,
-    components::{ghost_icon_button, label},
+    components::{ghost_icon_button, label, shortcut},
 };
 use eidoryn_psx::i18n::Text;
 use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
@@ -55,10 +55,15 @@ impl Desktop {
                             ),
                     )
                     .child(
-                        ghost_icon_button(p, "close-settings", "close", self.tr(Text::Close))
-                            .on_click(
-                                cx.listener(|view, _, window, cx| view.close_settings(window, cx)),
-                            ),
+                        ghost_icon_button(
+                            p,
+                            "close-settings",
+                            "close",
+                            shortcut(self.tr(Text::Close), "Esc / F8"),
+                        )
+                        .on_click(
+                            cx.listener(|view, _, window, cx| view.close_settings(window, cx)),
+                        ),
                     ),
             )
             .child(self.settings_tabs(cx))

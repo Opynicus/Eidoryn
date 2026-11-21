@@ -1,6 +1,6 @@
 use super::{
     Desktop, WorkspacePage,
-    components::{action, button, card, heading, label, page_heading, pair},
+    components::{action, button, card, heading, label, page_heading, pair, shortcut},
 };
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::systems::ps1::{
@@ -36,7 +36,7 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_4()
-            .child(self.debug_header(cx))
+            .child(self.debug_header(window, cx))
             .child(self.capture_controls(cx));
         if !self.debugger_enabled {
             return page.child(
@@ -96,8 +96,14 @@ impl Desktop {
         })
     }
 
-    fn debug_header(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn debug_header(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let back = self.tr(Text::ReturnToGame);
+        let back = if window.is_fullscreen() {
+            back.into()
+        } else {
+            shortcut(back, "F6")
+        };
         div()
             .flex()
             .flex_wrap()
@@ -112,22 +118,15 @@ impl Desktop {
                 self.tr(Text::DebugHint),
             ))
             .child(
-                action(
-                    &self.fonts,
-                    p,
-                    "debug-back",
-                    self.tr(Text::ReturnToGame),
-                    Some("back"),
-                    false,
-                )
-                .debug_selector(|| "debug-back".into())
-                .on_click(cx.listener(|view, _, window, cx| {
-                    if window.is_fullscreen() {
-                        view.show_page(WorkspacePage::Game, window, cx);
-                    } else {
-                        view.toggle_view(window, cx);
-                    }
-                })),
+                action(&self.fonts, p, "debug-back", back, Some("back"), false)
+                    .debug_selector(|| "debug-back".into())
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        if window.is_fullscreen() {
+                            view.show_page(WorkspacePage::Game, window, cx);
+                        } else {
+                            view.toggle_view(window, cx);
+                        }
+                    })),
             )
     }
 
@@ -181,13 +180,16 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "debug-run",
-                    self.tr(if self.snapshot.rewinding {
-                        Text::EndRewind
-                    } else if self.snapshot.running {
-                        Text::Pause
-                    } else {
-                        Text::Run
-                    }),
+                    shortcut(
+                        self.tr(if self.snapshot.rewinding {
+                            Text::EndRewind
+                        } else if self.snapshot.running {
+                            Text::Pause
+                        } else {
+                            Text::Run
+                        }),
+                        "F5",
+                    ),
                     Some(if self.snapshot.running || self.snapshot.rewinding {
                         "pause"
                     } else {
@@ -254,10 +256,14 @@ impl Desktop {
                             ),
                     )
                     .child(
-                        button(&self.fonts, p, "debug-reset", self.tr(Text::Reset), false)
-                            .on_click(
-                                cx.listener(|view, _, _, cx| view.command(Command::Reset, cx)),
-                            ),
+                        button(
+                            &self.fonts,
+                            p,
+                            "debug-reset",
+                            shortcut(self.tr(Text::Reset), "Ctrl+R"),
+                            false,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Reset, cx))),
                     ),
             )
     }

@@ -1,6 +1,6 @@
 use super::{
     Desktop, SettingsTab, WorkspacePage,
-    components::{ghost_button, ghost_icon_button, label},
+    components::{ghost_button, ghost_icon_button, label, shortcut},
 };
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::systems::ps1::runner::ExecutionState;
@@ -172,8 +172,13 @@ impl Desktop {
             .child(self.quick_state_controls(cx))
             .child(self.audio_controls(cx))
             .child(
-                ghost_icon_button(p, "player-settings", "settings", self.tr(Text::Settings))
-                    .on_click(cx.listener(|view, _, _, cx| view.open_settings(cx))),
+                ghost_icon_button(
+                    p,
+                    "player-settings",
+                    "settings",
+                    shortcut(self.tr(Text::Settings), "F8"),
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.open_settings(cx))),
             )
             .child(self.fullscreen_button(window, cx))
     }
@@ -423,7 +428,7 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "top-settings",
-                    self.tr(Text::Settings),
+                    shortcut(self.tr(Text::Settings), "F8"),
                     Some("settings"),
                 )
                 .on_click(cx.listener(|view, _, _, cx| view.open_settings(cx))),
