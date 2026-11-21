@@ -1,5 +1,7 @@
+use super::shortcuts::shortcut_keystroke;
 use super::{Desktop, FullscreenView, SettingsTab, WorkspacePage};
 use eidoryn_psx::i18n::Text;
+use eidoryn_psx::shortcuts::ShortcutAction;
 use eidoryn_psx::systems::ps1::runner::Command;
 use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
 
@@ -13,7 +15,8 @@ impl Desktop {
     pub(super) fn stop_input(&mut self, cx: &mut Context<Self>) {
         self.stop_rewind(cx);
         self.navigation.cancel_drag();
-        if self.rebinding.take().is_some() {
+        let recording_shortcut = self.shortcut_editor.recording.take();
+        if self.rebinding.take().is_some() || recording_shortcut.is_some() {
             cx.notify();
         }
         if self.audio.dragging {
@@ -97,17 +100,35 @@ impl Desktop {
         }
     }
     pub(super) fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if event.keystroke.key == "z"
-            || !event.keystroke.modifiers.control
-            || matches!(event.keystroke.key.as_str(), "control" | "ctrl")
-        {
-            self.hold_rewind(super::rewind::RewindSource::Keyboard, false, cx);
+        if self.rewind_sources != 0 {
+            let stroke = shortcut_keystroke(&event.keystroke, cx);
+            self.release_rewind_key(Some(&stroke.key), &stroke.modifiers, cx);
         }
         if let Some(button) = self.preferences.keybindings.button(&event.keystroke.key)
             && self.pressed_buttons & button.mask() != 0
         {
             self.pressed_buttons &= !button.mask();
             self.command(Command::SetButtons(self.pressed_buttons), cx);
+        }
+    }
+    pub(super) fn release_rewind_key(
+        &mut self,
+        released: Option<&str>,
+        modifiers: &gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        use super::rewind::RewindSource;
+        if self.rewind_sources & RewindSource::Keyboard as u8 != 0
+            && self
+                .preferences
+                .shortcuts
+                .binding(ShortcutAction::Rewind)
+                .is_none_or(|chord| {
+                    released.is_some_and(|key| chord.matches_key(key))
+                        || !chord.modifiers.is_subset_of(modifiers)
+                })
+        {
+            self.hold_rewind(RewindSource::Keyboard, false, cx);
         }
     }
     pub(super) fn pick_image(&mut self, kind: ImagePicker, cx: &mut Context<Self>) {
@@ -227,30 +248,44 @@ impl Desktop {
         if self.library_dialog_key(key, cx) {
             return;
         }
-        if key == "f12" {
-            self.toggle_clean_fullscreen(cx);
-            if !self.graphics.open {
-                window.focus(&self.focus, cx);
-            }
-            return;
-        }
-        if self.graphics.open {
-            self.settings_key(key, window, cx);
-            return;
-        }
-        if self.page == WorkspacePage::Library && self.library_input_focused(window, cx) {
+        if !self.graphics.open
+            && self.page == WorkspacePage::Library
+            && self.library_input_focused(window, cx)
+        {
             if key == "escape" {
                 window.focus(&self.focus, cx);
             }
             return;
         }
-        if key == "z" && event.keystroke.modifiers.control {
-            self.hold_rewind(super::rewind::RewindSource::Keyboard, true, cx);
+        let modifiers = &event.keystroke.modifiers;
+        // A focused control owns its ordinary navigation and activation keys.
+        let control_key = !self.focus.is_focused(window)
+            && !modifiers.modified()
+            && matches!(
+                key,
+                "left" | "right" | "up" | "down" | "enter" | "space" | "home" | "end"
+            );
+        let action = if control_key {
+            None
+        } else {
+            self.preferences
+                .shortcuts
+                .action_for(&shortcut_keystroke(&event.keystroke, cx))
+        };
+        if self.graphics.open {
+            match action {
+                Some(ShortcutAction::Settings) => self.close_settings(window, cx),
+                Some(ShortcutAction::CleanFullscreen) => self.toggle_clean_fullscreen(cx),
+                _ => self.settings_key(key, window, cx),
+            }
+            return;
+        }
+        if let Some(action) = action {
+            self.run_shortcut(action, window, cx);
             cx.stop_propagation();
             return;
         }
         match key {
-            "f11" => return self.toggle_fullscreen(window, cx),
             "escape" if window.is_fullscreen() => return self.toggle_view(window, cx),
             "escape" if self.presentation.windowed_video => {
                 return self.show_page(self.page, window, cx);
@@ -272,13 +307,9 @@ impl Desktop {
                     self.move_focus(false, window, cx);
                     return;
                 }
-                "f5" | "f6" | "f7" | "f8" | "f9" | "f10" => {}
-                "r" | "s" if event.keystroke.modifiers.control => {}
-                "l" if event.keystroke.modifiers.control && event.keystroke.modifiers.shift => {}
                 _ => return, // Enter/Space activate the focused control on key-up.
             }
         }
-        let modifiers = &event.keystroke.modifiers;
         if !modifiers.control
             && !modifiers.alt
             && !modifiers.platform
@@ -286,22 +317,34 @@ impl Desktop {
         {
             self.pressed_buttons |= button.mask();
             self.command(Command::SetButtons(self.pressed_buttons), cx);
-            return;
         }
-        match event.keystroke.key.as_str() {
-            "f5" => self.command(Command::Toggle, cx),
-            "f10" => self.command(Command::Step, cx),
-            "f9" => self.command(Command::Slice, cx),
-            "f6" => self.toggle_view(window, cx),
-            "f7" => self.toggle_crt(cx),
-            "f8" => {
-                self.open_settings(cx);
+    }
+
+    fn run_shortcut(
+        &mut self,
+        action: ShortcutAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            ShortcutAction::Toggle => self.command(Command::Toggle, cx),
+            ShortcutAction::Step => self.command(Command::Step, cx),
+            ShortcutAction::Slice => self.command(Command::Slice, cx),
+            ShortcutAction::Enlarge => self.toggle_view(window, cx),
+            ShortcutAction::Crt => self.toggle_crt(cx),
+            ShortcutAction::Settings => self.open_settings(cx),
+            ShortcutAction::Fullscreen => self.toggle_fullscreen(window, cx),
+            ShortcutAction::CleanFullscreen => {
+                self.toggle_clean_fullscreen(cx);
+                window.focus(&self.focus, cx);
             }
-            "r" if event.keystroke.modifiers.control => self.command(Command::Reset, cx),
-            "s" if modifiers.control && modifiers.shift => self.command(Command::QuickSave, cx),
-            "s" if modifiers.control => self.command(Command::SaveState, cx),
-            "l" if modifiers.control && modifiers.shift => self.command(Command::QuickLoad, cx),
-            _ => {}
+            ShortcutAction::Reset => self.command(Command::Reset, cx),
+            ShortcutAction::Snapshot => self.command(Command::SaveState, cx),
+            ShortcutAction::QuickSave => self.command(Command::QuickSave, cx),
+            ShortcutAction::QuickLoad => self.command(Command::QuickLoad, cx),
+            ShortcutAction::Rewind => {
+                self.hold_rewind(super::rewind::RewindSource::Keyboard, true, cx)
+            }
         }
     }
     fn settings_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -309,7 +352,7 @@ impl Desktop {
             "escape" if self.rewind_disable_origin.is_some() => {
                 self.dismiss_rewind_confirmation(window, cx);
             }
-            "escape" | "f8" => {
+            "escape" => {
                 self.close_settings(window, cx);
             }
             "left" | "up" => self.move_focus(true, window, cx),
@@ -380,6 +423,7 @@ impl Desktop {
         }
         self.rebinding = None;
         self.keybindings_draft = None;
+        self.shortcut_editor = Default::default();
         self.rewind_disable_origin = None;
         self.graphics.open = false;
         window.focus(&self.focus, cx);
@@ -393,6 +437,7 @@ impl Desktop {
         self.release_buttons(cx);
         self.rebinding = None;
         self.keybindings_draft = None;
+        self.shortcut_editor = Default::default();
         self.graphics.open = true;
         self.settings_tab = SettingsTab::Graphics;
         cx.notify();
@@ -401,6 +446,7 @@ impl Desktop {
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rebinding = None;
         self.keybindings_draft = None;
+        self.shortcut_editor = Default::default();
         self.rewind_disable_origin = None;
         self.graphics.open = false;
         window.focus(&self.focus, cx);

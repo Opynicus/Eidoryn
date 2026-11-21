@@ -9,6 +9,8 @@ pub mod keybindings;
 pub mod library;
 #[cfg(feature = "desktop")]
 pub mod preferences;
+#[cfg(feature = "desktop")]
+pub mod shortcuts;
 pub mod systems;
 #[cfg(feature = "desktop")]
 pub use eidoryn_host::theme;

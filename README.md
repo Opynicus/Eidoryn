@@ -178,11 +178,13 @@ See [dependency provenance](THIRD_PARTY.md).
 | `Q` / `E` | L1 / R1 |
 | `A` / `F` | L2 / R2 |
 
-Open **Settings (F8) → Controller → Keyboard bindings**, select a controller button, then press its new keyboard key. All 14 digital controller buttons can be remapped. Duplicate keys are allowed while editing and are highlighted, so you can swap bindings directly. Click **Confirm changes** to validate, apply, and save the completed mapping; unresolved duplicates prevent confirmation. The game keeps using the last confirmed mapping until then. **Esc** cancels capture; **Reset keyboard bindings** stages the defaults above for confirmation without changing turbo settings. **Discard changes** or closing settings abandons unconfirmed edits. Tab, Esc, F5–F12, and modifier combinations remain reserved for interface shortcuts. Space can be bound to a controller button.
+Open **Settings (F8) → Controller → Keyboard bindings**, select a controller button, then press its new keyboard key. All 14 digital controller buttons can be remapped. Duplicate keys are allowed while editing and are highlighted, so you can swap bindings directly. Click **Confirm changes** to validate, apply, and save the completed mapping; unresolved duplicates prevent confirmation. The game keeps using the last confirmed mapping until then. **Esc** cancels capture; **Reset keyboard bindings** stages the defaults above for confirmation without changing turbo settings. **Discard changes** or closing settings abandons unconfirmed edits. Controller buttons accept single keys, including Space and function keys. Reassign or clear a conflicting application shortcut before using its key for the controller. Tab and Esc are reserved for navigation.
 
 Open **Settings (F8) → Controller** to enable turbo for individual action or shoulder buttons. Hold the corresponding keyboard key to repeat; release to stop. Choose 5, 10, 15, or 20 presses per second. Turbo is off by default, and button/rate choices are saved. Directions, Start, and Select keep their normal behavior.
 
-| Shortcut | Action |
+Open **Settings → Shortcuts**, select an action, then press the key or key combination you want to use. You can clear an individual binding or restore the defaults for all actions. Resolve any conflicts with other shortcuts or controller keys, then select **Confirm changes**. Buttons and the status bar show the saved bindings.
+
+| Default shortcut | Action |
 | --- | --- |
 | `F5` | Run / pause |
 | `F6` | Enlarge the Game view workspace to fill the screen or restore the window |

@@ -5,6 +5,7 @@ use super::{
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
     preferences::Preferences,
+    shortcuts::ShortcutAction,
     systems::ps1::{
         cpu_engine::CpuMode,
         gpu::{
@@ -16,7 +17,7 @@ use eidoryn_psx::{
     theme::Palette,
     video_filter::CrtFilter,
 };
-use gpui::{Context, div, prelude::*, px, rgb};
+use gpui::{Context, SharedString, div, prelude::*, px, rgb};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GraphicsChange {
@@ -311,7 +312,12 @@ impl Desktop {
             &self.themes.active().palette,
             "clean-fullscreen",
             self.tr(Text::CleanFullscreen),
-            self.tr(Text::CleanFullscreenHint),
+            self.shortcut_label(
+                self.tr(Text::CleanFullscreenHint),
+                ShortcutAction::CleanFullscreen,
+                None,
+            )
+            .hint(),
             self.clean_fullscreen,
             true,
         )
@@ -514,11 +520,13 @@ pub(super) fn switch(
     p: &Palette,
     id: &'static str,
     title: &'static str,
-    detail: &'static str,
+    detail: impl Into<SharedString>,
     enabled: bool,
     available: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let palette = *p;
+    let detail = detail.into();
+    let hint = detail.clone();
     div()
         .id(id)
         .py_3()
@@ -534,7 +542,7 @@ pub(super) fn switch(
                 .tab_index(0)
                 .focus(move |style| style.bg(rgb(palette.tonal)))
         })
-        .tooltip(move |_, cx| super::components::tooltip(palette, detail.into(), cx))
+        .tooltip(move |_, cx| super::components::tooltip(palette, hint.clone(), cx))
         .when(!available, |element| element.opacity(0.45))
         .child(
             div()

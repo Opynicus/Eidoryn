@@ -1,8 +1,9 @@
 use super::{
     Desktop, SettingsTab, WorkspacePage,
-    components::{ghost_button, ghost_icon_button, label, shortcut},
+    components::{ghost_button, ghost_icon_button, label},
 };
 use eidoryn_psx::i18n::Text;
+use eidoryn_psx::shortcuts::ShortcutAction;
 use eidoryn_psx::systems::ps1::runner::ExecutionState;
 use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px, rgb, rgba};
 
@@ -56,6 +57,11 @@ impl Render for Desktop {
             .capture_key_down(cx.listener(Self::capture_binding))
             .on_key_down(cx.listener(Self::key))
             .on_key_up(cx.listener(Self::key_up))
+            .on_modifiers_changed(cx.listener(
+                |view, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    view.release_rewind_key(None, &event.modifiers, cx);
+                },
+            ))
             .when(self.navigation.is_dragging(), |root| {
                 root.on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, cx| {
                     if event.dragging() {
@@ -176,7 +182,7 @@ impl Desktop {
                     p,
                     "player-settings",
                     "settings",
-                    shortcut(self.tr(Text::Settings), "F8"),
+                    self.shortcut_label(self.tr(Text::Settings), ShortcutAction::Settings, None),
                 )
                 .on_click(cx.listener(|view, _, _, cx| view.open_settings(cx))),
             )
@@ -351,7 +357,20 @@ impl Desktop {
                 self.renderer_label()
             ))
             .when(window.viewport_size().width >= px(1100.), |bar| {
-                bar.child(self.tr(Text::Shortcuts))
+                let hints = [
+                    (ShortcutAction::Enlarge, self.tr(Text::EnlargeGame)),
+                    (ShortcutAction::Crt, "CRT"),
+                    (ShortcutAction::Settings, self.tr(Text::GraphicsSettings)),
+                    (ShortcutAction::Fullscreen, self.tr(Text::Fullscreen)),
+                ]
+                .into_iter()
+                .filter_map(|(action, title)| {
+                    let chord = self.preferences.shortcuts.binding(action)?;
+                    Some(format!("{} {title}", chord.label()))
+                })
+                .collect::<Vec<_>>()
+                .join("  ·  ");
+                bar.child(div().min_w_0().truncate().child(hints))
             })
     }
 
@@ -428,7 +447,7 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "top-settings",
-                    shortcut(self.tr(Text::Settings), "F8"),
+                    self.shortcut_label(self.tr(Text::Settings), ShortcutAction::Settings, None),
                     Some("settings"),
                 )
                 .on_click(cx.listener(|view, _, _, cx| view.open_settings(cx))),

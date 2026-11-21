@@ -268,11 +268,22 @@ fn delete_reports_a_snapshot_changed_during_confirmation(cx: &mut TestAppContext
 
 #[gpui::test]
 fn save_buttons_show_their_shortcuts_on_hover(cx: &mut TestAppContext) {
-    let (_view, cx, _files) = history_window(cx, []);
+    use eidoryn_psx::shortcuts::ShortcutAction;
+    let (view, cx, _files) = history_window(cx, []);
+    view.update(cx, |view, cx| {
+        let bindings = &mut view.preferences.shortcuts;
+        bindings.set(
+            ShortcutAction::QuickSave,
+            Some("alt-k".to_string().try_into().unwrap()),
+        );
+        bindings.set(ShortcutAction::QuickLoad, None);
+        cx.notify();
+    });
+    cx.run_until_parked();
     for (id, hint) in [
         ("save-state", "tooltip-新建快照 · Ctrl+S"),
-        ("quick-save", "tooltip-快速保存 · Ctrl+Shift+S"),
-        ("quick-load", "tooltip-快速加载 · Ctrl+Shift+L"),
+        ("quick-save", "tooltip-快速保存 · Alt+K"),
+        ("quick-load", "tooltip-快速加载"),
     ] {
         let button = cx.debug_bounds(id).unwrap();
         cx.simulate_mouse_move(button.center(), None, Modifiers::none());

@@ -1,8 +1,9 @@
 use super::{
     Desktop, WorkspacePage,
-    components::{action, button, card, heading, label, page_heading, pair, shortcut},
+    components::{action, button, card, heading, label, page_heading, pair},
 };
 use eidoryn_psx::i18n::Text;
+use eidoryn_psx::shortcuts::ShortcutAction;
 use eidoryn_psx::systems::ps1::{
     cpu::REGISTER_NAMES,
     runner::{Command, SnapshotMode},
@@ -102,7 +103,7 @@ impl Desktop {
         let back = if window.is_fullscreen() {
             back.into()
         } else {
-            shortcut(back, "F6")
+            self.shortcut_label(back, ShortcutAction::Enlarge, None)
         };
         div()
             .flex()
@@ -180,7 +181,7 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "debug-run",
-                    shortcut(
+                    self.shortcut_label(
                         self.tr(if self.snapshot.rewinding {
                             Text::EndRewind
                         } else if self.snapshot.running {
@@ -188,7 +189,8 @@ impl Desktop {
                         } else {
                             Text::Run
                         }),
-                        "F5",
+                        ShortcutAction::Toggle,
+                        None,
                     ),
                     Some(if self.snapshot.running || self.snapshot.rewinding {
                         "pause"
@@ -243,24 +245,30 @@ impl Desktop {
                             &self.fonts,
                             p,
                             "debug-step",
-                            self.tr(Text::Step),
+                            self.shortcut_label(self.tr(Text::Step), ShortcutAction::Step, None)
+                                .hint(),
                             Some("skip"),
                             false,
                         )
                         .on_click(cx.listener(|view, _, _, cx| view.command(Command::Step, cx))),
                     )
                     .child(
-                        button(&self.fonts, p, "debug-slice", self.tr(Text::Slice), false)
-                            .on_click(
-                                cx.listener(|view, _, _, cx| view.command(Command::Slice, cx)),
-                            ),
+                        button(
+                            &self.fonts,
+                            p,
+                            "debug-slice",
+                            self.shortcut_label(self.tr(Text::Slice), ShortcutAction::Slice, None)
+                                .hint(),
+                            false,
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Slice, cx))),
                     )
                     .child(
                         button(
                             &self.fonts,
                             p,
                             "debug-reset",
-                            shortcut(self.tr(Text::Reset), "Ctrl+R"),
+                            self.shortcut_label(self.tr(Text::Reset), ShortcutAction::Reset, None),
                             false,
                         )
                         .on_click(cx.listener(|view, _, _, cx| view.command(Command::Reset, cx))),

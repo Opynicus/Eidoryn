@@ -6,6 +6,7 @@ use crate::{
         covers::{DEFAULT_TEMPLATE, Provider},
         scrape::WorkerCount,
     },
+    shortcuts::ShortcutBindings,
     systems::ps1::{
         bus::BIOS_SIZE,
         gpu::{AntiAliasing, ColorDepth, RenderScale, RendererMode},
@@ -127,6 +128,7 @@ pub struct Preferences {
     pub turbo_buttons: u16,
     pub turbo_hz: u8,
     pub keybindings: KeyBindings,
+    pub shortcuts: ShortcutBindings,
     pub bios_path: Option<PathBuf>,
     pub recent_discs: Vec<RecentDisc>,
     pub library: LibraryPreferences,
@@ -151,6 +153,7 @@ impl Default for Preferences {
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
             keybindings: KeyBindings::default(),
+            shortcuts: ShortcutBindings::default(),
             bios_path: None,
             recent_discs: Vec::new(),
             library: LibraryPreferences::default(),
@@ -206,6 +209,7 @@ impl Preferences {
         self.renderer.parse::<RendererMode>()?;
         self.turbo()?;
         self.keybindings.validate()?;
+        self.shortcuts.validate(&self.keybindings)?;
         if self.volume > 100 || self.theme.is_empty() {
             return Err("Volume must be 0..100 and theme must not be empty".into());
         }
@@ -629,6 +633,16 @@ mod tests {
     }
 
     #[test]
+    fn controller_can_use_a_function_key_after_its_shortcut_is_cleared() {
+        use crate::{keybindings::PadButton, shortcuts::ShortcutAction};
+        let mut settings = Preferences::default();
+        settings.keybindings.rebind(PadButton::Up, "f5").unwrap();
+        assert!(settings.validate().is_err());
+        settings.shortcuts.set(ShortcutAction::Toggle, None);
+        settings.validate().unwrap();
+    }
+
+    #[test]
     fn preferences_round_trip_and_reject_invalid_updates() {
         let path =
             std::env::temp_dir().join(format!("eidoryn-settings-{}.json", std::process::id()));
@@ -650,6 +664,9 @@ mod tests {
             .keybindings
             .rebind(crate::keybindings::PadButton::Cross, "j")
             .unwrap();
+        let action = crate::shortcuts::ShortcutAction::QuickSave;
+        let chord = crate::shortcuts::ShortcutChord::try_from("alt-j".to_owned()).unwrap();
+        settings.shortcuts.set(action, Some(chord));
         settings.save(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap(), settings);
         settings.volume = 101;
@@ -672,6 +689,10 @@ mod tests {
         assert!(Preferences::load(&path).is_err());
         std::fs::write(&path, b"{\"theme\":\"forest\"}").unwrap();
         assert_eq!(Preferences::load(&path).unwrap().volume, 75);
+        assert_eq!(
+            Preferences::load(&path).unwrap().shortcuts,
+            ShortcutBindings::default()
+        );
         assert_eq!(
             Preferences::load(&path).unwrap().keybindings,
             KeyBindings::default()

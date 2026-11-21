@@ -5,6 +5,7 @@ use super::{
 };
 use eidoryn_psx::{
     i18n::Text,
+    shortcuts::ShortcutAction,
     systems::ps1::runner::{Command, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS},
 };
 use gpui::{Context, MouseButton, div, prelude::*, px, relative, rgb};
@@ -81,7 +82,8 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "rewind-hold",
-                    self.tr(Text::RewindHold),
+                    self.shortcut_label(self.tr(Text::RewindHold), ShortcutAction::Rewind, None)
+                        .hint(),
                     self.snapshot.rewinding,
                 )
                 .debug_selector(|| "rewind-hold".into())

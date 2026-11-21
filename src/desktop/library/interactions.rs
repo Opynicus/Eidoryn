@@ -151,8 +151,11 @@ impl Desktop {
             .on_key_down(
                 cx.listener(move |v, event: &gpui::KeyDownEvent, window, cx| {
                     let key = &event.keystroke;
-                    if key.key == "menu" || (key.key == "f10" && key.modifiers.shift) {
+                    if key.key == "menu"
+                        || (key.key == "f10" && key.modifiers == gpui::Modifiers::shift())
+                    {
                         v.open_card_menu(id, keyboard_center.get(), window, cx);
+                        cx.stop_propagation();
                     }
                 }),
             );

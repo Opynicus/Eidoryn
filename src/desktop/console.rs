@@ -2,10 +2,10 @@ use super::{
     Desktop,
     components::{
         action, button, card, ghost_button, ghost_icon_button, heading, icon_button, label,
-        page_heading, shortcut,
+        page_heading,
     },
 };
-use eidoryn_psx::{i18n::Text, systems::ps1::runner::Command};
+use eidoryn_psx::{i18n::Text, shortcuts::ShortcutAction, systems::ps1::runner::Command};
 use gpui::{Context, Window, div, prelude::*, px, rgb};
 
 impl Desktop {
@@ -221,7 +221,7 @@ impl Desktop {
             &self.fonts,
             &self.themes.active().palette,
             "transport-run",
-            shortcut(self.tr(text), "F5"),
+            self.shortcut_label(self.tr(text), ShortcutAction::Toggle, None),
             Some(symbol),
             true,
         )
@@ -338,7 +338,7 @@ impl Desktop {
                             p,
                             "transport-reset",
                             "reset",
-                            shortcut(self.tr(Text::Reset), "Ctrl+R"),
+                            self.shortcut_label(self.tr(Text::Reset), ShortcutAction::Reset, None),
                         )
                         .on_click(cx.listener(|view, _, _, cx| view.command(Command::Reset, cx))),
                     )
@@ -354,16 +354,16 @@ impl Desktop {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (id, icon, label, keys) = if window.is_fullscreen() {
-            ("restore-game", "back", Text::RestoreGame, "F6 / Esc")
+        let (id, icon, label, fallback) = if window.is_fullscreen() {
+            ("restore-game", "back", Text::RestoreGame, Some("Esc"))
         } else {
-            ("enlarge-game", "screen", Text::EnlargeGame, "F6")
+            ("enlarge-game", "screen", Text::EnlargeGame, None)
         };
         ghost_button(
             &self.fonts,
             &self.themes.active().palette,
             id,
-            shortcut(self.tr(label), keys),
+            self.shortcut_label(self.tr(label), ShortcutAction::Enlarge, fallback),
             Some(icon),
         )
         .debug_selector(move || id.into())
@@ -375,16 +375,17 @@ impl Desktop {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (id, icon, label, keys) = if window.is_fullscreen() && self.presentation.shows_video() {
-            ("exit-fullscreen", "back", Text::ExitFullscreen, "F11 / Esc")
-        } else {
-            ("enter-fullscreen", "expand", Text::Fullscreen, "F11")
-        };
+        let (id, icon, label, fallback) =
+            if window.is_fullscreen() && self.presentation.shows_video() {
+                ("exit-fullscreen", "back", Text::ExitFullscreen, Some("Esc"))
+            } else {
+                ("enter-fullscreen", "expand", Text::Fullscreen, None)
+            };
         icon_button(
             &self.themes.active().palette,
             id,
             icon,
-            shortcut(self.tr(label), keys),
+            self.shortcut_label(self.tr(label), ShortcutAction::Fullscreen, fallback),
         )
         .debug_selector(move || id.into())
         .on_click(cx.listener(|view, _, window, cx| view.toggle_fullscreen(window, cx)))

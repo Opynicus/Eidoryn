@@ -1,12 +1,12 @@
-use super::{fonts::Fonts, icons::icon};
-use eidoryn_psx::theme::Palette;
+use super::{Desktop, fonts::Fonts, icons::icon};
+use eidoryn_psx::{shortcuts::ShortcutAction, theme::Palette};
 use gpui::{SharedString, div, prelude::*, px, rgb};
 
 pub(super) const ACTION_HEIGHT: gpui::Pixels = px(36.);
 
 pub(super) struct ButtonLabel {
     text: SharedString,
-    shortcut: Option<&'static str>,
+    shortcut: Option<SharedString>,
 }
 
 impl<T: Into<SharedString>> From<T> for ButtonLabel {
@@ -18,20 +18,43 @@ impl<T: Into<SharedString>> From<T> for ButtonLabel {
     }
 }
 
-pub(super) fn shortcut(text: impl Into<SharedString>, keys: &'static str) -> ButtonLabel {
+pub(super) fn shortcut(
+    text: impl Into<SharedString>,
+    keys: impl Into<SharedString>,
+) -> ButtonLabel {
     ButtonLabel {
         text: text.into(),
-        shortcut: Some(keys),
+        shortcut: Some(keys.into()),
+    }
+}
+
+impl Desktop {
+    pub(super) fn shortcut_label(
+        &self,
+        text: impl Into<SharedString>,
+        action: ShortcutAction,
+        fallback: Option<&'static str>,
+    ) -> ButtonLabel {
+        let text = text.into();
+        match (self.preferences.shortcuts.binding(action), fallback) {
+            (Some(chord), Some(key)) => shortcut(text, format!("{} / {key}", chord.label())),
+            (Some(chord), None) => shortcut(text, chord.label()),
+            (None, Some(key)) => shortcut(text, key),
+            (None, None) => text.into(),
+        }
     }
 }
 
 impl ButtonLabel {
-    pub(super) fn tooltip(&self, palette: Palette, cx: &mut gpui::App) -> gpui::AnyView {
-        let hint = match self.shortcut {
+    pub(super) fn hint(&self) -> SharedString {
+        match &self.shortcut {
             Some(keys) => format!("{} · {keys}", self.text).into(),
             None => self.text.clone(),
-        };
-        tooltip(palette, hint, cx)
+        }
+    }
+
+    pub(super) fn tooltip(&self, palette: Palette, cx: &mut gpui::App) -> gpui::AnyView {
+        tooltip(palette, self.hint(), cx)
     }
 }
 

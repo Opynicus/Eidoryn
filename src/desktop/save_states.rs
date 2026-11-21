@@ -7,6 +7,7 @@ use super::{
 };
 use eidoryn_psx::{
     i18n::Text,
+    shortcuts::ShortcutAction,
     systems::ps1::{
         runner::{Command, QuickSlot},
         state_file::{SaveStateInfo, checkpoint_time},
@@ -48,7 +49,7 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "save-state",
-                    shortcut(self.tr(Text::SaveState), "Ctrl+S"),
+                    self.shortcut_label(self.tr(Text::SaveState), ShortcutAction::Snapshot, None),
                     true,
                 )
                 .debug_selector(|| "save-state".into())
@@ -327,7 +328,7 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "quick-save",
-                    shortcut(self.tr(Text::QuickSave), "Ctrl+Shift+S"),
+                    self.shortcut_label(self.tr(Text::QuickSave), ShortcutAction::QuickSave, None),
                     false,
                 )
                 .debug_selector(|| "quick-save".into())
@@ -345,7 +346,7 @@ impl Desktop {
                     &self.fonts,
                     p,
                     "quick-load",
-                    shortcut(self.tr(Text::QuickLoad), "Ctrl+Shift+L"),
+                    self.shortcut_label(self.tr(Text::QuickLoad), ShortcutAction::QuickLoad, None),
                     false,
                 )
                 .debug_selector(|| "quick-load".into())
