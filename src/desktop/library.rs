@@ -19,6 +19,7 @@ use super::{
     icons::icon,
     text_input::TextInput,
 };
+use eidoryn_psx::library::GamePlatform;
 use eidoryn_psx::{
     i18n::Text,
     library::{
@@ -162,10 +163,12 @@ impl MetadataLookup {
     reason = "Independent view, scan and asynchronous refresh states"
 )]
 pub(super) struct Workspace {
+    pub(super) platform: GamePlatform,
     pub(super) store: Option<Library>,
     entries: Vec<Entry>,
     roots: Vec<ScanRoot>,
     order: Vec<usize>,
+    platform_count: usize,
     pending_moves: VecDeque<GameMove>,
     entries_revision: u64,
     checked_games: BTreeSet<i64>,
@@ -211,11 +214,13 @@ pub(super) struct Workspace {
 impl Workspace {
     pub(super) fn new(mut store: Option<Library>) -> Self {
         Self {
+            platform: GamePlatform::Ps1,
             scraping: scraping::Scraping::new(store.as_mut()),
             store,
             entries: vec![],
             roots: vec![],
             order: vec![],
+            platform_count: 0,
             pending_moves: VecDeque::new(),
             entries_revision: 0,
             checked_games: BTreeSet::new(),
@@ -256,6 +261,21 @@ impl Workspace {
             clear_playtime_confirmation: None,
             settings: false,
         }
+    }
+
+    pub(super) fn change_platform(&mut self, platform: GamePlatform) {
+        self.platform = platform;
+        self.launch_generation = self.launch_generation.wrapping_add(1);
+        self.selected = None;
+        self.location = None;
+        self.pending_bios = None;
+        self.direct = None;
+        self.details = false;
+        self.menu = None;
+        self.card_menu = None;
+        self.checked_games.clear();
+        self.clear_playtime_confirmation = None;
+        self.close_editor();
     }
 
     pub(super) fn subpage_title(&self) -> Option<Text> {

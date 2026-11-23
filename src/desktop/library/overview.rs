@@ -49,7 +49,7 @@ impl Desktop {
             .child(self.collection_filters(cx))
             .child(self.collection_selection(selected, cx));
         let shown = self.library.order.len();
-        let total = self.library.entries.len();
+        let total = self.library.platform_count;
         if shown == 0 {
             page = page.child(self.empty_collection(cx));
         } else {
@@ -84,7 +84,13 @@ impl Desktop {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(label(&p, "YOUR COLLECTION / PS1").font(self.fonts.semibold()))
+                    .child(
+                        label(
+                            &p,
+                            format!("YOUR COLLECTION / {}", self.library.platform.as_str()),
+                        )
+                        .font(self.fonts.semibold()),
+                    )
                     .child(
                         div()
                             .text_size(px(30.))
@@ -128,7 +134,7 @@ impl Desktop {
     fn collection_section(&self, cx: &Context<Self>) -> Div {
         let p = self.library_palette();
         let hint = self.tr(Text::LibraryRefreshAllHint);
-        let enabled = !self.library.entries.is_empty() && !self.library.scraping.full_requested();
+        let enabled = self.library.platform_count != 0 && !self.library.scraping.full_requested();
         div()
             .flex()
             .flex_wrap()
@@ -151,7 +157,7 @@ impl Desktop {
                     .child(label(
                         &p,
                         self.tr(Text::LibraryGameCount)
-                            .replace("{count}", &self.library.entries.len().to_string()),
+                            .replace("{count}", &self.library.platform_count.to_string()),
                     )),
             )
             .child(
@@ -159,21 +165,23 @@ impl Desktop {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(
-                        ghost_icon_button(&p, "lib-refresh-all", "reset", hint)
-                            .debug_selector(|| "lib-refresh-all".into())
-                            .role(gpui::Role::Button)
-                            .aria_label(hint)
-                            .when(!enabled, |button| {
-                                button.opacity(0.45).cursor_default().tab_stop(false)
-                            })
-                            .when(enabled, |button| {
-                                button.on_click(cx.listener(|v, _, _, cx| {
-                                    v.refresh_library_data(cx);
-                                    cx.stop_propagation();
-                                }))
-                            }),
-                    )
+                    .when(!self.is_gba(), |s| {
+                        s.child(
+                            ghost_icon_button(&p, "lib-refresh-all", "reset", hint)
+                                .debug_selector(|| "lib-refresh-all".into())
+                                .role(gpui::Role::Button)
+                                .aria_label(hint)
+                                .when(!enabled, |button| {
+                                    button.opacity(0.45).cursor_default().tab_stop(false)
+                                })
+                                .when(enabled, |button| {
+                                    button.on_click(cx.listener(|v, _, _, cx| {
+                                        v.refresh_library_data(cx);
+                                        cx.stop_propagation();
+                                    }))
+                                }),
+                        )
+                    })
                     .child(
                         ghost_button(
                             &self.fonts,
@@ -407,7 +415,7 @@ impl Desktop {
 
     fn empty_collection(&self, cx: &Context<Self>) -> Div {
         let p = self.library_palette();
-        let empty = self.library.entries.is_empty();
+        let empty = self.library.platform_count == 0;
         let panel = div()
             .flex_1()
             .min_h_0()

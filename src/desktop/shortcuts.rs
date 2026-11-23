@@ -116,7 +116,12 @@ impl Desktop {
             .when(bindings != &self.preferences.shortcuts, |panel| {
                 panel.child(label(p, self.tr(Text::BindingDraft)).text_color(rgb(p.primary)))
             })
-            .children(ShortcutAction::ALL.map(|action| self.shortcut_row(action, bindings, cx)))
+            .children(
+                ShortcutAction::ALL
+                    .into_iter()
+                    .filter(|&action| self.supports_shortcut(action))
+                    .map(|action| self.shortcut_row(action, bindings, cx)),
+            )
     }
 
     fn shortcut_row(

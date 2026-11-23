@@ -100,6 +100,9 @@ pub(super) fn index_names(tx: &Transaction<'_>, release: &Release) -> rusqlite::
 
 pub fn candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, String> {
     let conn = lib.connect()?;
+    if !super::catalog_available(&conn, id).map_err(|e| e.to_string())? {
+        return Ok(Vec::new());
+    }
     let evidence = evidence(&conn, id).map_err(|e| e.to_string())?;
     let needle = query.trim();
     let mut result = Vec::new();

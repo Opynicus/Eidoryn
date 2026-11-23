@@ -15,6 +15,7 @@ struct Key {
     palette: Palette,
     language: Language,
     page: WorkspacePage,
+    core: super::GamePlatform,
 }
 
 impl Key {
@@ -23,6 +24,7 @@ impl Key {
             palette: desktop.workspace_palette(),
             language: desktop.language,
             page: desktop.page,
+            core: desktop.library.platform,
         }
     }
 }
@@ -278,12 +280,22 @@ impl Desktop {
                         .pb_2(),
                 )
             })
-            .children(DESTINATIONS.into_iter().map(|(id, symbol, title, page)| {
-                let selected = page == self.page;
-                nav_item(p, id, symbol, self.tr(title), compact, selected).on_click(
-                    cx.listener(move |view, _, window, cx| view.show_page(page, window, cx)),
-                )
-            }))
+            .children(
+                DESTINATIONS
+                    .into_iter()
+                    .filter(|(_, _, _, page)| {
+                        !self.is_gba()
+                            || !matches!(page, WorkspacePage::Debug | WorkspacePage::SaveStates)
+                    })
+                    .map(|(id, symbol, title, page)| {
+                        let selected = page == self.page;
+                        nav_item(p, id, symbol, self.tr(title), compact, selected).on_click(
+                            cx.listener(move |view, _, window, cx| {
+                                view.show_page(page, window, cx);
+                            }),
+                        )
+                    }),
+            )
             .child(div().flex_1())
             .when(!compact, |rail| {
                 rail.child(
@@ -292,7 +304,10 @@ impl Desktop {
                         .border_t_1()
                         .border_color(rgb(p.border))
                         .pt_3()
-                        .child(label(p, "EIDORYN / PS1").font(self.fonts.bold()))
+                        .child(
+                            label(p, format!("EIDORYN / {}", self.library.platform.as_str()))
+                                .font(self.fonts.bold()),
+                        )
                         .child(
                             label(p, concat!("v", env!("CARGO_PKG_VERSION")))
                                 .text_color(rgb(p.soft_text())),

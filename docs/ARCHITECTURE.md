@@ -1,6 +1,6 @@
 # Eidoryn 代码结构
 
-Eidoryn 是应用层，当前只实现 PlayStation。GBA、PS2 等是未来扩展方向，不是已经支持的平台。本次重构将可独立构建的硬件核心、可复用的宿主服务和具体主机的应用适配明确分开；不为尚不存在的核心定义统一 CPU、存档或渲染器协议。
+Eidoryn 的桌面应用通过各自的适配层运行 PlayStation 和 Game Boy Advance。两个硬件核心可以独立构建，共用的游戏库按平台识别媒体并记录游玩时长。
 
 ```text
 Eidoryn (CLI / GPUI)
@@ -8,6 +8,7 @@ Eidoryn (CLI / GPUI)
 │   ├── eidoryn-ps1              CPU / Bus / GPU / SPU / CD-ROM / SIO 等硬件
 │   │   └── eidoryn-jit-runtime  可选原生执行边界
 │   └── eidoryn-host::audio      有界 PCM 传输
+├── systems::gba ── eidoryn-gba  卡带、运行线程与 SRAM 文件 / ARM7TDMI、总线与显示
 └── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
@@ -15,6 +16,8 @@ Eidoryn (CLI / GPUI)
 
 | 位置 | 职责 |
 | --- | --- |
+| `crates/gba/` | 独立 GBA 硬件核心，通过 ROM、按键和 RGB 帧与宿主交换数据 |
+| `src/systems/gba.rs`、`src/library/playtime.rs` | GBA 的运行与 SRAM 持久化，以及两种平台共用的游玩时长记录 |
 | `crates/ps1/src/{cpu,bus,machine}.rs` | MIPS CPU、总线、机器状态与执行；DMA 位于 `bus/dma.rs` |
 | `crates/ps1/src/cpu_engine.rs`、`cpu/jit.rs` | 解释器/JIT 选择、缓存及逐指令异常/中断/代码失效检查 |
 | `crates/ps1/src/gpu/` | 自主软件光栅器、多线程绘图、共享 wgpu 计算管线与 WGSL；GP0/GP1 和显示时序位于 `gpu.rs` |

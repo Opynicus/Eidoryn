@@ -1523,6 +1523,7 @@ name = "eidoryn"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "eidoryn-gba",
  "eidoryn-host",
  "eidoryn-ps1",
  "gpui",
@@ -1541,6 +1542,10 @@ dependencies = [
  "toml 0.8.23",
  "uuid",
 ]
+
+[[package]]
+name = "eidoryn-gba"
+version = "0.1.0"
 
 [[package]]
 name = "eidoryn-host"

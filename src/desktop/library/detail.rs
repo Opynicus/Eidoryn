@@ -336,10 +336,12 @@ impl Desktop {
         let discs = entry.disc_count();
         let summary = [
             entry.serial.clone(),
-            Some(
+            Some(if self.is_gba() {
+                self.tr(Text::Cartridge).to_owned()
+            } else {
                 self.tr(Text::LibraryDiscCount)
-                    .replace("{count}", &discs.to_string()),
-            ),
+                    .replace("{count}", &discs.to_string())
+            }),
             Some(self.library_duration(entry)),
         ]
         .into_iter()
@@ -348,14 +350,16 @@ impl Desktop {
         .join(" · ");
         let actions = self
             .library_launch_controls("lib-detail-start", id, cx)
-            .child(self.library_action(
-                "lib-retry-game",
-                Text::LibraryRetryGame,
-                Some("reset"),
-                false,
-                cx,
-                move |v, _, cx| v.retry_game(id, cx),
-            ))
+            .when(!self.is_gba(), |s| {
+                s.child(self.library_action(
+                    "lib-retry-game",
+                    Text::LibraryRetryGame,
+                    Some("reset"),
+                    false,
+                    cx,
+                    move |v, _, cx| v.retry_game(id, cx),
+                ))
+            })
             .when(entry.scrape_active, |s| {
                 s.child(self.library_button(
                     "lib-cancel-job",
@@ -382,9 +386,13 @@ impl Desktop {
                     .flex_col()
                     .gap_2()
                     .child(
-                        label(&p, self.tr(Text::LibraryDetailEyebrow))
-                            .text_color(rgb(p.primary))
-                            .font(self.fonts.semibold()),
+                        label(
+                            &p,
+                            self.tr(Text::LibraryDetailEyebrow)
+                                .replace("{platform}", &entry.game.platform),
+                        )
+                        .text_color(rgb(p.primary))
+                        .font(self.fonts.semibold()),
                     )
                     .child(
                         div()
@@ -429,6 +437,16 @@ impl Desktop {
         .collect::<Vec<_>>()
         .join(" · ");
         let date = entry.publication_date();
+        if self.is_gba() {
+            return self
+                .detail_fields(&[
+                    (Text::LibraryPlatform, Some("Game Boy Advance")),
+                    (Text::LibrarySerial, entry.serial.as_deref()),
+                    (Text::LibraryRegion, entry.region.as_deref()),
+                    date,
+                ])
+                .debug_selector(|| "lib-release-fields".into());
+        }
         let matched = entry.matched_release(self.tr(Text::LibraryPending));
         if matched.is_none() && date.1.is_none() && source.is_empty() {
             return label(&p, self.tr(Text::LibraryNoReleaseInfo))
@@ -486,28 +504,31 @@ impl Desktop {
                 cx,
                 move |v, w, cx| v.edit_library(Edit::Match(id), String::new(), w, cx),
             ));
-        let panel =
-            section(&p)
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(self.panel_heading(
-                            Text::LibraryReleaseInfo,
-                            self.tr(Text::LibraryReleaseHint),
-                        ))
-                        .child(self.library_button(
-                            "lib-edit-info",
-                            Text::LibraryEditInfo,
-                            false,
-                            cx,
-                            move |v, w, cx| v.edit_release(id, w, cx),
-                        )),
-                )
-                .child(self.edition_fields(entry))
-                .child(actions);
+        let panel = section(&p)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(self.panel_heading(
+                        Text::LibraryReleaseInfo,
+                        self.tr(if self.is_gba() {
+                            Text::LibraryCartridgeInfoHint
+                        } else {
+                            Text::LibraryReleaseHint
+                        }),
+                    ))
+                    .child(self.library_button(
+                        "lib-edit-info",
+                        Text::LibraryEditInfo,
+                        false,
+                        cx,
+                        move |v, w, cx| v.edit_release(id, w, cx),
+                    )),
+            )
+            .child(self.edition_fields(entry))
+            .when(!self.is_gba(), |s| s.child(actions));
         match self.library.metadata_lookups.get(&id) {
             Some(MetadataLookup::Finished(text)) => panel.child(label(&p, self.tr(*text))),
             Some(MetadataLookup::Failed(error)) => panel.child(
@@ -565,13 +586,15 @@ impl Desktop {
                     .items_start()
                     .flex_wrap()
                     .gap_2()
-                    .child(
-                        self.panel_heading(
-                            Text::LibraryLocations,
-                            self.tr(Text::LibraryLocationsHint),
-                        ),
-                    )
-                    .when_some(selected, |s, loc| {
+                    .child(self.panel_heading(
+                        Text::LibraryLocations,
+                        self.tr(if self.is_gba() {
+                            Text::LibraryCartridgeLocationsHint
+                        } else {
+                            Text::LibraryLocationsHint
+                        }),
+                    ))
+                    .when_some(selected.filter(|_| !self.is_gba()), |s, loc| {
                         let edit = Edit::Group {
                             disc: loc.disc_id,
                             location: loc.id,
@@ -595,7 +618,11 @@ impl Desktop {
     fn detail_location(&self, i: usize, loc: &Location, selected: bool, cx: &Context<Self>) -> Div {
         let p = self.library_palette();
         let id = loc.id;
-        let disc = format!("{} {}", self.tr(Text::LibraryDisc), loc.disc_number);
+        let disc = if self.is_gba() {
+            self.tr(Text::Cartridge).to_owned()
+        } else {
+            format!("{} {}", self.tr(Text::LibraryDisc), loc.disc_number)
+        };
         let heading = loc
             .serial
             .as_ref()
@@ -673,6 +700,8 @@ impl Desktop {
             Text::LibraryManualCover
         } else if entry.thumbnail.is_some() {
             Text::LibraryCachedCover
+        } else if self.is_gba() {
+            Text::LibraryNoCartridgeCover
         } else {
             Text::LibraryNoCover
         };
@@ -696,27 +725,37 @@ impl Desktop {
                         cx,
                         move |v, _, cx| v.library_picker(Picker::Cover(id), cx),
                     ))
-                    .child(
-                        self.library_button(
-                            "lib-get-cover",
-                            Text::LibraryGetCover,
+                    .when(!self.is_gba(), |s| {
+                        s.child(
+                            self.library_button(
+                                "lib-get-cover",
+                                Text::LibraryGetCover,
+                                false,
+                                cx,
+                                move |v, _, cx| {
+                                    v.fetch_library_covers(vec![id], CoverRequest::Game, cx);
+                                },
+                            )
+                            .when(self.library.scraping.busy(), |b| {
+                                b.opacity(0.45).cursor_default()
+                            }),
+                        )
+                    })
+                    .when(!self.is_gba() || entry.manual_cover, |s| {
+                        s.child(self.library_button(
+                            "lib-restore-cover",
+                            if self.is_gba() {
+                                Text::LibraryRemoveLocalCover
+                            } else {
+                                Text::LibraryResetCover
+                            },
                             false,
                             cx,
                             move |v, _, cx| {
-                                v.fetch_library_covers(vec![id], CoverRequest::Game, cx);
+                                v.library_write(cx, move |s| covers::reset_local(s, id));
                             },
-                        )
-                        .when(self.library.scraping.busy(), |b| {
-                            b.opacity(0.45).cursor_default()
-                        }),
-                    )
-                    .child(self.library_button(
-                        "lib-restore-cover",
-                        Text::LibraryResetCover,
-                        false,
-                        cx,
-                        move |v, _, cx| v.library_write(cx, move |s| covers::reset_local(s, id)),
-                    ))
+                        ))
+                    })
                     .child(
                         self.library_button(
                             "lib-repair-thumbnail",

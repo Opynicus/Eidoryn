@@ -401,20 +401,26 @@ impl Desktop {
                             &p,
                             "LIBRARY / SETTINGS",
                             self.tr(Text::LibrarySettings),
-                            self.tr(Text::LibrarySettingsHint),
+                            self.tr(if self.is_gba() {
+                                Text::LibraryMetadataCacheHint
+                            } else {
+                                Text::LibrarySettingsHint
+                            }),
                         ))
-                        .child(self.cover_source_settings(cx))
-                        .child(
-                            self.settings_card(
-                                Text::LibraryConcurrentTasks,
-                                Text::LibraryConcurrentTasksHint,
-                            )
-                            .child(self.scrape_concurrency_control(false, cx))
-                            .child(self.scrape_concurrency_control(true, cx)),
-                        )
-                        .child(self.automatic_settings(cx))
+                        .when(!self.is_gba(), |s| {
+                            s.child(self.cover_source_settings(cx))
+                                .child(
+                                    self.settings_card(
+                                        Text::LibraryConcurrentTasks,
+                                        Text::LibraryConcurrentTasksHint,
+                                    )
+                                    .child(self.scrape_concurrency_control(false, cx))
+                                    .child(self.scrape_concurrency_control(true, cx)),
+                                )
+                                .child(self.automatic_settings(cx))
+                        })
                         .child(self.metadata_cache_settings(cx))
-                        .when(self.library.cover.is_some(), |s| {
+                        .when(!self.is_gba() && self.library.cover.is_some(), |s| {
                             s.child(self.cover_progress(cx))
                         }),
                 ),

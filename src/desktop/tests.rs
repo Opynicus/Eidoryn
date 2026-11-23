@@ -346,7 +346,7 @@ fn enlarged_workspace_and_fullscreen_share_the_frame_at_every_internal_resolutio
                 let stage = cx.debug_bounds("fullscreen-display").unwrap();
                 assert_eq!(stage, viewport);
                 assert_eq!(
-                    super::video::video_bounds(stage),
+                    super::video::fit_video(stage, 4.0 / 3.0),
                     picture,
                     "{scale:?} in {width} × {height}"
                 );
@@ -860,6 +860,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
     window.focus(&focus, cx);
     let preferences = eidoryn_psx::preferences::Preferences::default();
     Desktop {
+        gba: super::gba::Session::default(),
         library: library::Workspace::new(None),
         sidebar: None,
         navigation: sidebar::Navigation::default(),

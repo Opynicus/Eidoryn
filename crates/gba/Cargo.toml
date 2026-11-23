@@ -1,0 +1,10 @@
+[package]
+name = "eidoryn-gba"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-only"
+description = "Independent Game Boy Advance emulation core for Eidoryn"
+
+[lints]
+workspace = true

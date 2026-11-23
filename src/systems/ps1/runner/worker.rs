@@ -622,6 +622,16 @@ impl Worker {
         }
         // Checkpoints remain available even when a memory-card file cannot be flushed.
         match command {
+            Command::Pause => {
+                self.running = false;
+                self.release_input();
+                if let Some(audio) = &self.audio {
+                    audio.clear();
+                }
+                self.machine.bus.spu.drain_audio().for_each(drop);
+                self.reset_pacing();
+                return false;
+            }
             Command::SaveState | Command::QuickSave => {
                 self.save_state(matches!(command, Command::QuickSave));
                 return false;
@@ -762,6 +772,7 @@ impl Worker {
             }
             Command::FlushCards => self.message = None,
             Command::SaveState
+            | Command::Pause
             | Command::SetButtons(_)
             | Command::SetAntiAliasing(_)
             | Command::SetRewinding(_)

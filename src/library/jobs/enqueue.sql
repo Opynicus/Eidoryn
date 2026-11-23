@@ -5,7 +5,7 @@ SELECT ?1,?2,?3,?4,
               AND EXISTS(SELECT 1 FROM game_metadata WHERE game_id=?1
                          AND COALESCE(release_serial,disc_serial,'')<>'')
          THEN NULL ELSE ?5 END
-WHERE EXISTS(SELECT 1 FROM games WHERE id=?1 AND NOT hidden)
+WHERE EXISTS(SELECT 1 FROM games WHERE id=?1 AND platform='PS1' AND NOT hidden)
   AND (?4='full' OR NOT EXISTS(SELECT 1 FROM game_metadata WHERE game_id=?1 AND cache_cleared))
 ON CONFLICT(game_id,provider,job_type) WHERE status IN ('pending','retry_wait','running')
 DO UPDATE SET

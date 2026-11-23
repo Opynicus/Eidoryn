@@ -38,9 +38,12 @@ impl CrtState {
 
 pub(super) fn frame_image(snapshot: &Snapshot) -> Arc<RenderImage> {
     let (width, height) = snapshot.dimensions;
+    rgb_image(&snapshot.rgb, width, height)
+}
+
+fn rgb_image(rgb: &[u8], width: usize, height: usize) -> Arc<RenderImage> {
     // RenderImage expects BGRA bytes, even though image::Frame uses an RGBA container.
-    let pixels = snapshot
-        .rgb
+    let pixels = rgb
         .as_chunks::<3>()
         .0
         .iter()
@@ -56,7 +59,7 @@ impl Desktop {
     /// Convert only the latest visible frame. Debugger pages do not use video
     /// or CRT textures, so release those images until the display returns.
     pub(super) fn sync_video(&mut self, visible: bool, window: &mut Window) {
-        if !visible {
+        if !visible || self.is_gba() && self.gba.snapshot.rgb.is_empty() {
             if let Some(old) = self.image.take() {
                 let _ = window.drop_image(old.image);
             }
@@ -69,7 +72,15 @@ impl Desktop {
             return;
         }
         let next = VideoImage {
-            image: frame_image(&self.snapshot),
+            image: if self.is_gba() {
+                rgb_image(
+                    &self.gba.snapshot.rgb,
+                    eidoryn_gba::WIDTH,
+                    eidoryn_gba::HEIGHT,
+                )
+            } else {
+                frame_image(&self.snapshot)
+            },
             dirty: false,
         };
         if let Some(old) = self.image.replace(next) {
@@ -107,18 +118,27 @@ impl Desktop {
         .on_click(cx.listener(|view, _, _, cx| view.toggle_crt(cx)))
     }
 
+    pub(super) fn video_aspect(&self) -> f32 {
+        if self.is_gba() { 1.5 } else { 4.0 / 3.0 }
+    }
+
     pub(super) fn video(&self) -> impl IntoElement {
         let image = self.image.as_ref().map(|cached| Arc::clone(&cached.image));
         let filter = self.crt.filter;
         let cache = Rc::clone(&self.crt.overlay);
-        let lines = self.snapshot.native_dimensions.1;
+        let aspect = self.video_aspect();
+        let lines = if self.is_gba() {
+            eidoryn_gba::HEIGHT
+        } else {
+            self.snapshot.native_dimensions.1
+        };
         canvas(
             |_, _, _| (),
             move |bounds, (), window, _| {
                 let Some(image) = image else {
                     return;
                 };
-                let bounds = video_bounds(bounds);
+                let bounds = fit_video(bounds, aspect);
                 let gpui::Size { width, height } = bounds.size;
                 let corners = Corners::all(if filter == CrtFilter::Off {
                     px(0.0)
@@ -168,9 +188,8 @@ impl Desktop {
     }
 }
 
-/// Fit the guest's 4:3 TV image into the available space in logical pixels.
-pub(super) fn video_bounds(viewport: Bounds<Pixels>) -> Bounds<Pixels> {
-    let aspect = 4.0 / 3.0;
+/// Center the guest display and preserve its aspect ratio in logical pixels.
+pub(super) fn fit_video(viewport: Bounds<Pixels>, aspect: f32) -> Bounds<Pixels> {
     let width = viewport.size.width.min(viewport.size.height * aspect);
     let height = width / aspect;
     let origin = viewport.origin

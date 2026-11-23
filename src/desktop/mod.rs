@@ -7,6 +7,7 @@ mod console;
 mod controller;
 mod drawer;
 mod fonts;
+mod gba;
 mod graphics;
 mod icons;
 mod library;
@@ -26,6 +27,7 @@ mod video;
 mod view;
 
 use audio_controls::AudioControls;
+use eidoryn_psx::library::GamePlatform;
 use eidoryn_psx::{
     app,
     audio::{AudioBuffer, output::AudioOutput},
@@ -213,7 +215,7 @@ fn open_window(
                         let weak = cx.weak_entity();
                         window.on_window_should_close(cx, move |_, cx| {
                             weak.update(cx, |view: &mut Desktop, cx| {
-                                view.command(Command::RequestClose, cx);
+                                view.request_close(cx);
                             })
                             .is_err()
                         });
@@ -226,6 +228,7 @@ fn open_window(
                             );
                         }
                         Desktop {
+                            gba: gba::Session::default(),
                             library,
                             sidebar: None,
                             navigation: sidebar::Navigation::default(),
@@ -298,6 +301,7 @@ fn open_window(
 
 #[allow(clippy::struct_excessive_bools)] // Independent view, debugger, and appearance preferences.
 struct Desktop {
+    gba: gba::Session,
     library: library::Workspace,
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
     navigation: sidebar::Navigation,
@@ -499,6 +503,7 @@ impl Desktop {
     }
 
     fn receive_snapshot(&mut self, cx: &mut gpui::Context<Self>) {
+        self.receive_gba(cx);
         self.tick_library_scrape(cx);
         self.refresh_playing_library(cx);
         if let Some(command) = self.probe.as_mut().and_then(probe::Probe::input) {
@@ -511,6 +516,7 @@ impl Desktop {
             cx.notify();
         }
         if let Some(mut snapshot) = self.runner.take_snapshot() {
+            self.receive_close_error(&snapshot);
             // A queued debug snapshot can arrive after the user closes the view.
             if self.snapshot_mode == SnapshotMode::Display {
                 snapshot.mode = SnapshotMode::Display;
@@ -527,7 +533,9 @@ impl Desktop {
             if let Some(warning) = snapshot.presentation_warning.take() {
                 append_notice(&mut self.notice, warning);
             }
-            self.receive_media_selection(&snapshot, cx);
+            if !self.is_gba() {
+                self.receive_media_selection(&snapshot, cx);
+            }
             if snapshot.renamed_state != self.snapshot.renamed_state
                 && let Some((old, new)) = &snapshot.renamed_state
                 && self.selected_save_state.as_ref() == Some(old)
@@ -535,7 +543,10 @@ impl Desktop {
                 self.selected_save_state = Some(new.clone());
             }
             let frame_changed = !snapshot.has_same_frame(&self.snapshot);
-            if frame_changed && let Some(image) = &mut self.image {
+            if frame_changed
+                && !self.is_gba()
+                && let Some(image) = &mut self.image
+            {
                 // Coalesce pending frames without keeping a second RGB allocation.
                 image.dirty = true;
             }
@@ -598,6 +609,13 @@ impl Desktop {
     }
 
     fn display_title(&self) -> &str {
+        if self.is_gba() {
+            return if self.gba.snapshot.path.is_some() {
+                &self.gba.snapshot.title
+            } else {
+                "Game Boy Advance"
+            };
+        }
         if self.snapshot.is_demo {
             self.tr(eidoryn_psx::i18n::Text::BuiltinDemo)
         } else {

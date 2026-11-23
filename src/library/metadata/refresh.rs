@@ -32,6 +32,9 @@ pub fn refresh_online_cancellable(
     id: i64,
     cancel: &AtomicBool,
 ) -> Result<RefreshOutcome, String> {
+    if !super::catalog_available(&lib.connect()?, id).map_err(|e| e.to_string())? {
+        return Ok(RefreshOutcome::NotFound);
+    }
     let batch = Batch::default();
     let prepared = batch
         .prepare(lib, id, Mode::Full, cancel)

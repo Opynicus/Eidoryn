@@ -35,7 +35,15 @@ fn compare_entries(a: &Entry, b: &Entry, sort: Sort) -> Ordering {
 impl Workspace {
     fn reorder(&mut self, sort: Sort) {
         let replay = sort == Sort::Manual && !self.pending_moves.is_empty();
-        let matches = |i: usize| self.entries[i].search.contains(&self.query);
+        self.platform_count = self
+            .entries
+            .iter()
+            .filter(|e| e.game.platform_kind() == Some(self.platform))
+            .count();
+        let matches = |i: usize| {
+            self.entries[i].game.platform_kind() == Some(self.platform)
+                && self.entries[i].search.contains(&self.query)
+        };
         let mut order: Vec<_> = (0..self.entries.len())
             .filter(|&i| replay || matches(i))
             .collect();
@@ -71,7 +79,7 @@ impl Workspace {
 }
 
 impl Desktop {
-    pub(super) fn reorder_library(&mut self) {
+    pub(in crate::desktop) fn reorder_library(&mut self) {
         self.library.reorder(self.preferences.library.sort);
     }
 

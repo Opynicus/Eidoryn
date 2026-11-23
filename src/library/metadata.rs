@@ -127,6 +127,13 @@ fn cached_for(conn: &Connection, serial: &str) -> rusqlite::Result<Vec<Release>>
     .collect()
 }
 
+/// The online providers and the local release cache currently contain PS1 editions only.
+pub(super) fn catalog_available(db: &Connection, game: i64) -> rusqlite::Result<bool> {
+    db.query_row("SELECT platform='PS1' FROM games WHERE id=?", [game], |r| {
+        r.get(0)
+    })
+}
+
 /// Seed metadata with evidence from the first disc. Grouping another disc must not
 /// replace an edition the user has already identified.
 pub(super) fn identify(
@@ -141,7 +148,7 @@ pub(super) fn identify(
          VALUES(?1,?2,?3,?4)",
         params![game_id, serial, region, title],
     )?;
-    if inserted != 0 {
+    if inserted != 0 && catalog_available(tx, game_id)? {
         match_evidence(tx, game_id, serial, region, title)?;
     }
     Ok(())
@@ -269,6 +276,9 @@ pub fn refresh(lib: &Library, id: i64) -> Result<(), String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    if !catalog_available(&tx, id).map_err(|e| e.to_string())? {
+        return Ok(());
+    }
     let evidence = evidence(&tx, id).map_err(|e| e.to_string())?;
     if evidence.cache_cleared {
         return Ok(());
@@ -318,6 +328,9 @@ fn search_with(
     let serial = query.trim().to_ascii_uppercase();
     if is_release_serial(&serial) {
         let mut conn = lib.connect()?;
+        if !catalog_available(&conn, id).map_err(|e| e.to_string())? {
+            return Ok(Vec::new());
+        }
         let cached = conn
             .prepare_cached("SELECT 1 FROM fetched_releases WHERE serial=?")
             .and_then(|mut stmt| stmt.exists([&serial]))
@@ -346,6 +359,9 @@ pub fn select_cancellable(
         .map_err(|e| e.to_string())?;
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {
         return Err(ProviderError::Cancelled.to_string());
+    }
+    if !catalog_available(&tx, id).map_err(|e| e.to_string())? {
+        return Err("Release lookup is unavailable for this platform".into());
     }
     if assign(&tx, id, release_id, true).map_err(|e| e.to_string())? == 0 {
         return Err("Unknown game or cached release".into());

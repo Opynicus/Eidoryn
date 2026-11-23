@@ -1,6 +1,8 @@
-use super::{Game, IndexResult, Library, Location, key_path, metadata, path_key};
+use super::{
+    Game, GamePlatform, IndexResult, Library, Location, key_path, media::MediaProbe, metadata,
+    path_key,
+};
 use crate::preferences::RecentDisc;
-use eidoryn_ps1::disc::{DiscImage, DiscProbe, DiscRegion};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -136,7 +138,7 @@ fn needs_confirmation(db: &Connection, home: i64, game: i64) -> rusqlite::Result
     db.prepare_cached(
         "SELECT 1
          FROM discs d
-         JOIN discs candidate ON candidate.sample = d.sample AND candidate.game_id <> d.game_id
+         JOIN discs candidate ON candidate.platform = d.platform AND candidate.sample = d.sample AND candidate.game_id <> d.game_id
          JOIN games g ON g.id = candidate.game_id
          WHERE d.home_game_id = ? AND NOT g.hidden
                AND (d.strong_id IS NULL OR candidate.strong_id IS NULL)",
@@ -157,9 +159,9 @@ fn dependency_paths(stamps: Vec<Stamp>, path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn probe_files(path: &Path) -> IndexResult<(DiscProbe, Vec<Stamp>)> {
+fn probe_files(platform: GamePlatform, path: &Path) -> IndexResult<(MediaProbe, Vec<Stamp>)> {
     let mut stamps = vec![Stamp::read(path)?];
-    let probe = DiscImage::probe(path)?;
+    let probe = platform.probe(path)?;
     for dependency in &probe.dependencies {
         if !stamps.iter().any(|s| &s.path == dependency) {
             stamps.push(Stamp::read(dependency)?);
@@ -180,6 +182,7 @@ impl Library {
     ) -> IndexResult<IndexedFile> {
         let path = path.canonicalize()?;
         let key = path_key(&path);
+        let platform = GamePlatform::for_file(&path)?;
         loop {
             let entry = current(db, &key)?;
             let saved = entry
@@ -215,24 +218,24 @@ impl Library {
                     pending,
                 });
             }
-            let (probe, stamps) = probe_files(&path)?;
+            let (probe, stamps) = probe_files(platform, &path)?;
             // A known strong identity with matching samples can resolve a changed
             // timestamp or a possible move. A new, unrelated entry never hashes.
             let needs_identity = verified.is_some()
                 || db
-                    .prepare_cached("SELECT 1 FROM discs WHERE sample=? AND strong_id IS NOT NULL")?
-                    .exists([&probe.sample])?;
+                    .prepare_cached("SELECT 1 FROM discs WHERE platform=? AND sample=? AND strong_id IS NOT NULL")?
+                    .exists(params![platform.as_str(), probe.sample])?;
             let identity = if needs_identity {
-                let hash = DiscImage::open(&path)?.identity().to_owned();
+                let hash = platform.identity(&path)?;
                 if verified.is_some_and(|(booted, _)| booted != hash) {
-                    return Err("Disc changed between loading and library association".into());
+                    return Err("Media changed between loading and library association".into());
                 }
                 Some(hash)
             } else {
                 None
             };
             if !stamps.iter().all(Stamp::unchanged) {
-                return Err("Disc changed during indexing; rescan it".into());
+                return Err("Media changed during indexing; rescan it".into());
             }
             // Another importer may finish while a slow disc probe or hash is in flight.
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -241,9 +244,9 @@ impl Library {
                 || identity.is_none()
                     && tx
                         .prepare_cached(
-                            "SELECT 1 FROM discs WHERE sample=? AND strong_id IS NOT NULL",
+                            "SELECT 1 FROM discs WHERE platform=? AND sample=? AND strong_id IS NOT NULL",
                         )?
-                        .exists([&probe.sample])?
+                        .exists(params![platform.as_str(), probe.sample])?
             {
                 continue;
             }
@@ -285,28 +288,26 @@ impl Library {
         &self,
         tx: Transaction<'_>,
         path: &Path,
-        probe: DiscProbe,
+        probe: MediaProbe,
         stamps: &[Stamp],
         mode: Mode,
         verified: Option<(&str, bool)>,
     ) -> IndexResult<IndexedFile> {
         let key = path_key(path);
-        let title = path.file_stem().unwrap_or_default().to_string_lossy();
-        let region = probe.region.map(|r| match r {
-            DiscRegion::America => "USA",
-            DiscRegion::Europe => "Europe",
-            DiscRegion::Japan => "Japan",
-        });
+        let filename = path.file_stem().unwrap_or_default().to_string_lossy();
+        let title = probe.title.as_deref().unwrap_or(&filename);
+        let region = probe.region;
+        let platform = probe.platform.as_str();
         tx.execute(
-            "INSERT INTO games(fallback_title) VALUES(?)",
-            [title.as_ref()],
+            "INSERT INTO games(fallback_title,platform) VALUES(?,?)",
+            params![title, platform],
         )?;
         let home = tx.last_insert_rowid();
         let identical = if let Some((id, _)) = verified {
             tx.query_row(
                 "SELECT game_id,COALESCE(copy_of,id),number
-                 FROM discs WHERE strong_id=? ORDER BY id LIMIT 1",
-                [id],
+                 FROM discs WHERE platform=? AND strong_id=? ORDER BY id LIMIT 1",
+                params![platform, id],
                 |r| {
                     Ok((
                         r.get::<_, i64>(0)?,
@@ -322,8 +323,8 @@ impl Library {
         let (game, copy_of, number) =
             identical.map_or((home, None, 1), |(g, d, n)| (g, Some(d), n));
         tx.execute(
-            "INSERT INTO discs(home_game_id,game_id,serial,region,boot,sample,strong_id,number,copy_of)
-             VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO discs(home_game_id,game_id,serial,region,boot,sample,strong_id,number,copy_of,platform)
+             VALUES(?,?,?,?,?,?,?,?,?,?)",
             params![
                 home,
                 game,
@@ -334,6 +335,7 @@ impl Library {
                 verified.map(|(identity, _)| identity),
                 number,
                 copy_of,
+                platform,
             ],
         )?;
         let disc = tx.last_insert_rowid();
@@ -346,7 +348,7 @@ impl Library {
             tx.execute("DELETE FROM ignored WHERE path=?", [&key])?;
             tx.execute("UPDATE games SET hidden=0 WHERE id=? AND hidden", [game])?;
         }
-        metadata::identify(&tx, home, probe.serial.as_deref(), region, title.as_ref())?;
+        metadata::identify(&tx, home, probe.serial.as_deref(), region, &filename)?;
         let pending = needs_confirmation(&tx, home, game)?;
         self.queue_new_game(&tx, home, game)?;
         tx.commit()?;
@@ -377,15 +379,24 @@ impl Library {
 
     /// Visible games across all search and sort settings, including newly committed imports.
     pub fn visible_game_ids(&self) -> Result<Vec<i64>, String> {
+        self.visible_ids(None)
+    }
+
+    /// Visible games covered by the current PlayStation release and artwork providers.
+    pub fn visible_games_for_scraping(&self) -> Result<Vec<i64>, String> {
+        self.visible_ids(Some(GamePlatform::Ps1))
+    }
+
+    fn visible_ids(&self, platform: Option<GamePlatform>) -> Result<Vec<i64>, String> {
         let db = self.connect()?;
         let mut q = db
             .prepare(
-                "SELECT g.id FROM games g WHERE NOT g.hidden AND EXISTS(
+                "SELECT g.id FROM games g WHERE NOT g.hidden AND (?1 IS NULL OR g.platform=?1) AND EXISTS(
             SELECT 1 FROM discs d JOIN listed_locations l ON l.disc_id=d.id WHERE d.game_id=g.id)
             ORDER BY g.id",
             )
             .map_err(|e| e.to_string())?;
-        q.query_map([], |r| r.get(0))
+        q.query_map([platform.map(GamePlatform::as_str)], |r| r.get(0))
             .and_then(Iterator::collect)
             .map_err(|e| e.to_string())
     }
@@ -531,16 +542,28 @@ impl Library {
     }
 
     pub fn group_disc(&self, disc: i64, game: i64) -> Result<(), String> {
-        self.connect()?
-            .execute(
-                "UPDATE discs SET game_id = ?2, copy_of = NULL,
-                     number = (SELECT COALESCE(MAX(number), 0) + 1 FROM discs WHERE game_id = ?2)
-                 WHERE id = ?1 AND game_id <> ?2
-                     AND EXISTS (SELECT 1 FROM games WHERE id = ?2 AND NOT hidden)",
-                params![disc, game],
+        let db = self.connect()?;
+        // Platform and identity are immutable. The ordinary PS1 operation also
+        // remains idempotent if a caller retries after the move was committed.
+        let incompatible = db
+            .prepare_cached(
+                "SELECT 1 FROM discs d JOIN games g ON g.id=?2 WHERE d.id=?1
+             AND (d.platform<>'PS1' OR g.platform<>d.platform)",
             )
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+            .and_then(|mut query| query.exists(params![disc, game]))
+            .map_err(|e| e.to_string())?;
+        if incompatible {
+            return Err("Only PlayStation discs can be grouped into a multi-disc game".into());
+        }
+        db.execute(
+            "UPDATE discs SET game_id = ?2, copy_of = NULL,
+                 number = (SELECT COALESCE(MAX(number), 0) + 1 FROM discs WHERE game_id = ?2)
+             WHERE id = ?1 AND game_id <> ?2
+                 AND EXISTS (SELECT 1 FROM games WHERE id = ?2 AND NOT hidden)",
+            params![disc, game],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     pub fn separate_disc(&self, disc: i64) -> Result<(), String> {
@@ -598,41 +621,54 @@ impl Library {
     fn relocate_verified(&self, location: i64, new_path: &Path) -> IndexResult<()> {
         let path = new_path.canonicalize()?;
         let mut db = self.connection()?;
-        let (disc, prior_path, strong, sample): (i64, Vec<u8>, Option<String>, String) = db
-            .query_row(
-                "SELECT d.id, l.path, d.strong_id, d.sample
+        let (disc, prior_path, strong, sample, stored_platform): (
+            i64,
+            Vec<u8>,
+            Option<String>,
+            String,
+            String,
+        ) = db.query_row(
+            "SELECT d.id, l.path, d.strong_id, d.sample, d.platform
                  FROM locations l JOIN discs d ON d.id = l.disc_id
                  WHERE l.id = ?",
-                [location],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
+            [location],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
         let old_path = key_path(prior_path.clone());
-        let probe = DiscImage::probe(&path)?;
+        let platform = GamePlatform::for_file(&path)?;
+        if platform.as_str() != stored_platform {
+            return Err("Selected image belongs to a different platform".into());
+        }
+        let probe = platform.probe(&path)?;
         if sample != probe.sample {
-            return Err(
-                "Selected image differs from the indexed disc layout or sample sectors".into(),
-            );
+            return Err("Selected image differs from the indexed media sample".into());
         }
         let stamps = std::iter::once(&path)
             .chain(&probe.dependencies)
             .map(|p| Stamp::read(p))
             .collect::<IndexResult<Vec<_>>>()?;
-        let verified = DiscImage::open(&path)?;
+        let verified = platform.identity(&path)?;
         let old_stamps = parts(&db, location)?;
         let original = if strong.is_none()
             && old_path != path
             && !old_stamps.is_empty()
             && old_stamps.iter().all(Stamp::unchanged)
         {
-            Some(DiscImage::open(&old_path)?)
+            Some(platform.identity(&old_path)?)
         } else {
             None
         };
-        let expected = strong
-            .as_deref()
-            .or_else(|| original.as_ref().map(DiscImage::identity));
-        if expected.is_some_and(|id| id != verified.identity()) {
-            return Err("Selected image does not match the original full disc identity".into());
+        let expected = strong.as_deref().or(original.as_deref());
+        if expected.is_some_and(|id| id != verified) {
+            return Err("Selected image does not match the original full media identity".into());
         }
         let key = path_key(&path);
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -644,10 +680,7 @@ impl Library {
         {
             // A rescan may already have indexed the destination. Keep its local history,
             // and associate it as a verified copy of the relocated disc.
-            if other
-                .strong
-                .as_deref()
-                .is_some_and(|id| id != verified.identity())
+            if other.strong.as_deref().is_some_and(|id| id != verified)
                 || other.sample != sample
                 || !parts(&tx, other.location)?.iter().all(Stamp::unchanged)
             {
@@ -676,7 +709,7 @@ impl Library {
         write_parts(&tx, location, &stamps)?;
         tx.execute(
             "UPDATE discs SET strong_id=? WHERE id=?",
-            params![verified.identity(), disc],
+            params![verified, disc],
         )?;
         tx.execute("DELETE FROM ignored WHERE path=?", [&key])?;
         tx.commit()?;
@@ -703,9 +736,13 @@ impl Library {
         let (a, disc) = read(location)?;
         let (b, target) = read(other)?;
         let before = [parts(&db, location)?, parts(&db, other)?];
-        let verified = DiscImage::open(&a)?;
-        if verified.identity() != DiscImage::open(&b)?.identity() {
-            return Err("Full disc identities differ; the locations were kept separate".into());
+        let platform = GamePlatform::for_file(&a)?;
+        if platform != GamePlatform::for_file(&b)? {
+            return Err("Selected images belong to different platforms".into());
+        }
+        let verified = platform.identity(&a)?;
+        if verified != platform.identity(&b)? {
+            return Err("Full media identities differ; the locations were kept separate".into());
         }
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if !before.iter().flatten().all(Stamp::unchanged) {
@@ -718,14 +755,14 @@ impl Library {
             if entry
                 .strong
                 .as_deref()
-                .is_some_and(|identity| identity != verified.identity())
+                .is_some_and(|identity| identity != verified)
             {
-                return Err("Selected image differs from its recorded full disc identity".into());
+                return Err("Selected image differs from its recorded full media identity".into());
             }
         }
         tx.execute(
             "UPDATE discs SET strong_id=? WHERE id IN (?,?)",
-            params![verified.identity(), disc, target],
+            params![verified, disc, target],
         )?;
         tx.execute(
             "UPDATE discs SET game_id = (SELECT game_id FROM discs WHERE id = ?2),

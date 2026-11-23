@@ -439,3 +439,42 @@ fn wheel_scroll_during_drag_reorders_across_virtualized_rows(cx: &mut TestAppCon
     });
     assert_eq!(order, (2..=60).chain([1]).collect::<Vec<_>>());
 }
+
+#[gpui::test]
+fn gba_card_keyboard_menu_opens_local_details_without_disc_actions(app: &mut TestAppContext) {
+    let (dir, view, cx) = collection(app, 1);
+    let rom = dir.path().join("demo.gba");
+    std::fs::write(&rom, [0u8; 256]).unwrap();
+    let library = view.read_with(cx, |v, _| v.library.store.clone().unwrap());
+    library
+        .scan_files(&[rom], &AtomicBool::default(), |_| {})
+        .unwrap();
+    view.update(cx, Desktop::reload_library);
+    cx.run_until_parked();
+    click_control(cx, "core-gba");
+    cx.simulate_resize(size(px(1400.), px(1600.)));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("library-entry-1").is_none());
+    right_click(cx, "library-entry-2");
+    assert!(cx.debug_bounds("lib-card-scrape").is_none());
+    assert!(cx.debug_bounds("lib-card-remove").is_some());
+    press_keys(cx, "enter");
+    for selector in [
+        "library-details",
+        "lib-edit-info",
+        "lib-local-cover",
+        "lib-relocate-0",
+    ] {
+        assert!(cx.debug_bounds(selector).is_some(), "{selector}");
+    }
+    for selector in [
+        "lib-refresh",
+        "lib-match",
+        "lib-get-cover",
+        "lib-group",
+        "lib-retry-game",
+        "lib-bios-continue",
+    ] {
+        assert!(cx.debug_bounds(selector).is_none(), "{selector}");
+    }
+}

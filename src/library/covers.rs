@@ -329,6 +329,9 @@ fn fetch_edition(
 ) -> Result<String, String> {
     check_cancel(cancel)?;
     let conn = lib.worker_connection()?;
+    if !super::metadata::catalog_available(&conn, id).map_err(|e| e.to_string())? {
+        return Ok("skipped".into());
+    }
     // A local filename and manual display title are private. Only send a catalog
     // title to a title-based service, or a verified disc serial to a serial-based one.
     let (serial, title, region, generation, cleared) = conn.query_row(

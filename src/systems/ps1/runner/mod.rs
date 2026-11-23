@@ -1,7 +1,7 @@
 //! One emulation thread owns the machine; clients send commands and consume snapshots.
 mod pacing;
 #[cfg(feature = "desktop")]
-mod playtime;
+use crate::library::playtime;
 mod snapshot;
 mod worker;
 
@@ -79,6 +79,8 @@ pub enum Command {
     SetRewindSeconds(u16),
     SetRewinding(bool),
     Toggle,
+    /// Leave the machine paused even if an earlier run command is still queued.
+    Pause,
     Step,
     Slice,
     Reset,

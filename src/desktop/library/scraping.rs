@@ -126,7 +126,7 @@ impl Scraping {
 
 impl Desktop {
     pub(super) fn refresh_library_data(&mut self, cx: &mut Context<Self>) {
-        if self.library.scraping.full_requested() {
+        if self.is_gba() || self.library.scraping.full_requested() {
             return;
         }
         if let Some(task) = &self.library.cover
@@ -154,7 +154,7 @@ impl Desktop {
                 .spawn(async move {
                     let ids = match ids {
                         Some(ids) => ids,
-                        None => store.visible_game_ids()?,
+                        None => store.visible_games_for_scraping()?,
                     };
                     scrape::enqueue_games(&store, &ids, Mode::Full, provider)?;
                     Ok::<_, String>(ids)
@@ -307,14 +307,10 @@ impl Desktop {
             .iter()
             .flat_map(Receiver::try_iter)
             .collect();
-        if self.preferences.library.scrape_new_games {
-            for &id in &added {
-                if !state.is_queued(id) {
-                    state.incremental.insert(id);
-                }
-            }
-        } else {
-            state.incremental.clear();
+        if !added.is_empty() {
+            // Import persists eligible jobs in the same transaction as the game.
+            // Waking the scheduler also lets GBA cards appear without queuing a scraper.
+            state.next_recovery = Instant::now();
         }
         if self
             .library

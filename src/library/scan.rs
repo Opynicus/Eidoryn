@@ -1,5 +1,5 @@
 use super::{
-    IndexResult, Library, key_path, path_key,
+    GamePlatform, IndexResult, Library, key_path, path_key,
     store::{Change, Mode},
 };
 use eidoryn_ps1::disc::DiscImage;
@@ -234,7 +234,7 @@ impl<F: FnMut(&ScanProgress)> Scan<'_, F> {
             };
             if kind.is_dir() && recursive {
                 folders.push(path);
-            } else if DiscImage::supports_path(&path)
+            } else if GamePlatform::from_path(&path).is_some()
                 && (kind.is_file() || kind.is_symlink() && path.is_file())
             {
                 let path = path.canonicalize().unwrap_or(path);

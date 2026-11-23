@@ -3,20 +3,21 @@ name = "eidoryn"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Eidoryn — a PlayStation emulator with a native GPUI interface"
+description = "Eidoryn — a PlayStation and Game Boy Advance emulator with a native GPUI interface"
 license = "GPL-3.0-only"
 
 [lib]
 name = "eidoryn_psx"
 
 [workspace]
-members = ["crates/ps1", "crates/host", "crates/jit-runtime"]
+members = ["crates/gba", "crates/ps1", "crates/host", "crates/jit-runtime"]
 default-members = ["."]
 resolver = "3"
 
 [features]
 default = ["desktop", "wayland", "x11", "hardware", "jit"]
 desktop = [
+    "dep:eidoryn-gba",
     "dep:chrono",
     "dep:gpui",
     "dep:gpui_platform",
@@ -47,6 +48,7 @@ jit = ["eidoryn-ps1/jit"]
 ui-tests = ["desktop", "gpui/test-support"]
 
 [dependencies]
+eidoryn-gba = { path = "crates/gba", optional = true }
 eidoryn-ps1 = { path = "crates/ps1", default-features = false }
 eidoryn-host = { path = "crates/host", default-features = false }
 # Follow official main; Cargo.lock pins the exact tested revision for both crates.
