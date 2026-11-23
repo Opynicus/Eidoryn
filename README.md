@@ -68,7 +68,9 @@ Choose **GBA** in the top bar. Open **Game library**, add a local `.gba` cartrid
 
 Games that use 32 KiB SRAM can save through their own menus. Eidoryn keeps these saves in `saves/gba/<ROM SHA-256>.sav` under the user data directory. Moving or renaming the ROM preserves its save.
 
-The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, VBlank interrupts and selected BIOS services. CPU and DMA timing are approximate. Audio, link cable, Flash/EEPROM saves, display windows, blending, rewind and save states remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
+The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending, VBlank interrupts and selected BIOS services. CPU and DMA timing are approximate. Audio, link cable, Flash/EEPROM saves, rewind and save states remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
+
+Two optional regressions use *Castlevania: Aria of Sorrow* (USA, A2CE revision 0). One waits for the title screen without input. The other selects a file and walks into the Castle Corridor. Set `EIDORYN_ARIA_ROM` to your local cartridge path and run `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored`. Each test uses a fresh in-memory save.
 
 ### Build and launch
 

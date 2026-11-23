@@ -68,7 +68,9 @@ Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面
 
 采用 32 KiB SRAM 的游戏可以在游戏内正常存档。模拟器把存档写入用户数据目录下的 `saves/gba/<ROM SHA-256>.sav`。移动或重命名同一份 ROM 后，仍可读取原存档。
 
-首版以 240 × 160 绘制画面，支持图块背景、位图模式 3–5、精灵、垂直消隐中断和部分 BIOS 服务。CPU 与 DMA 采用近似时序。音频、联机、Flash/EEPROM 存档、显示窗口、颜色混合、倒带和即时存档尚待实现。兼容性测试使用原创自制卡带，其中一个切换 ARM/Thumb 模式并通过按键改变画面颜色，另一个用中断逐帧计数。运行 `cargo test --locked -p eidoryn-gba` 可以复现。
+首版以 240 × 160 绘制画面，支持图块背景、位图模式 3–5、精灵、马赛克效果、显示窗口、颜色混合、垂直消隐中断和部分 BIOS 服务。CPU 与 DMA 采用近似时序。音频、联机、Flash/EEPROM 存档、倒带和即时存档尚待实现。兼容性测试使用原创自制卡带，其中一个切换 ARM/Thumb 模式并通过按键改变画面颜色，另一个用中断逐帧计数。运行 `cargo test --locked -p eidoryn-gba` 可以复现。
+
+美版《恶魔城：晓月圆舞曲》（A2CE，修订版 0）另有两项启动回归测试，分别验证无按键启动到标题画面，以及选档后操作角色进入城堡走廊。将 `EIDORYN_ARIA_ROM` 指向本地 ROM，运行 `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored`。测试在内存中使用独立存档。
 
 ### 构建与启动
 

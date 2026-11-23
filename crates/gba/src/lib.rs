@@ -1,5 +1,7 @@
 //! A BIOS-less Game Boy Advance core. The host supplies cartridge bytes, pressed
 //! keys and frame pacing, and owns persistence of the cartridge SRAM.
+mod bios_affine;
+mod bios_math;
 mod bus;
 mod compression;
 mod cpu;
@@ -199,7 +201,11 @@ impl Machine {
                 self.cpu.regs[3] = quotient.unsigned_abs();
             }
             0x08 => self.cpu.regs[0] = self.cpu.regs[0].isqrt(),
+            0x09 => self.arc_tan(),
+            0x0a => self.arc_tan2(),
             0x0b | 0x0c => self.bios_copy(code == 0x0c),
+            0x0e => self.bg_affine_set(),
+            0x0f => self.obj_affine_set(),
             0x11 | 0x12 | 0x14 | 0x15 => {
                 compression::decode(&mut self.memory, code, self.cpu.regs[0], self.cpu.regs[1])?;
             }

@@ -1,4 +1,8 @@
+mod compositor;
+#[cfg(test)]
+mod tests;
 use crate::{HEIGHT, WIDTH};
+use compositor::{Effects, OBJ, Pixel, Stack, window_masks};
 
 pub(super) struct Video {
     pub palette: Box<[u8]>,
@@ -20,6 +24,37 @@ fn fixed_reference(io: &[u8], offset: usize) -> i32 {
 
 fn coefficient(bytes: &[u8], offset: usize) -> i32 {
     i32::from(half(bytes, offset) as i16)
+}
+
+fn mosaic_size(enabled: bool, register: u8) -> (usize, usize) {
+    let size = if enabled { register } else { 0 };
+    (usize::from(size & 15) + 1, usize::from(size >> 4) + 1)
+}
+
+fn background_line(
+    line: &mut [Stack; WIDTH],
+    masks: &[u8; WIDTH],
+    width: usize,
+    rank: u8,
+    layer: u8,
+    sample: impl Fn(usize) -> Option<u16>,
+) {
+    for (group, pixels) in line.chunks_mut(width).enumerate() {
+        let x = group * width;
+        if let Some(color) = sample(x) {
+            let pixel = Pixel {
+                color,
+                rank,
+                layer,
+                semi: false,
+            };
+            for (stack, mask) in pixels.iter_mut().zip(&masks[x..]) {
+                if mask & layer != 0 {
+                    stack.insert(pixel);
+                }
+            }
+        }
+    }
 }
 
 impl Video {
@@ -56,45 +91,58 @@ impl Video {
         }
 
         let mode = control & 7;
-        let mut line = [(half(&self.palette, 0), u8::MAX); WIDTH];
+        let mut objects = [Pixel::EMPTY; WIDTH];
+        let mut obj_window = [false; WIDTH];
+        if control & 0x1000 != 0 {
+            self.objects(y, control, io[0x4d], &mut objects, &mut obj_window);
+        }
+        let masks = window_masks(control, y, io, &obj_window);
+        let mut line = [Stack::backdrop(half(&self.palette, 0)); WIDTH];
+        for ((stack, mask), object) in line.iter_mut().zip(masks).zip(objects) {
+            if object.layer & mask != 0 {
+                stack.insert(object);
+            }
+        }
         for bg in 0..4 {
             if control & (0x100 << bg) == 0 {
                 continue;
             }
             let settings = half(io, 8 + bg * 2);
-            let priority = ((settings & 3) as u8) * 8 + 1 + bg as u8;
+            let rank = ((settings & 3) as u8) * 8 + 1 + bg as u8;
+            let layer = 1 << bg;
+            let (width, height) = mosaic_size(settings & 0x40 != 0, io[0x4c]);
+            let sample_y = y - y % height;
             if mode == 0 || (mode == 1 && bg < 2) {
-                for (x, pixel) in line.iter_mut().enumerate() {
-                    if priority < pixel.1
-                        && let Some(index) = self.text_index(bg, x, y, settings, io)
-                    {
-                        *pixel = (half(&self.palette, index * 2), priority);
-                    }
-                }
+                background_line(&mut line, &masks, width, rank, layer, |x| {
+                    self.text_index(bg, x, sample_y, settings, io)
+                        .map(|index| half(&self.palette, index * 2))
+                });
             } else if matches!((mode, bg), (1 | 3..=5, 2) | (2, 2 | 3)) {
                 let affine = 0x20 + (bg - 2) * 16;
-                let [mut sx, mut sy] = self.affine_origin[bg - 2];
+                let [sx, sy] = self.affine_origin[bg - 2];
+                let missed_lines = (y - sample_y) as i32;
+                let sx = sx - missed_lines * coefficient(io, affine + 2);
+                let sy = sy - missed_lines * coefficient(io, affine + 6);
                 let dx = coefficient(io, affine);
                 let dy = coefficient(io, affine + 4);
-                for pixel in &mut line {
-                    if priority < pixel.1
-                        && let Some(color) =
-                            self.affine_color(mode, control, settings, sx >> 8, sy >> 8)
-                    {
-                        *pixel = (color, priority);
-                    }
-                    sx += dx;
-                    sy += dy;
-                }
+                background_line(&mut line, &masks, width, rank, layer, |x| {
+                    self.affine_color(
+                        mode,
+                        control,
+                        settings,
+                        (sx + x as i32 * dx) >> 8,
+                        (sy + x as i32 * dy) >> 8,
+                    )
+                });
             }
         }
-        if control & 0x1000 != 0 {
-            self.objects(y, control, &mut line);
-        }
-        for ((color, _), rgb) in line
+        let effects = Effects::read(io);
+        for ((stack, mask), rgb) in line
             .into_iter()
+            .zip(masks)
             .zip(self.pixels[line_offset..].as_chunks_mut::<3>().0)
         {
+            let color = stack.color(&effects, mask);
             for (shift, channel) in [0, 5, 10].into_iter().zip(rgb) {
                 let value = ((color >> shift) & 31) as u8;
                 *channel = (value << 3) | (value >> 2);
@@ -162,7 +210,14 @@ impl Video {
         })
     }
 
-    fn objects(&self, y: usize, control: u16, line: &mut [(u16, u8); WIDTH]) {
+    fn objects(
+        &self,
+        y: usize,
+        control: u16,
+        mosaic: u8,
+        line: &mut [Pixel; WIDTH],
+        obj_window: &mut [bool; WIDTH],
+    ) {
         const SIZES: [[(i32, i32); 4]; 3] = [
             [(8, 8), (16, 16), (32, 32), (64, 64)],
             [(16, 8), (32, 8), (32, 16), (64, 32)],
@@ -170,14 +225,14 @@ impl Video {
         ];
         // The lowest OAM index wins between objects. Its BG priority then
         // determines whether the surviving object pixel covers the background.
-        let mut occupied = [false; WIDTH];
         for obj in self.oam.as_chunks::<8>().0 {
             let attr0 = half(obj, 0);
             let attr1 = half(obj, 2);
             let attr2 = half(obj, 4);
             let affine = attr0 & 0x100 != 0;
             let double = attr0 & 0x200 != 0;
-            if (!affine && double) || (attr0 & 0xc00) >= 0x800 {
+            let mode = (attr0 >> 10) & 3;
+            if (!affine && double) || mode == 3 || (mode == 2 && control & 0x8000 == 0) {
                 continue;
             }
             let Some(sizes) = SIZES.get(usize::from(attr0 >> 14)) else {
@@ -189,6 +244,8 @@ impl Video {
             if dy >= h * scale {
                 continue;
             }
+            let (block_width, block_height) = mosaic_size(attr0 & 0x1000 != 0, mosaic);
+            let dy = (dy - (y % block_height) as i32).max(0);
             let priority = (((attr2 >> 10) & 3) * 8) as u8;
             let depth8 = attr0 & 0x2000 != 0;
             let units = if depth8 { 2 } else { 1 };
@@ -201,15 +258,17 @@ impl Video {
             } else {
                 32
             };
-            // X wraps at 512. The unused 240..511 range is off-screen.
-            let ox = i32::from(attr1 & 511);
+            // Treat the 9-bit X coordinate as signed to include wrapped sprites at the left edge.
+            let left = (i32::from(attr1 & 511) << 23) >> 23;
+            let right = left + w * scale;
+            let block_width = block_width as i32;
+            let end = right + (-right).rem_euclid(block_width);
             let matrix = usize::from((attr1 >> 9) & 31) * 32 + 6;
-            for dx in 0..w * scale {
-                let screen_x = ((dx + ox) & 511) as usize;
-                let Some(pixel) = line.get_mut(screen_x) else {
-                    continue;
-                };
-                if occupied[screen_x] {
+            for screen_x in left.max(0)..end.min(WIDTH as i32) {
+                let dx = (screen_x - screen_x % block_width - left).max(0);
+                let screen_x = screen_x as usize;
+                let pixel = &mut line[screen_x];
+                if mode != 2 && pixel.layer != 0 {
                     continue;
                 }
                 let (tx, ty) = if affine {
@@ -244,14 +303,16 @@ impl Video {
                     ((byte >> ((tx & 1) * 4)) & 15, usize::from(attr2 >> 12) * 16)
                 };
                 if index != 0 {
-                    occupied[screen_x] = true;
-                    if priority >= pixel.1 {
-                        continue;
+                    if mode == 2 {
+                        obj_window[screen_x] = true;
+                    } else {
+                        *pixel = Pixel {
+                            color: half(&self.palette, 0x200 + (usize::from(index) + bank) * 2),
+                            rank: priority,
+                            layer: OBJ,
+                            semi: mode == 1,
+                        };
                     }
-                    *pixel = (
-                        half(&self.palette, 0x200 + (usize::from(index) + bank) * 2),
-                        priority,
-                    );
                 }
             }
         }
