@@ -79,6 +79,16 @@ impl Default for Cpu {
 }
 
 impl Cpu {
+    /// A decoded SWI leaves R15 just past its encoding and preserves the caller's T bit.
+    pub(crate) fn swi_location(&self) -> (u32, crate::InstructionSet) {
+        let next = self.regs[PC];
+        if self.cpsr & T == 0 {
+            (next.wrapping_sub(4), crate::InstructionSet::Arm)
+        } else {
+            (next.wrapping_sub(2), crate::InstructionSet::Thumb)
+        }
+    }
+
     pub(crate) fn step(&mut self, bus: &mut impl Bus) -> Result<Step, String> {
         let pc = self.regs[PC];
         if pc == IRQ_RETURN && self.in_irq() && self.cpsr & MODE == IRQ {

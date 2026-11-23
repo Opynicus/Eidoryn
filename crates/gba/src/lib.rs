@@ -18,13 +18,24 @@ pub const HEADER_LEN: usize = 0xc0;
 pub const MAX_ROM_LEN: usize = 32 * 1024 * 1024;
 pub const FRAME_RATE: f64 = 16_777_216.0 / (SCANLINE as f64 * LINES as f64);
 
+/// Guest instruction encoding at the point of a CPU fault.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstructionSet {
+    Arm,
+    Thumb,
+}
+
 #[derive(Debug)]
 pub enum Error {
     InvalidRomSize(usize),
     InvalidSramSize(usize),
     Cpu(String),
     InvalidCompressedData(&'static str),
-    UnsupportedBiosCall(u8),
+    UnsupportedBiosCall {
+        code: u8,
+        address: u32,
+        instruction_set: InstructionSet,
+    },
 }
 
 impl fmt::Display for Error {
@@ -42,8 +53,19 @@ impl fmt::Display for Error {
                 write!(formatter, "Invalid compressed GBA data ({reason})")
             }
             Self::Cpu(message) => formatter.write_str(message),
-            Self::UnsupportedBiosCall(code) => {
-                write!(formatter, "Unsupported GBA BIOS call 0x{code:02x}")
+            Self::UnsupportedBiosCall {
+                code,
+                address,
+                instruction_set,
+            } => {
+                let mode = match instruction_set {
+                    InstructionSet::Arm => "ARM",
+                    InstructionSet::Thumb => "Thumb",
+                };
+                write!(
+                    formatter,
+                    "Unsupported GBA BIOS call 0x{code:02x} at 0x{address:08x} ({mode})"
+                )
             }
         }
     }
@@ -206,10 +228,33 @@ impl Machine {
             0x0b | 0x0c => self.bios_copy(code == 0x0c),
             0x0e => self.bg_affine_set(),
             0x0f => self.obj_affine_set(),
-            0x11 | 0x12 | 0x14 | 0x15 => {
-                compression::decode(&mut self.memory, code, self.cpu.regs[0], self.cpu.regs[1])?;
+            0x10 => {
+                let [src, dst, info, ..] = self.cpu.regs;
+                (self.cpu.regs[0], self.cpu.regs[1]) =
+                    compression::bit_unpack(&mut self.memory, src, dst, info)?;
             }
-            _ => return Err(Error::UnsupportedBiosCall(code)),
+            0x11 | 0x12 | 0x14 | 0x15 => {
+                let format = if code <= 0x12 {
+                    compression::Format::Lz77
+                } else {
+                    compression::Format::RunLength
+                };
+                compression::decode(
+                    &mut self.memory,
+                    format,
+                    matches!(code, 0x12 | 0x15),
+                    self.cpu.regs[0],
+                    self.cpu.regs[1],
+                )?;
+            }
+            _ => {
+                let (address, instruction_set) = self.cpu.swi_location();
+                return Err(Error::UnsupportedBiosCall {
+                    code,
+                    address,
+                    instruction_set,
+                });
+            }
         }
         Ok(())
     }

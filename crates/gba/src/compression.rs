@@ -1,4 +1,4 @@
-//! GBA BIOS LZ77 and run-length decompression. The VRAM variants issue
+//! GBA BIOS bit unpacking and decompression. The VRAM decompression variants issue
 //! halfword writes, including when the caller passes work RAM as the destination.
 use crate::{Error, cpu::Bus};
 
@@ -31,18 +31,61 @@ fn take(bus: &impl Bus, src: &mut u32) -> u8 {
     byte
 }
 
-pub(crate) fn decode(bus: &mut impl Bus, code: u8, src: u32, dst: u32) -> Result<(), Error> {
-    let (lz, halfword) = match code {
-        0x11 => (true, false),
-        0x12 => (true, true),
-        0x14 => (false, false),
-        0x15 => (false, true),
-        _ => return Err(Error::UnsupportedBiosCall(code)),
-    };
+pub(super) fn bit_unpack(
+    bus: &mut impl Bus,
+    mut src: u32,
+    mut dst: u32,
+    info: u32,
+) -> Result<(u32, u32), Error> {
+    let length = bus.read16(info);
+    let src_bits = bus.read8(info.wrapping_add(2));
+    let dst_bits = bus.read8(info.wrapping_add(3));
+    if !matches!(src_bits, 1 | 2 | 4 | 8) || !matches!(dst_bits, 1 | 2 | 4 | 8 | 16 | 32) {
+        return Err(Error::InvalidCompressedData("invalid BitUnPack unit width"));
+    }
+    let flags = bus.read32(info.wrapping_add(4));
+    let offset = flags & 0x7fff_ffff;
+    let mask = (1u32 << src_bits) - 1;
+    let mut out = 0;
+    let mut used = 0;
+    for _ in 0..length {
+        let byte = u32::from(take(bus, &mut src));
+        for shift in (0..8).step_by(usize::from(src_bits)) {
+            let mut value = (byte >> shift) & mask;
+            if value != 0 || flags >> 31 != 0 {
+                value += offset;
+            }
+            out |= value << used;
+            used += dst_bits;
+            // The BIOS writes only complete words, even when the destination is VRAM.
+            if used == 32 {
+                bus.write32(dst, out);
+                dst = dst.wrapping_add(4);
+                out = 0;
+                used = 0;
+            }
+        }
+    }
+    Ok((src, dst))
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum Format {
+    Lz77 = 1,
+    RunLength = 3,
+}
+
+pub(super) fn decode(
+    bus: &mut impl Bus,
+    format: Format,
+    halfword: bool,
+    src: u32,
+    dst: u32,
+) -> Result<(), Error> {
     let mut src = src & !3;
     let header = bus.read32(src);
     let size = header >> 8;
-    if (header >> 4) & 15 != if lz { 1 } else { 3 } {
+    if (header >> 4) & 15 != format as u32 {
         return Err(Error::InvalidCompressedData(
             "unexpected compression header",
         ));
@@ -54,7 +97,7 @@ pub(crate) fn decode(bus: &mut impl Bus, code: u8, src: u32, dst: u32) -> Result
         low: 0,
     };
     src = src.wrapping_add(4);
-    if lz {
+    if format == Format::Lz77 {
         lz77(bus, &mut src, &mut out, size)?;
     } else {
         runs(bus, &mut src, &mut out);
@@ -126,11 +169,62 @@ mod tests {
     const VRAM: u32 = 0x0600_0000;
 
     #[test]
+    fn bit_unpack_expands_a_glyph_into_vram_with_optional_transparent_index_bias() {
+        use crate::{HEADER_LEN, Machine};
+        let mut machine = Machine::from_rom(vec![0; HEADER_LEN]).unwrap();
+        let src = WRAM + 9; // Byte-aligned source; least significant pixel comes first.
+        machine.memory.write8(src, 0b1011_0001);
+        machine.memory.write16(WRAM, 1);
+        machine.memory.write8(WRAM + 2, 1);
+        machine.memory.write8(WRAM + 3, 4);
+        for (offset, expected) in [(2u32, 0x3033_0003), (0x8000_0002, 0x3233_2223)] {
+            machine.memory.write32(WRAM + 4, offset);
+            machine.cpu.regs[..3].copy_from_slice(&[src, VRAM, WRAM]);
+            machine.bios_call(0x10).unwrap();
+            assert_eq!(machine.memory.read32(VRAM), expected);
+            assert_eq!(machine.cpu.regs[..2], [src + 1, VRAM + 4]);
+        }
+    }
+
+    #[test]
+    fn bit_unpack_reads_units_low_first_and_leaves_the_last_partial_word_untouched() {
+        let mut bus = Memory::new(vec![0; 192]);
+        for (src_bits, dst_bits, byte, expected) in [
+            (2, 8, 0xe4, 0x0302_0100), // Four two-bit values become palette indices.
+            (4, 16, 0xba, 0x000b_000a),
+            (8, 32, 0xab, 0x0000_00ab), // A single output element fills a word.
+        ] {
+            bus.write8(WRAM + 8, byte);
+            bus.write16(WRAM, 1);
+            bus.write8(WRAM + 2, src_bits);
+            bus.write8(WRAM + 3, dst_bits);
+            assert_eq!(
+                bit_unpack(&mut bus, WRAM + 8, VRAM, WRAM).unwrap(),
+                (WRAM + 9, VRAM + 4)
+            );
+            assert_eq!(bus.read32(VRAM), expected);
+        }
+        bus.write32(VRAM, 0x1234_5678);
+        bus.write8(WRAM + 2, 8);
+        bus.write8(WRAM + 3, 16);
+        assert_eq!(
+            bit_unpack(&mut bus, WRAM + 8, VRAM, WRAM).unwrap(),
+            (WRAM + 9, VRAM)
+        );
+        assert_eq!(bus.read32(VRAM), 0x1234_5678);
+        bus.write8(WRAM + 2, 0);
+        assert!(matches!(
+            bit_unpack(&mut bus, WRAM + 8, VRAM, WRAM),
+            Err(Error::InvalidCompressedData(_))
+        ));
+    }
+
+    #[test]
     fn lz77_overlapping_reference_repeats_prior_output() {
         // Two literals and a six-byte match with a two-byte distance.
         let mut bus = Memory::new(vec![0x10, 8, 0, 0, 0x20, b'A', b'B', 0x30, 1]);
-        for (swi, dst) in [(0x11, WRAM), (0x12, VRAM)] {
-            decode(&mut bus, swi, ROM, dst).unwrap();
+        for (halfword, dst) in [(false, WRAM), (true, VRAM)] {
+            decode(&mut bus, Format::Lz77, halfword, ROM, dst).unwrap();
             assert_eq!(bus.read32(dst).to_le_bytes(), *b"ABAB");
             assert_eq!(bus.read32(dst + 4).to_le_bytes(), *b"ABAB");
         }
@@ -139,9 +233,9 @@ mod tests {
     #[test]
     fn rle_literal_and_repeated_bytes_flush_across_halfword_boundaries() {
         let mut bus = Memory::new(vec![0x30, 7, 0, 0, 0, 1, 0x80, 2, 2, 3, 4, 5]);
-        for (swi, dst) in [(0x14, WRAM), (0x15, VRAM)] {
+        for (halfword, dst) in [(false, WRAM), (true, VRAM)] {
             bus.write32(dst + 4, u32::MAX);
-            decode(&mut bus, swi, ROM, dst).unwrap();
+            decode(&mut bus, Format::RunLength, halfword, ROM, dst).unwrap();
             assert_eq!(bus.read32(dst).to_le_bytes(), [1, 2, 2, 2]);
             assert_eq!(bus.read32(dst + 4).to_le_bytes(), [3, 4, 5, 0]);
         }
@@ -151,7 +245,7 @@ mod tests {
     fn lz77_rejects_reference_before_first_literal() {
         let mut bus = Memory::new(vec![0x10, 6, 0, 0, 0x80, 0x30, 0]);
         assert!(matches!(
-            decode(&mut bus, 0x11, ROM, WRAM),
+            decode(&mut bus, Format::Lz77, false, ROM, WRAM),
             Err(Error::InvalidCompressedData(_))
         ));
     }

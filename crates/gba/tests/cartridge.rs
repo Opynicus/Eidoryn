@@ -1,4 +1,4 @@
-use eidoryn_gba::{Error, HEADER_LEN, HEIGHT, Machine, WIDTH};
+use eidoryn_gba::{Error, HEADER_LEN, HEIGHT, InstructionSet, Machine, WIDTH};
 
 /// Own ARM/Thumb cartridge. ARM enables direct-color mode and enters Thumb.
 /// The Thumb loop reads KEYINPUT and stores the selected color in VRAM and SRAM.
@@ -56,18 +56,32 @@ fn cartridge_polls_keypad_and_changes_pixels_and_save_ram() {
 }
 
 #[test]
-fn validates_cartridge_size_and_reports_unsupported_bios_calls() {
+fn validates_cartridge_size() {
     assert!(matches!(
         Machine::from_rom(vec![0; 16]),
         Err(Error::InvalidRomSize(16))
     ));
-    let mut rom = vec![0; HEADER_LEN];
-    rom[..4].copy_from_slice(&0xef7f_0000u32.to_le_bytes());
-    let mut machine = Machine::from_rom(rom).unwrap();
-    assert!(matches!(
-        machine.run_frame(),
-        Err(Error::UnsupportedBiosCall(0x7f))
-    ));
+}
+
+#[test]
+fn unsupported_bios_call_reports_the_guest_instruction_in_both_encodings() {
+    let arm = [0xef7f_0000u32, 0, 0];
+    let thumb = [0xe28f_0001, 0xe12f_ff10, 0x0000_df7f]; // ADD pc+1, BX r0, SWI 7f
+    for (opcodes, pc, encoding) in [
+        (arm, 0x0800_0000, InstructionSet::Arm),
+        (thumb, 0x0800_0008, InstructionSet::Thumb),
+    ] {
+        let mut rom = vec![0; HEADER_LEN];
+        for (dst, op) in rom.as_chunks_mut::<4>().0.iter_mut().zip(opcodes) {
+            *dst = op.to_le_bytes();
+        }
+        let mut machine = Machine::from_rom(rom).unwrap();
+        assert!(matches!(
+            machine.run_frame(),
+            Err(Error::UnsupportedBiosCall { code: 0x7f, address, instruction_set })
+                if (address, instruction_set) == (pc, encoding)
+        ));
+    }
 }
 
 #[test]

@@ -70,7 +70,9 @@ Games that use 32 KiB SRAM can save through their own menus. Eidoryn keeps these
 
 The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending, VBlank interrupts and selected BIOS services. CPU and DMA timing are approximate. Audio, link cable, Flash/EEPROM saves, rewind and save states remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
 
-Two optional regressions use *Castlevania: Aria of Sorrow* (USA, A2CE revision 0). One waits for the title screen without input. The other selects a file and walks into the Castle Corridor. Set `EIDORYN_ARIA_ROM` to your local cartridge path and run `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored`. Each test uses a fresh in-memory save.
+To check a local GBA cartridge or a folder of `.gba` files, set `EIDORYN_GBA_TEST_ROMS` to its path (default: the repository’s `tests/` folder). Run `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture` to execute 1,800 frames without input per cartridge. Set `EIDORYN_GBA_BOOT_FRAMES` to change the duration. A failure reports the filename, product code, revision and frame. An unsupported BIOS call also reports its address and instruction set.
+
+For regional editions of *Castlevania: Aria of Sorrow*, run `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored --nocapture` with the same folder, or use `EIDORYN_ARIA_ROM` to select a single image. The verified US retail image has reference checks for the title, save slots and Castle Corridor. Other editions are checked for visible output during boot and compared against an idle run of the same image to detect keypad response. Each run uses a fresh in-memory save.
 
 ### Build and launch
 

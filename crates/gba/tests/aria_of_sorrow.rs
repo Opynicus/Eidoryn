@@ -1,6 +1,56 @@
-//! Optional commercial-ROM regression. Loads a local cartridge with a fresh in-memory save.
+//! Local regional builds of Aria of Sorrow, each booted with a fresh in-memory save.
+#[path = "support/local_roms.rs"]
+mod local_roms;
+
 use eidoryn_gba::{Machine, WIDTH};
-use std::{env, fs, path::PathBuf};
+use sha2::{Digest, Sha256};
+use std::{env, ops::RangeInclusive};
+
+struct Checkpoint {
+    scene: &'static str,
+    frames: RangeInclusive<u32>,
+    rect: [usize; 4],
+    signature: u32,
+}
+
+struct Reference {
+    sha256: &'static str,
+    title: Checkpoint,
+    input: fn(u32) -> u16,
+    gameplay: &'static [Checkpoint],
+}
+
+// Verified against the same input on a BIOS-less mGBA run of the US retail cartridge.
+const REFERENCES: &[Reference] = &[Reference {
+    sha256: "910f88d3701e6c9f99c0d63660c14c61d8b79b0c17bfd7b35a15185be36430a5",
+    title: Checkpoint {
+        scene: "title logo",
+        frames: 1350..=1600,
+        rect: [60, 77, 100, 12],
+        signature: 0x9e7f_48f0,
+    },
+    input: buttons,
+    gameplay: &[
+        Checkpoint {
+            scene: "save slots",
+            frames: 340..=450,
+            rect: [16, 5, 76, 10],
+            signature: 0x4e0e_1f06,
+        },
+        Checkpoint {
+            scene: "health display",
+            frames: 2850..=3100,
+            rect: [0, 0, 96, 16],
+            signature: 0x5807_3e02,
+        },
+        Checkpoint {
+            scene: "Castle Corridor",
+            frames: 3200..=3550,
+            rect: [104, 0, 72, 12],
+            signature: 0x6b8f_a17d,
+        },
+    ],
+}];
 
 fn buttons(frame: u32) -> u16 {
     const A: u16 = 1;
@@ -37,71 +87,101 @@ fn region_signature(machine: &Machine, x: usize, y: usize, w: usize, h: usize) -
         })
 }
 
-fn usa_cartridge() -> Machine {
-    let rom = env::var_os("EIDORYN_ARIA_ROM").map_or_else(
-        || {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/Castlevania - Aria of Sorrow (USA).gba")
+fn check_editions(run: impl Fn(Vec<u8>, Option<&Reference>) -> Result<(), String>) {
+    local_roms::check(
+        env::var_os("EIDORYN_ARIA_ROM").or_else(|| env::var_os("EIDORYN_GBA_TEST_ROMS")),
+        |rom| &rom[0xac..0xaf] == b"A2C",
+        |rom| {
+            let digest = format!("{:x}", Sha256::digest(&rom));
+            run(rom, REFERENCES.iter().find(|r| r.sha256 == digest))
         },
-        PathBuf::from,
     );
-    let bytes = fs::read(&rom).unwrap_or_else(|e| panic!("{}: {e}", rom.display()));
-    assert_eq!(
-        bytes.get(0xac..0xb0),
-        Some(b"A2CE".as_slice()),
-        "expected the USA cartridge"
-    );
-    assert_eq!(bytes[0xbc], 0, "expected revision 0");
-    Machine::from_rom(bytes).unwrap()
+}
+
+fn visible_scene(machine: &Machine) -> bool {
+    let pixels = machine.pixels();
+    pixels[..pixels.len() - 3] != pixels[3..]
+}
+
+fn advance(machine: &mut Machine, frame: u32, input: u16) -> Result<(), String> {
+    machine.set_buttons(input);
+    machine
+        .run_frame()
+        .map_err(|e| format!("frame {frame}: {e}"))
+}
+
+/// Compare a keyed run to an independent idle boot, including for images with reference data.
+fn replay(
+    rom: Vec<u8>,
+    input: Option<fn(u32) -> u16>,
+    checkpoints: &[Checkpoint],
+    min_frames: u32,
+) -> Result<(), String> {
+    let mut idle = if input.is_some() {
+        Some(Machine::from_rom(rom.clone()).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let mut machine = Machine::from_rom(rom).map_err(|e| e.to_string())?;
+    let mut pending: Vec<_> = checkpoints.iter().collect();
+    let end = checkpoints
+        .iter()
+        .map(|c| *c.frames.end())
+        .max()
+        .unwrap_or(0)
+        .max(min_frames);
+    let mut saw_scene = false;
+    let mut responsive_samples = 0;
+    for frame in 1..=end {
+        advance(&mut machine, frame, input.map_or(0, |keys| keys(frame)))?;
+        if let Some(idle) = idle.as_mut() {
+            advance(idle, frame, 0)?;
+        }
+        if frame >= end / 2 && frame % 60 == 0 && visible_scene(&machine) {
+            saw_scene = true;
+            if idle
+                .as_ref()
+                .is_some_and(|idle| idle.pixels() != machine.pixels())
+            {
+                responsive_samples += 1;
+            }
+        }
+        pending.retain(|c| {
+            let [x, y, w, h] = c.rect;
+            !c.frames.contains(&frame) || region_signature(&machine, x, y, w, h) != c.signature
+        });
+    }
+    if let Some(c) = pending.first() {
+        return Err(format!("did not see {} in frames {:?}", c.scene, c.frames));
+    }
+    if !saw_scene {
+        return Err(
+            "boot produced only solid-color samples during the second half of the test".into(),
+        );
+    }
+    if idle.is_some() && responsive_samples < 3 {
+        return Err(format!(
+            "expected visible input response relative to idle at three or more samples, observed {responsive_samples}"
+        ));
+    }
+    Ok(())
 }
 
 #[test]
-#[ignore = "requires a locally supplied USA (A2CE, revision 0) cartridge"]
-fn boots_to_the_title_screen_without_input() {
-    let mut machine = usa_cartridge();
-    for frame in 1..=1600 {
-        machine
-            .run_frame()
-            .unwrap_or_else(|e| panic!("frame {frame}: {e}"));
-        // The static lettering in the title logo also matches a BIOS-less mGBA boot.
-        if frame >= 1350 && region_signature(&machine, 60, 77, 100, 12) == 0x9e7f_48f0 {
-            return;
-        }
-    }
-    panic!("did not reach the title screen");
+#[ignore = "requires a locally supplied Aria of Sorrow cartridge"]
+fn boots_each_edition_without_input() {
+    check_editions(|rom, reference| {
+        let checkpoints = reference.map_or(&[][..], |r| std::slice::from_ref(&r.title));
+        replay(rom, None, checkpoints, 1600)
+    });
 }
 
 #[test]
-#[ignore = "requires a locally supplied USA (A2CE, revision 0) cartridge"]
-fn usa_cartridge_boots_and_reaches_playable_castle_entrance() {
-    let mut machine = usa_cartridge();
-    let mut saw_select_data = false;
-    let mut saw_health_display = false;
-    let mut entered_castle_corridor = false;
-    for frame in 1..=3600 {
-        machine.set_buttons(buttons(frame));
-        machine
-            .run_frame()
-            .unwrap_or_else(|e| panic!("frame {frame}: {e}"));
-        // Reference crops from a BIOS-less mGBA run with the same keypad sequence.
-        if (340..=450).contains(&frame) && !saw_select_data {
-            saw_select_data = region_signature(&machine, 16, 5, 76, 10) == 0x4e0e_1f06;
-        }
-        if (2850..=3100).contains(&frame) && !saw_health_display {
-            saw_health_display = region_signature(&machine, 0, 0, 96, 16) == 0x5807_3e02;
-        }
-        if (3200..=3550).contains(&frame) && !entered_castle_corridor {
-            // Crossing the door replaces the sky above the HUD with the corridor's stone ceiling.
-            entered_castle_corridor = region_signature(&machine, 104, 0, 72, 12) == 0x6b8f_a17d;
-        }
-    }
-    assert!(
-        saw_select_data,
-        "did not reach the save-slot selection screen"
-    );
-    assert!(
-        saw_health_display,
-        "did not reach gameplay with the initial health display"
-    );
-    assert!(entered_castle_corridor, "did not enter the Castle Corridor");
+#[ignore = "requires a locally supplied Aria of Sorrow cartridge"]
+fn input_advances_each_edition() {
+    check_editions(|rom, reference| {
+        let input = reference.map_or(buttons as fn(u32) -> u16, |r| r.input);
+        let checkpoints = reference.map_or(&[][..], |r| r.gameplay);
+        replay(rom, Some(input), checkpoints, 3600)
+    });
 }
