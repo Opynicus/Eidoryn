@@ -98,7 +98,7 @@ fn switching_cores_discards_an_open_cartridge_picker(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn library_launch_uses_hle_and_keeps_the_ps1_selection(cx: &mut TestAppContext) {
+fn shared_library_routes_a_cartridge_to_hle_and_preserves_the_ps1_bios(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap();
     let ps1_bios = temp.path().join("ps1.bin");
     std::fs::write(&ps1_bios, vec![0; eidoryn_psx::bus::BIOS_SIZE]).unwrap();
@@ -116,12 +116,12 @@ fn library_launch_uses_hle_and_keeps_the_ps1_selection(cx: &mut TestAppContext) 
     cx.run_until_parked();
     click_control(cx, "nav-library");
     assert!(cx.debug_bounds("library-entry-1").is_some());
-    assert!(cx.debug_bounds("library-entry-2").is_none());
-    click_control(cx, "core-gba");
-    assert!(cx.debug_bounds("library-entry-1").is_none());
-    assert!(cx.debug_bounds("library-entry-2").is_some());
-    assert!(cx.debug_bounds("nav-debug").is_none());
     click_control(cx, "library-entry-2");
+    click_control(cx, "core-gba");
+    assert!(cx.debug_bounds("library-entry-1").is_some());
+    assert!(cx.debug_bounds("library-entry-2").is_some());
+    assert!(cx.debug_bounds("nav-debug").is_some());
+    click_control(cx, "core-ps1");
     click_control(cx, "lib-start");
     cx.run_until_parked();
     wait_for_gba(&view, cx, |v| {
@@ -131,6 +131,7 @@ fn library_launch_uses_hle_and_keeps_the_ps1_selection(cx: &mut TestAppContext) 
         assert_eq!(v.page, WorkspacePage::Game);
         assert_eq!(v.gba.snapshot.path.as_deref(), Some(cartridge.as_path()));
         assert_eq!(v.snapshot.media_revision, 0);
+        assert_eq!(v.preferences.recent_discs[0].path, cartridge);
         assert_eq!(
             v.image.as_ref().unwrap().image.size(0),
             size(240.into(), 160.into())
@@ -165,7 +166,137 @@ fn library_launch_uses_hle_and_keeps_the_ps1_selection(cx: &mut TestAppContext) 
     assert!(cx.debug_bounds("nav-debug").is_some());
     click_control(cx, "transport-run");
     wait_for_snapshot(&view, cx, |s| s.running);
-    click_control(cx, "core-gba");
+    click_control(cx, "nav-console");
+    click_control(cx, "recent-game-0");
     wait_for_snapshot(&view, cx, |s| !s.running);
-    assert!(view.read_with(cx, |v, _| v.gba.snapshot.path.is_some() && !v.running()));
+    wait_for_gba(&view, cx, |v| {
+        v.is_gba() && v.gba.snapshot.media_revision == 2 && v.page == WorkspacePage::Game
+    });
+    assert_eq!(
+        view.read_with(cx, |v, _| v.preferences.recent_discs.len()),
+        1
+    );
+}
+
+#[gpui::test]
+fn remapped_gba_buttons_drive_the_cartridge_and_leave_ps1_bindings_intact(cx: &mut TestAppContext) {
+    use eidoryn_psx::{
+        keybindings::{GbaButton, PadButton},
+        preferences::Preferences,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let rom = dir.path().join("controls.gba");
+    let settings = dir.path().join("settings.json");
+    fixture::write_cartridge(&rom);
+    let library = Library::open(&dir.path().join("library.db")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    cx.simulate_resize(size(px(1280.), px(1000.)));
+    view.update(cx, |v, cx| {
+        v.preferences_path = Some(settings.clone());
+        v.library = Workspace::new(Some(library));
+        v.open_gba(rom, "Controls".into(), cx);
+    });
+    wait_for_gba(&view, cx, |v| {
+        v.running() && v.gba.snapshot.rgb.starts_with(&[0, 0, 255])
+    });
+    click_control(cx, "edit-gba-controls");
+    assert!(cx.debug_bounds("tab-controller").is_some());
+    assert!(cx.debug_bounds("turbo-cross").is_none());
+
+    click_control(cx, "gba-binding-a");
+    press_keys(cx, "z");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("bindings-conflict").is_some());
+    click_control(cx, "bindings-apply");
+    assert_eq!(
+        view.read_with(cx, |v, _| v
+            .preferences
+            .gba_keybindings
+            .key(GbaButton::A)
+            .to_owned()),
+        "x"
+    );
+    click_control(cx, "gba-binding-a");
+    press_keys(cx, "f5");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("bindings-conflict").is_some());
+    click_control(cx, "gba-binding-a");
+    press_keys(cx, "j");
+    click_control(cx, "bindings-apply");
+    let saved = Preferences::load(&settings).unwrap();
+    assert_eq!(saved.gba_keybindings.key(GbaButton::A), "j");
+    assert_eq!(saved.keybindings.key(PadButton::Cross), "x");
+    press_keys(cx, "escape");
+    cx.simulate_keystrokes("x");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+    cx.simulate_keystrokes("j");
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.rgb.starts_with(&[255, 0, 0]));
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("ctrl-j").unwrap(),
+    });
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.rgb.starts_with(&[0, 0, 255]));
+    cx.simulate_keystrokes("j");
+    press_keys(cx, "f8");
+    wait_for_gba(&view, cx, |v| {
+        v.pressed_buttons == 0 && v.gba.snapshot.rgb.starts_with(&[0, 0, 255])
+    });
+    press_keys(cx, "escape");
+    cx.simulate_keystrokes("j");
+    click_control(cx, "core-ps1");
+    assert_eq!(view.read_with(cx, |v, _| v.pressed_buttons), 0);
+}
+
+#[gpui::test]
+fn debugger_inspects_and_steps_the_selected_cartridge(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let rom = temp.path().join("debug.gba");
+    fixture::write_cartridge(&rom);
+    let library = Library::open(&temp.path().join("library.db")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    view.update(cx, |v, cx| {
+        v.library = Workspace::new(Some(library));
+        v.open_gba(rom, "Probe".into(), cx);
+    });
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.path.is_some());
+    click_control(cx, "nav-debug");
+    click_control(cx, "debug-toggle");
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.debug.is_some());
+    assert!(cx.debug_bounds("debug-instructions").is_some());
+    assert!(cx.debug_bounds("debug-registers").is_some());
+    press_keys(cx, "ctrl-r");
+    wait_for_gba(&view, cx, |v| {
+        !v.running()
+            && v.gba
+                .snapshot
+                .debug
+                .as_ref()
+                .is_some_and(|d| d.registers[15] == 0x0800_0000)
+    });
+    press_keys(cx, "f10");
+    wait_for_gba(&view, cx, |v| {
+        !v.running()
+            && v.gba
+                .snapshot
+                .debug
+                .as_ref()
+                .is_some_and(|d| d.registers[15] == 0x0800_00c0)
+    });
+    press_keys(cx, "f9");
+    wait_for_gba(&view, cx, |v| {
+        !v.running()
+            && v.gba
+                .snapshot
+                .debug
+                .as_ref()
+                .is_some_and(|d| d.display_control == 0x0403)
+    });
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.snapshot_mode, super::super::SnapshotMode::Display);
+        assert_eq!(v.snapshot.disassembly.len(), 0);
+    });
+    click_control(cx, "nav-game");
+    assert!(view.read_with(cx, |v, _| !v.gba.capturing_debug
+        && v.gba.snapshot.debug.is_none()));
 }

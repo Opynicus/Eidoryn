@@ -25,52 +25,7 @@ impl Desktop {
             .bg(rgb(p.drawer_surface()))
             .border_l_1()
             .border_color(rgb(p.drawer_border()))
-            .child(
-                div()
-                    .px_6()
-                    .py_4()
-                    .flex()
-                    .items_start()
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(rgb(p.border))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(23.))
-                                    .font(self.fonts.title())
-                                    .child(self.tr(Text::Settings)),
-                            )
-                            .child(
-                                label(
-                                    p,
-                                    format!("{} · {}", self.display_title(), self.playback_label()),
-                                )
-                                .truncate(),
-                            ),
-                    )
-                    .child(
-                        ghost_icon_button(
-                            p,
-                            "close-settings",
-                            "close",
-                            self.shortcut_label(
-                                self.tr(Text::Close),
-                                ShortcutAction::Settings,
-                                Some("Esc"),
-                            ),
-                        )
-                        .on_click(
-                            cx.listener(|view, _, window, cx| view.close_settings(window, cx)),
-                        ),
-                    ),
-            )
+            .child(self.settings_heading(cx))
             .child(self.settings_tabs(cx))
             .child(
                 div()
@@ -116,6 +71,52 @@ impl Desktop {
             )
     }
 
+    fn settings_heading(&self, cx: &mut Context<Self>) -> Div {
+        let p = &self.themes.active().palette;
+        div()
+            .px_6()
+            .py_4()
+            .flex()
+            .items_start()
+            .gap_3()
+            .border_b_1()
+            .border_color(rgb(p.border))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(23.))
+                            .font(self.fonts.title())
+                            .child(self.tr(Text::Settings)),
+                    )
+                    .child(
+                        label(
+                            p,
+                            format!("{} · {}", self.display_title(), self.playback_label()),
+                        )
+                        .truncate(),
+                    ),
+            )
+            .child(
+                ghost_icon_button(
+                    p,
+                    "close-settings",
+                    "close",
+                    self.shortcut_label(
+                        self.tr(Text::Close),
+                        ShortcutAction::Settings,
+                        Some("Esc"),
+                    ),
+                )
+                .on_click(cx.listener(|view, _, window, cx| view.close_settings(window, cx))),
+            )
+    }
+
     fn settings_tabs(&self, cx: &mut Context<Self>) -> Div {
         let p = self.themes.active().palette;
         div()
@@ -134,10 +135,7 @@ impl Desktop {
                     ("tab-shortcuts", Text::Shortcuts, SettingsTab::Shortcuts),
                 ]
                 .into_iter()
-                .filter(|(_, _, tab)| {
-                    !self.is_gba()
-                        || matches!(tab, SettingsTab::Appearance | SettingsTab::Shortcuts)
-                })
+                .filter(|(_, _, tab)| !self.is_gba() || *tab != SettingsTab::Rewind)
                 .map(|(id, title, tab)| {
                     let active = self.settings_tab == tab;
                     div()

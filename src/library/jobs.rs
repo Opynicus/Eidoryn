@@ -163,6 +163,7 @@ impl Stage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum JobKind {
     Metadata,
+    GbaMetadata,
     Cover(Provider),
 }
 
@@ -170,6 +171,7 @@ impl JobKind {
     fn stored_names(self) -> (&'static str, &'static str) {
         let provider = match self {
             Self::Metadata => "wikidata",
+            Self::GbaMetadata => "libretro-gba",
             Self::Cover(Provider::Libretro) => "libretro",
             Self::Cover(Provider::ScreenScraper) => "screenscraper",
             Self::Cover(Provider::Igdb) => "igdb",
@@ -181,6 +183,7 @@ impl JobKind {
     fn from_stored(stage: Stage, provider: &str) -> rusqlite::Result<Self> {
         [
             Self::Metadata,
+            Self::GbaMetadata,
             Self::Cover(Provider::Libretro),
             Self::Cover(Provider::ScreenScraper),
             Self::Cover(Provider::Igdb),
@@ -193,7 +196,7 @@ impl JobKind {
 
     pub(super) fn stage(self) -> Stage {
         match self {
-            Self::Metadata => Stage::Metadata,
+            Self::Metadata | Self::GbaMetadata => Stage::Metadata,
             Self::Cover(_) => Stage::Cover,
         }
     }

@@ -86,14 +86,27 @@ impl Cpu {
             irq_depth: 0,
         }
     }
+
+    pub(crate) fn status(&self) -> u32 {
+        self.cpsr
+    }
+
+    pub(crate) fn instruction_set(&self) -> crate::InstructionSet {
+        if self.cpsr & T == 0 {
+            crate::InstructionSet::Arm
+        } else {
+            crate::InstructionSet::Thumb
+        }
+    }
+
     /// A decoded SWI leaves R15 just past its encoding and preserves the caller's T bit.
     pub(crate) fn swi_location(&self) -> (u32, crate::InstructionSet) {
-        let next = self.regs[PC];
-        if self.cpsr & T == 0 {
-            (next.wrapping_sub(4), crate::InstructionSet::Arm)
-        } else {
-            (next.wrapping_sub(2), crate::InstructionSet::Thumb)
-        }
+        let instruction_set = self.instruction_set();
+        let width = match instruction_set {
+            crate::InstructionSet::Arm => 4,
+            crate::InstructionSet::Thumb => 2,
+        };
+        (self.regs[PC].wrapping_sub(width), instruction_set)
     }
 
     pub(crate) fn step(&mut self, bus: &mut impl Bus) -> Result<Step, String> {

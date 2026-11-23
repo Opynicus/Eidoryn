@@ -5,6 +5,7 @@ mod bios_math;
 mod bus;
 mod compression;
 mod cpu;
+pub mod debug;
 mod hle;
 mod video;
 
@@ -13,6 +14,8 @@ use std::fmt;
 use bus::{LINES, Memory, SCANLINE};
 use cpu::{Bus, Cpu, Step};
 
+/// Whether this build includes a GPU compositor. Adapter availability is checked at activation.
+pub const GPU_COMPILED: bool = cfg!(feature = "gpu");
 pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 160;
 pub const HEADER_LEN: usize = 0xc0;
@@ -134,7 +137,22 @@ impl Machine {
         self.bios_wait = None;
     }
 
-    /// Packed RGB888 rows in display order, updated by each completed scanline.
+    /// Switches LCD color composition on this machine without rebooting the cartridge.
+    pub fn set_hardware_acceleration(&mut self, enabled: bool) -> Result<(), String> {
+        self.memory.video.set_hardware_acceleration(enabled)
+    }
+
+    /// The graphics API and adapter currently composing the LCD image.
+    pub fn graphics_device(&self) -> Option<&str> {
+        self.memory.video.graphics_device()
+    }
+
+    /// A device failure returns composition to software and preserves the affected frame.
+    pub fn take_graphics_error(&mut self) -> Option<String> {
+        self.memory.video.graphics_error.take()
+    }
+
+    /// Packed RGB888 rows in display order. GPU composition publishes at the end of a visible field.
     pub fn pixels(&self) -> &[u8] {
         &self.memory.video.pixels
     }
@@ -173,31 +191,40 @@ impl Machine {
     pub fn run_frame(&mut self) -> Result<(), Error> {
         let mut remaining = SCANLINE * u32::from(LINES);
         while remaining > 0 {
-            if self.memory.irq_pending() {
-                if self.memory.has_bios() {
-                    self.cpu.hardware_irq();
-                } else {
-                    self.cpu.service_irq(&mut self.memory);
-                }
-            }
-            let step = if self.waiting() {
-                self.memory.cycles_to_event()
-            } else {
-                if let Step::Swi(code) = self.cpu.step(&mut self.memory).map_err(Error::Cpu)? {
-                    if self.memory.has_bios() {
-                        self.cpu.software_interrupt();
-                    } else {
-                        self.bios_call(code)?;
-                    }
-                }
-                // Typical cartridge instruction fetch without sequential/wait-state accounting.
-                4
-            }
-            .min(remaining);
-            self.memory.tick(step);
-            remaining -= step;
+            remaining -= self.advance(remaining)?;
         }
         Ok(())
+    }
+
+    /// Executes one CPU instruction, or advances to the next hardware event while sleeping.
+    pub fn step(&mut self) -> Result<(), Error> {
+        self.advance(u32::MAX).map(|_| ())
+    }
+
+    fn advance(&mut self, budget: u32) -> Result<u32, Error> {
+        if self.memory.irq_pending() {
+            if self.memory.has_bios() {
+                self.cpu.hardware_irq();
+            } else {
+                self.cpu.service_irq(&mut self.memory);
+            }
+        }
+        let cycles = if self.waiting() {
+            self.memory.cycles_to_event()
+        } else {
+            if let Step::Swi(code) = self.cpu.step(&mut self.memory).map_err(Error::Cpu)? {
+                if self.memory.has_bios() {
+                    self.cpu.software_interrupt();
+                } else {
+                    self.bios_call(code)?;
+                }
+            }
+            // Typical cartridge instruction fetch without sequential/wait-state accounting.
+            4
+        }
+        .min(budget);
+        self.memory.tick(cycles);
+        Ok(cycles)
     }
 
     fn waiting(&mut self) -> bool {

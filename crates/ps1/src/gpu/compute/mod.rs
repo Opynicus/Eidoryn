@@ -13,6 +13,7 @@ use super::{
     renderer_engine::{ErrorLatch, select_candidates},
 };
 use commands::{COPY, Primitive, TILE_COUNT, UPLOAD};
+use eidoryn_host::graphics::physical_adapter;
 use std::{
     io,
     sync::{Arc, OnceLock, mpsc},
@@ -53,31 +54,6 @@ fn required_limits(scale: RenderScale, depth: ColorDepth) -> wgpu::Limits {
         max_compute_workgroups_per_dimension: TILE_COUNT as u32,
         ..wgpu::Limits::downlevel_defaults()
     }
-}
-
-fn physical_adapter(info: &wgpu::AdapterInfo) -> bool {
-    let description = format!("{} {} {}", info.name, info.driver, info.driver_info).to_lowercase();
-    if [
-        "software",
-        "llvmpipe",
-        "lavapipe",
-        "softpipe",
-        "swiftshader",
-        "mesa offscreen",
-        "gdi generic",
-        "microsoft basic",
-    ]
-    .iter()
-    .any(|name| description.contains(name))
-    {
-        return false;
-    }
-    matches!(
-        info.device_type,
-        wgpu::DeviceType::DiscreteGpu | wgpu::DeviceType::IntegratedGpu
-    ) || (info.backend == wgpu::Backend::Gl && info.device_type == wgpu::DeviceType::Other)
-    // OpenGL cannot query PCI device type. wgpu reports physical NVIDIA/AMD
-    // adapters as Other; a zero vendor ID can also describe an AMD WGL driver.
 }
 
 pub(super) struct ComputeRenderer {

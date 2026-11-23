@@ -171,9 +171,11 @@ fn library_enter_requires_bios_then_navigates_only_after_success(cx: &mut TestAp
     cx.simulate_resize(size(px(1280.), px(900.)));
     cx.run_until_parked();
     click_control(cx, "nav-library");
+    click_control(cx, "core-gba");
     click_control(cx, "library-entry-1");
     press_keys(cx, "enter");
     assert!(cx.debug_bounds("library-details").is_none());
+    assert!(view.read_with(cx, |v, _| !v.is_gba()));
     assert!(cx.debug_bounds("lib-bios-continue").is_some());
     assert_eq!(view.read_with(cx, |v, _| v.snapshot.media_revision), 0);
     click_control(cx, "lib-bios-continue");

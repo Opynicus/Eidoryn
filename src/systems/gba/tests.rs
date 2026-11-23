@@ -138,3 +138,92 @@ fn stale_firmware_from_an_older_installation_does_not_affect_hle() {
     expect_pixels(&runner, [0, 0, 255], 0);
     assert_eq!(std::fs::read(old_file).unwrap(), b"old invalid firmware");
 }
+
+#[test]
+fn graphics_requests_keep_the_loaded_cartridge_running_with_or_without_a_gpu() {
+    let temp = tempfile::tempdir().unwrap();
+    let rom = temp.path().join("gpu-probe.gba");
+    fixture::write_cartridge(&rom);
+    let runner = Runner::start(None, temp.path().to_owned()).unwrap();
+    runner
+        .send(Command::Load {
+            path: rom,
+            title: "GPU probe".into(),
+        })
+        .unwrap();
+    let initial = expect_pixels(&runner, [0, 0, 255], 0);
+    runner
+        .send(Command::SetHardware {
+            enabled: true,
+            request: 1,
+        })
+        .unwrap();
+    let switched = wait_for(&runner, |s| s.graphics_request == 1);
+    assert!(switched.running);
+    assert_eq!(
+        switched.graphics_device.is_some(),
+        switched.graphics_error.is_none()
+    );
+    assert_eq!(initial.media_revision, switched.media_revision);
+    runner.send(Command::Buttons(1)).unwrap();
+    expect_pixels(&runner, [255, 0, 0], 0);
+    runner
+        .send(Command::SetHardware {
+            enabled: false,
+            request: 2,
+        })
+        .unwrap();
+    let software = wait_for(&runner, |s| s.graphics_request == 2);
+    assert!(software.graphics_device.is_none() && software.graphics_error.is_none());
+    assert!(software.running);
+}
+
+#[test]
+fn frame_rate_uses_completed_frames_and_elapsed_wall_time() {
+    let start = Instant::now();
+    let mut meter = super::FrameRate::new(start);
+    for frame in 1..60 {
+        assert!(
+            meter
+                .completed_frame(start + Duration::from_millis(16 * frame))
+                .is_none()
+        );
+    }
+    assert_eq!(
+        meter.completed_frame(start + Duration::from_secs(1)),
+        Some(60.0)
+    );
+    // Taking two seconds to finish one frame reports half a frame per second.
+    assert_eq!(
+        meter.completed_frame(start + Duration::from_secs(3)),
+        Some(0.5)
+    );
+}
+
+#[test]
+fn static_picture_counts_while_playing_and_debug_commands_reset_rate() {
+    let temp = tempfile::tempdir().unwrap();
+    let rom = temp.path().join("fps-probe.gba");
+    fixture::write_cartridge(&rom);
+    let runner = Runner::start(None, temp.path().to_owned()).unwrap();
+    runner
+        .send(Command::Load {
+            path: rom,
+            title: "Frame rate".into(),
+        })
+        .unwrap();
+    let first = expect_pixels(&runner, [0, 0, 255], 0);
+    let sampled = wait_for(&runner, |s| s.video_fps > 0.0);
+    assert!(std::sync::Arc::ptr_eq(&first.rgb, &sampled.rgb));
+    runner.send(Command::Pause).unwrap();
+    let paused = wait_for(&runner, |s| !s.running);
+    assert!(paused.video_fps.abs() < f64::EPSILON);
+    for command in [Command::Step, Command::Slice] {
+        runner.send(command).unwrap();
+        let stepped = wait_for(&runner, |s| !s.running);
+        assert!(stepped.video_fps.abs() < f64::EPSILON);
+    }
+    runner.send(Command::Toggle).unwrap();
+    let restarted = wait_for(&runner, |s| s.running);
+    assert!(restarted.video_fps.abs() < f64::EPSILON);
+}

@@ -1,7 +1,7 @@
 //! Desktop preferences. CLI overrides are applied in memory, never saved implicitly.
 use crate::{
     i18n::Language,
-    keybindings::KeyBindings,
+    keybindings::{GbaKeyBindings, KeyBindings},
     library::{
         covers::{DEFAULT_TEMPLATE, Provider},
         scrape::WorkerCount,
@@ -107,6 +107,24 @@ impl Default for LibraryPreferences {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GbaRenderer {
+    #[default]
+    Software,
+    Hardware,
+}
+
+impl GbaRenderer {
+    pub fn from_hardware(enabled: bool) -> Self {
+        if enabled {
+            Self::Hardware
+        } else {
+            Self::Software
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -118,6 +136,8 @@ pub struct Preferences {
     pub volume: u8,
     pub muted: bool,
     pub renderer: String,
+    /// Prefer GPU LCD composition when starting a GBA cartridge.
+    pub gba_renderer: GbaRenderer,
     /// Preferred hardware raster resolution, retained in software mode.
     pub render_scale: RenderScale,
     /// Preferred hardware presentation color depth, retained in software mode.
@@ -128,6 +148,7 @@ pub struct Preferences {
     pub turbo_buttons: u16,
     pub turbo_hz: u8,
     pub keybindings: KeyBindings,
+    pub gba_keybindings: GbaKeyBindings,
     pub shortcuts: ShortcutBindings,
     pub bios_path: Option<PathBuf>,
     pub recent_discs: Vec<RecentDisc>,
@@ -146,6 +167,7 @@ impl Default for Preferences {
             volume: 75,
             muted: false,
             renderer: "serial".into(),
+            gba_renderer: GbaRenderer::Software,
             render_scale: RenderScale::Native,
             color_depth: ColorDepth::Native,
             anti_aliasing: AntiAliasing::Off,
@@ -153,6 +175,7 @@ impl Default for Preferences {
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
             keybindings: KeyBindings::default(),
+            gba_keybindings: GbaKeyBindings::default(),
             shortcuts: ShortcutBindings::default(),
             bios_path: None,
             recent_discs: Vec::new(),
@@ -209,7 +232,16 @@ impl Preferences {
         self.renderer.parse::<RendererMode>()?;
         self.turbo()?;
         self.keybindings.validate()?;
+        self.gba_keybindings.validate()?;
         self.shortcuts.validate(&self.keybindings)?;
+        // Old profiles allowed shortcuts to shadow the fixed GBA layout.
+        if self.gba_keybindings != GbaKeyBindings::default()
+            && self
+                .shortcuts
+                .gba_controller_conflict(&self.gba_keybindings)
+        {
+            return Err("GBA controller key conflicts with an application shortcut".into());
+        }
         if self.volume > 100 || self.theme.is_empty() {
             return Err("Volume must be 0..100 and theme must not be empty".into());
         }
@@ -630,6 +662,29 @@ mod tests {
                 assert_eq!(restored.crt(), crt);
             }
         }
+    }
+
+    #[test]
+    fn old_shortcuts_survive_introduction_of_gba_bindings() {
+        // Before the GBA controls were editable, global shortcuts already took priority.
+        let old: Preferences =
+            serde_json::from_str(r#"{"keybindings":{"cross":"j"},"shortcuts":{"toggle":"x"}}"#)
+                .unwrap();
+        old.validate().unwrap();
+        assert_eq!(old.gba_keybindings, GbaKeyBindings::default());
+        assert!(old.shortcuts.gba_controller_conflict(&old.gba_keybindings));
+
+        let mut edited = old;
+        edited
+            .gba_keybindings
+            .rebind(crate::keybindings::GbaButton::A, "f8")
+            .unwrap();
+        assert!(edited.validate().is_err());
+        edited
+            .gba_keybindings
+            .rebind(crate::keybindings::GbaButton::A, "s")
+            .unwrap();
+        edited.validate().unwrap();
     }
 
     #[test]

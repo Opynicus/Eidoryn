@@ -80,7 +80,7 @@ impl Entry {
             .as_ref()
             .and_then(|m| m.title.clone())
             .unwrap_or_else(|| game.title.clone());
-        let mut terms = vec![title.clone(), game.title.clone()];
+        let mut terms = vec![title.clone(), game.title.clone(), game.platform.clone()];
         if let Some(meta) = &metadata {
             terms.extend(meta.aliases.iter().cloned());
             terms.extend(meta.region.clone());
@@ -125,6 +125,10 @@ impl Entry {
         }
     }
 
+    fn is_cartridge(&self) -> bool {
+        self.game.platform_kind() == Some(GamePlatform::Gba)
+    }
+
     fn publication_date(&self) -> (Text, Option<&str>) {
         match (self.date.as_deref(), self.work_date.as_deref()) {
             (None, Some(date)) => (Text::LibraryWorkDate, Some(date)),
@@ -163,12 +167,10 @@ impl MetadataLookup {
     reason = "Independent view, scan and asynchronous refresh states"
 )]
 pub(super) struct Workspace {
-    pub(super) platform: GamePlatform,
     pub(super) store: Option<Library>,
     entries: Vec<Entry>,
     roots: Vec<ScanRoot>,
     order: Vec<usize>,
-    platform_count: usize,
     pending_moves: VecDeque<GameMove>,
     entries_revision: u64,
     checked_games: BTreeSet<i64>,
@@ -214,13 +216,11 @@ pub(super) struct Workspace {
 impl Workspace {
     pub(super) fn new(mut store: Option<Library>) -> Self {
         Self {
-            platform: GamePlatform::Ps1,
             scraping: scraping::Scraping::new(store.as_mut()),
             store,
             entries: vec![],
             roots: vec![],
             order: vec![],
-            platform_count: 0,
             pending_moves: VecDeque::new(),
             entries_revision: 0,
             checked_games: BTreeSet::new(),
@@ -263,19 +263,14 @@ impl Workspace {
         }
     }
 
-    pub(super) fn change_platform(&mut self, platform: GamePlatform) {
-        self.platform = platform;
+    pub(super) fn cancel_pending_launch(&mut self) {
         self.launch_generation = self.launch_generation.wrapping_add(1);
-        self.selected = None;
-        self.location = None;
         self.pending_bios = None;
         self.direct = None;
-        self.details = false;
-        self.menu = None;
-        self.card_menu = None;
-        self.checked_games.clear();
-        self.clear_playtime_confirmation = None;
-        self.close_editor();
+    }
+
+    fn entry(&self, id: i64) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.game.id == id)
     }
 
     pub(super) fn subpage_title(&self) -> Option<Text> {

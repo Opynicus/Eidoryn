@@ -65,7 +65,7 @@ impl Render for Desktop {
             .on_key_up(cx.listener(Self::key_up))
             .on_modifiers_changed(cx.listener(
                 |view, event: &gpui::ModifiersChangedEvent, _, cx| {
-                    view.release_rewind_key(None, &event.modifiers, cx);
+                    view.release_rewind_key(None, event.modifiers, cx);
                 },
             ))
             .when(self.navigation.is_dragging(), |root| {
@@ -354,21 +354,36 @@ impl Desktop {
 
     fn emulation_status(&self, window: &Window) -> gpui::Div {
         let p = self.themes.active().palette;
+        let (fps, target, renderer) = if self.is_gba() {
+            (
+                self.gba.snapshot.video_fps,
+                eidoryn_gba::FRAME_RATE,
+                self.gba
+                    .snapshot
+                    .graphics_device
+                    .as_deref()
+                    .unwrap_or_else(|| self.tr(Text::SerialRenderer)),
+            )
+        } else {
+            (
+                self.snapshot.video_fps,
+                self.snapshot.target_fps,
+                self.renderer_label(),
+            )
+        };
+        let speed = 100.0 * fps / target;
+        let metrics = format!(
+            "{fps:.1} / {target:.1} FPS  ·  {speed:.0}% {}",
+            self.tr(Text::Speed)
+        );
         let status = if self.is_gba() {
             format!(
-                "Game Boy Advance  ·  {} × {}",
+                "{metrics}  ·  {} × {}  ·  {renderer}",
                 eidoryn_gba::WIDTH,
                 eidoryn_gba::HEIGHT
             )
         } else {
-            format!(
-                "{:.1} / {:.1} FPS  ·  {:.0}% {}  ·  {}",
-                self.snapshot.video_fps,
-                self.snapshot.target_fps,
-                100. * self.snapshot.video_fps / self.snapshot.target_fps,
-                self.tr(Text::Speed),
-                self.renderer_label()
-            )
+            format!("{metrics}  ·  {renderer}")
         };
         div()
             .h(px(28.))

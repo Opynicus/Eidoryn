@@ -1,5 +1,5 @@
 //! Editable keyboard shortcuts for desktop emulator actions.
-use crate::keybindings::{KeyBindings, PadButton, supported_key};
+use crate::keybindings::{ControllerBindings, ControllerButton, GbaKeyBindings, supported_key};
 use gpui::{Keystroke, Modifiers, OperatingSystem};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -38,6 +38,21 @@ impl ShortcutAction {
         Self::QuickLoad,
         Self::Rewind,
     ];
+
+    pub fn available_on_gba(self) -> bool {
+        matches!(
+            self,
+            Self::Toggle
+                | Self::Enlarge
+                | Self::Crt
+                | Self::Settings
+                | Self::Step
+                | Self::Slice
+                | Self::Fullscreen
+                | Self::CleanFullscreen
+                | Self::Reset
+        )
+    }
 
     fn default_keys(self) -> &'static str {
         match self {
@@ -83,7 +98,7 @@ impl ShortcutChord {
         self.key.eq_ignore_ascii_case(key) || !key.is_ascii() && self.key == key.to_lowercase()
     }
 
-    pub fn pad_conflict(&self, pad: &KeyBindings) -> Option<PadButton> {
+    pub fn pad_conflict<B: ControllerButton>(&self, pad: &ControllerBindings<B>) -> Option<B> {
         if self.modifiers.modified() {
             None
         } else {
@@ -194,7 +209,16 @@ impl ShortcutBindings {
         })
     }
 
-    pub fn validate(&self, pad: &KeyBindings) -> Result<(), String> {
+    pub fn gba_controller_conflict(&self, pad: &GbaKeyBindings) -> bool {
+        self.0.iter().any(|(action, chord)| {
+            action.available_on_gba()
+                && chord
+                    .as_ref()
+                    .is_some_and(|chord| chord.pad_conflict(pad).is_some())
+        })
+    }
+
+    pub fn validate<B: ControllerButton>(&self, pad: &ControllerBindings<B>) -> Result<(), String> {
         for (&action, binding) in &self.0 {
             let Some(chord) = binding else { continue };
             if !chord.supported() {
@@ -211,6 +235,7 @@ impl ShortcutBindings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keybindings::KeyBindings;
 
     #[test]
     fn missing_bindings_use_defaults_and_disabled_actions_survive_restart() {

@@ -1,4 +1,6 @@
 mod compositor;
+#[cfg(feature = "gpu")]
+mod hardware;
 #[cfg(test)]
 mod tests;
 use crate::{HEIGHT, WIDTH};
@@ -9,11 +11,21 @@ pub(super) struct Video {
     pub vram: Box<[u8]>,
     pub oam: Box<[u8]>,
     pub pixels: Box<[u8]>,
+    #[cfg(feature = "gpu")]
+    accelerator: Option<hardware::Compositor>,
+    pub graphics_error: Option<String>,
     affine_origin: [[i32; 2]; 2],
 }
 
 pub(super) fn half(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn rgb888(color: u16) -> [u8; 3] {
+    [0, 5, 10].map(|shift| {
+        let channel = ((color >> shift) & 31u16) as u8;
+        (channel << 3) | (channel >> 2)
+    })
 }
 
 fn fixed_reference(io: &[u8], offset: usize) -> i32 {
@@ -64,7 +76,42 @@ impl Video {
             vram: vec![0; 96 * 1024].into_boxed_slice(),
             oam: vec![0; 1024].into_boxed_slice(),
             pixels: vec![0; WIDTH * HEIGHT * 3].into_boxed_slice(),
+            #[cfg(feature = "gpu")]
+            accelerator: None,
+            graphics_error: None,
             affine_origin: [[0; 2]; 2],
+        }
+    }
+
+    pub fn set_hardware_acceleration(&mut self, enabled: bool) -> Result<(), String> {
+        #[cfg(feature = "gpu")]
+        {
+            if enabled && self.accelerator.is_none() {
+                self.accelerator = Some(hardware::Compositor::open()?);
+            } else if !enabled && let Some(accelerator) = self.accelerator.take() {
+                accelerator.finish_in_software(&mut self.pixels);
+            }
+        }
+        #[cfg(not(feature = "gpu"))]
+        if enabled {
+            return Err("GBA hardware rendering is unavailable in this build".into());
+        }
+        self.graphics_error = None;
+        Ok(())
+    }
+
+    pub fn graphics_device(&self) -> Option<&str> {
+        #[cfg(feature = "gpu")]
+        return self.accelerator.as_ref().map(|a| a.name.as_str());
+        #[cfg(not(feature = "gpu"))]
+        None
+    }
+
+    #[cfg(feature = "gpu")]
+    pub fn retain_renderer(&mut self, previous: &mut Self) {
+        self.accelerator = previous.accelerator.take();
+        if let Some(accelerator) = &mut self.accelerator {
+            accelerator.discard_partial_frame();
         }
     }
 
@@ -84,8 +131,19 @@ impl Video {
 
     pub fn render_line(&mut self, y: usize, io: &[u8]) {
         let control = half(io, 0);
-        let line_offset = y * WIDTH * 3;
         if control & 0x80 != 0 {
+            #[cfg(feature = "gpu")]
+            if self.accelerator.is_some()
+                && self.capture(
+                    y,
+                    &Effects::default(),
+                    &[Stack::backdrop(0x7fff); WIDTH],
+                    &[0; WIDTH],
+                )
+            {
+                return;
+            }
+            let line_offset = y * WIDTH * 3;
             self.pixels[line_offset..line_offset + WIDTH * 3].fill(255);
             return;
         }
@@ -137,17 +195,42 @@ impl Video {
             }
         }
         let effects = Effects::read(io);
+        #[cfg(feature = "gpu")]
+        if self.capture(y, &effects, &line, &masks) {
+            return;
+        }
+        let line_offset = y * WIDTH * 3;
         for ((stack, mask), rgb) in line
             .into_iter()
             .zip(masks)
             .zip(self.pixels[line_offset..].as_chunks_mut::<3>().0)
         {
-            let color = stack.color(&effects, mask);
-            for (shift, channel) in [0, 5, 10].into_iter().zip(rgb) {
-                let value = ((color >> shift) & 31) as u8;
-                *channel = (value << 3) | (value >> 2);
-            }
+            *rgb = rgb888(stack.color(&effects, mask));
         }
+    }
+
+    #[cfg(feature = "gpu")]
+    fn capture(
+        &mut self,
+        y: usize,
+        effects: &Effects,
+        line: &[Stack; WIDTH],
+        masks: &[u8; WIDTH],
+    ) -> bool {
+        let Some(accelerator) = &mut self.accelerator else {
+            return false;
+        };
+        if !accelerator.capture(y, effects, line, masks) {
+            return false;
+        }
+        if y == HEIGHT - 1
+            && let Err(error) = accelerator.finish(&mut self.pixels)
+        {
+            accelerator.finish_in_software(&mut self.pixels);
+            self.graphics_error = Some(error);
+            self.accelerator = None;
+        }
+        true
     }
 
     fn text_index(&self, bg: usize, x: usize, y: usize, settings: u16, io: &[u8]) -> Option<usize> {

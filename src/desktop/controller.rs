@@ -1,12 +1,12 @@
 use super::{
     Desktop, SettingsTab,
-    components::{button, label},
+    components::{button, card, heading, label},
     shortcuts::action_title,
 };
 use eidoryn_psx::{
     i18n::Text,
-    keybindings::{KeyBindings, PadButton},
-    shortcuts::ShortcutAction,
+    keybindings::{ControllerBindings, ControllerButton, GbaButton, PadButton},
+    shortcuts::{ShortcutAction, ShortcutBindings},
     systems::ps1::{
         input::{TURBO_RATES, TurboConfig},
         runner::Command,
@@ -30,6 +30,37 @@ const BINDINGS: [(PadButton, &str); PadButton::ALL.len()] = [
     (PadButton::L2, "binding-8"),
     (PadButton::R2, "binding-9"),
 ];
+
+const GBA_BINDINGS: [(GbaButton, &str); 10] = [
+    (GbaButton::Up, "gba-binding-up"),
+    (GbaButton::Down, "gba-binding-down"),
+    (GbaButton::Left, "gba-binding-left"),
+    (GbaButton::Right, "gba-binding-right"),
+    (GbaButton::A, "gba-binding-a"),
+    (GbaButton::B, "gba-binding-b"),
+    (GbaButton::Start, "gba-binding-start"),
+    (GbaButton::Select, "gba-binding-select"),
+    (GbaButton::L, "gba-binding-l"),
+    (GbaButton::R, "gba-binding-r"),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RecordingButton {
+    Ps1(PadButton),
+    Gba(GbaButton),
+}
+
+impl From<PadButton> for RecordingButton {
+    fn from(button: PadButton) -> Self {
+        Self::Ps1(button)
+    }
+}
+
+impl From<GbaButton> for RecordingButton {
+    fn from(button: GbaButton) -> Self {
+        Self::Gba(button)
+    }
+}
 
 const TURBO_CHOICES: [(u8, &str, &str); TURBO_RATES.len()] = [
     (5, "turbo-rate-5", "5 Hz"),
@@ -68,11 +99,18 @@ impl Desktop {
             self.rebinding = None;
             self.notice = None;
         } else if event.keystroke.modifiers.modified()
-            || self
-                .keybindings_draft
-                .get_or_insert_with(|| self.preferences.keybindings.clone())
-                .rebind(button, &key)
-                .is_err()
+            || match button {
+                RecordingButton::Ps1(button) => self
+                    .keybindings_draft
+                    .get_or_insert_with(|| self.preferences.keybindings.clone())
+                    .rebind(button, &key),
+                RecordingButton::Gba(button) => self
+                    .gba
+                    .keybindings_draft
+                    .get_or_insert_with(|| self.preferences.gba_keybindings.clone())
+                    .rebind(button, &key),
+            }
+            .is_err()
         {
             self.notice = Some(self.tr(Text::BindingUnsupported).into());
         } else {
@@ -83,17 +121,29 @@ impl Desktop {
     }
 
     fn apply_bindings(&mut self, cx: &mut Context<Self>) {
-        let Some(bindings) = &self.keybindings_draft else {
-            return;
-        };
         self.rebinding = None;
-        if bindings.validate().is_err() || self.preferences.shortcuts.validate(bindings).is_err() {
-            self.notice = Some(self.tr(Text::BindingInvalid).into());
-        } else if let Some(bindings) = self.keybindings_draft.take() {
-            self.release_buttons(cx);
-            self.preferences.keybindings = bindings;
-            self.notice = None;
-            self.save_preferences();
+        let shortcuts = &self.preferences.shortcuts;
+        let applied = if self.is_gba() {
+            apply_draft(
+                &mut self.gba.keybindings_draft,
+                &mut self.preferences.gba_keybindings,
+                |pad| !shortcuts.gba_controller_conflict(pad),
+            )
+        } else {
+            apply_draft(
+                &mut self.keybindings_draft,
+                &mut self.preferences.keybindings,
+                |pad| shortcuts.validate(pad).is_ok(),
+            )
+        };
+        match applied {
+            Ok(true) => {
+                self.release_buttons(cx);
+                self.notice = None;
+                self.save_preferences();
+            }
+            Ok(false) => return,
+            Err(_) => self.notice = Some(self.tr(Text::BindingInvalid).into()),
         }
         cx.notify();
     }
@@ -114,22 +164,40 @@ impl Desktop {
     }
 
     fn keybindings_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let p = &self.themes.active().palette;
-        let bindings = self
-            .keybindings_draft
-            .as_ref()
-            .unwrap_or(&self.preferences.keybindings);
+        if self.is_gba() {
+            self.binding_grid(
+                &self.preferences.gba_keybindings,
+                self.gba.keybindings_draft.as_ref(),
+                &GBA_BINDINGS,
+                cx,
+            )
+        } else {
+            self.binding_grid(
+                &self.preferences.keybindings,
+                self.keybindings_draft.as_ref(),
+                &BINDINGS,
+                cx,
+            )
+        }
+    }
+
+    fn binding_conflicts<B: ControllerButton>(
+        &self,
+        bindings: &ControllerBindings<B>,
+    ) -> Vec<(B, String)> {
         let occupied: Vec<_> = ShortcutAction::ALL
             .into_iter()
+            .filter(|&action| self.supports_shortcut(action))
             .filter_map(|action| {
                 let chord = self.preferences.shortcuts.binding(action)?;
                 Some((chord.pad_conflict(bindings)?, self.tr(action_title(action))))
             })
             .collect();
-        let conflicts = PadButton::ALL
-            .into_iter()
+        B::BUTTONS
+            .iter()
+            .copied()
             .filter_map(|pad| {
-                let other = bindings.conflict(pad).map(PadButton::name).or_else(|| {
+                let other = bindings.conflict(pad).map(B::name).or_else(|| {
                     occupied
                         .iter()
                         .find_map(|&(button, title)| (button == pad).then_some(title))
@@ -143,12 +211,24 @@ impl Desktop {
                     ),
                 ))
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn binding_grid<B: ControllerButton + Into<RecordingButton>>(
+        &self,
+        saved: &ControllerBindings<B>,
+        draft: Option<&ControllerBindings<B>>,
+        buttons: &[(B, &'static str)],
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let bindings = draft.unwrap_or(saved);
+        let conflicts = self.binding_conflicts(bindings);
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .when(bindings != &self.preferences.keybindings, |panel| {
+            .when(bindings != saved, |panel| {
                 panel.child(label(p, self.tr(Text::BindingDraft)).text_color(rgb(p.primary)))
             })
             .child(label(p, self.tr(Text::KeyBindingsHint)))
@@ -173,8 +253,8 @@ impl Desktop {
                     .grid()
                     .grid_cols(2)
                     .gap_2()
-                    .children(BINDINGS.into_iter().map(|(pad, id)| {
-                        let waiting = self.rebinding == Some(pad);
+                    .children(buttons.iter().map(|&(pad, id)| {
+                        let waiting = self.rebinding == Some(pad.into());
                         let key = if waiting {
                             self.tr(Text::BindingPrompt).into()
                         } else {
@@ -211,7 +291,7 @@ impl Desktop {
                             .debug_selector(move || id.into())
                             .on_click(cx.listener(move |view, _, window, cx| {
                                 view.release_buttons(cx);
-                                view.rebinding = Some(pad);
+                                view.rebinding = Some(pad.into());
                                 view.notice = None;
                                 // Capture Enter/Space without activating the focused button again.
                                 window.focus(&view.settings_focus, cx);
@@ -252,12 +332,18 @@ impl Desktop {
                     match (shortcuts, action) {
                         (true, BindingAction::Apply) => view.apply_shortcuts(cx),
                         (true, BindingAction::Reset) => {
-                            view.shortcut_editor.draft = Some(Default::default())
+                            view.shortcut_editor.draft = Some(ShortcutBindings::default());
                         }
                         (true, BindingAction::Cancel) => view.shortcut_editor.draft = None,
                         (false, BindingAction::Apply) => view.apply_bindings(cx),
+                        (false, BindingAction::Reset) if view.is_gba() => {
+                            view.gba.keybindings_draft = Some(ControllerBindings::default());
+                        }
+                        (false, BindingAction::Cancel) if view.is_gba() => {
+                            view.gba.keybindings_draft = None;
+                        }
                         (false, BindingAction::Reset) => {
-                            view.keybindings_draft = Some(KeyBindings::default())
+                            view.keybindings_draft = Some(ControllerBindings::default());
                         }
                         (false, BindingAction::Cancel) => view.keybindings_draft = None,
                     }
@@ -273,7 +359,50 @@ impl Desktop {
             .flex_col()
             .gap_4()
             .child(self.setting_group(Text::KeyBindings, cx, |cx| self.keybindings_panel(cx)))
-            .child(self.setting_group(Text::Turbo, cx, |cx| self.turbo_settings(cx)))
+            .when(!self.is_gba(), |panel| {
+                panel.child(self.setting_group(Text::Turbo, cx, |cx| self.turbo_settings(cx)))
+            })
+    }
+
+    pub(super) fn gba_controller_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        card(p)
+            .p_4()
+            .gap_3()
+            .child(heading(&self.fonts, p, self.tr(Text::Controller), "GBA"))
+            .child(
+                div()
+                    .grid()
+                    .grid_cols(2)
+                    .gap_2()
+                    .children(GBA_BINDINGS.map(|(button, _)| {
+                        div()
+                            .flex()
+                            .justify_between()
+                            .gap_1()
+                            .child(label(p, button.name()))
+                            .child(
+                                div().text_xs().font(self.fonts.mono()).child(
+                                    self.preferences.gba_keybindings.key(button).to_uppercase(),
+                                ),
+                            )
+                    })),
+            )
+            .child(
+                button(
+                    &self.fonts,
+                    p,
+                    "edit-gba-controls",
+                    self.tr(Text::KeyBindings),
+                    false,
+                )
+                .debug_selector(|| "edit-gba-controls".into())
+                .on_click(cx.listener(|view, _, window, cx| {
+                    view.open_settings(cx);
+                    view.settings_tab = SettingsTab::Controller;
+                    window.focus(&view.settings_focus, cx);
+                })),
+            )
     }
 
     fn turbo_settings(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -367,6 +496,25 @@ impl Desktop {
     }
 }
 
+/// Keep invalid drafts visible so conflicting keys can be swapped before confirming.
+fn apply_draft<B: ControllerButton>(
+    draft: &mut Option<ControllerBindings<B>>,
+    saved: &mut ControllerBindings<B>,
+    shortcuts_available: impl FnOnce(&ControllerBindings<B>) -> bool,
+) -> Result<bool, String> {
+    if let Some(map) = draft {
+        map.validate()?;
+        if !shortcuts_available(map) {
+            return Err("Controller button conflicts with an application shortcut".into());
+        }
+        *saved = std::mem::take(map);
+        *draft = None;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +525,7 @@ mod tests {
         for (pad, id) in BINDINGS {
             assert_eq!(id, format!("binding-{}", pad as u8));
         }
+        assert_eq!(GBA_BINDINGS.map(|(pad, _)| pad), GbaButton::BUTTONS);
         assert_eq!(TURBO_CHOICES.map(|(hz, _, _)| hz), TURBO_RATES);
         for (hz, id, text) in TURBO_CHOICES {
             assert_eq!(id, format!("turbo-rate-{hz}"));

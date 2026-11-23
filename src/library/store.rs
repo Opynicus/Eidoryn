@@ -379,26 +379,21 @@ impl Library {
 
     /// Visible games across all search and sort settings, including newly committed imports.
     pub fn visible_game_ids(&self) -> Result<Vec<i64>, String> {
-        self.visible_ids(None)
-    }
-
-    /// Visible games covered by the current PlayStation release and artwork providers.
-    pub fn visible_games_for_scraping(&self) -> Result<Vec<i64>, String> {
-        self.visible_ids(Some(GamePlatform::Ps1))
-    }
-
-    fn visible_ids(&self, platform: Option<GamePlatform>) -> Result<Vec<i64>, String> {
         let db = self.connect()?;
         let mut q = db
             .prepare(
-                "SELECT g.id FROM games g WHERE NOT g.hidden AND (?1 IS NULL OR g.platform=?1) AND EXISTS(
+                "SELECT g.id FROM games g WHERE NOT g.hidden AND EXISTS(
             SELECT 1 FROM discs d JOIN listed_locations l ON l.disc_id=d.id WHERE d.game_id=g.id)
             ORDER BY g.id",
             )
             .map_err(|e| e.to_string())?;
-        q.query_map([platform.map(GamePlatform::as_str)], |r| r.get(0))
+        q.query_map([], |r| r.get(0))
             .and_then(Iterator::collect)
             .map_err(|e| e.to_string())
+    }
+
+    pub fn visible_games_for_scraping(&self) -> Result<Vec<i64>, String> {
+        self.visible_game_ids()
     }
 
     pub fn games(&self) -> Result<Vec<Game>, String> {

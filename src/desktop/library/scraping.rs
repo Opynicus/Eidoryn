@@ -126,7 +126,7 @@ impl Scraping {
 
 impl Desktop {
     pub(super) fn refresh_library_data(&mut self, cx: &mut Context<Self>) {
-        if self.is_gba() || self.library.scraping.full_requested() {
+        if self.library.scraping.full_requested() {
             return;
         }
         if let Some(task) = &self.library.cover

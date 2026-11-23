@@ -585,13 +585,20 @@ fn prepared_results_and_source_provenance_roll_back_with_the_job() {
             .exists([])
             .unwrap()
     );
-    assert!(!has_title_candidate(&db, "example adventure").unwrap());
+    assert!(!has_title_candidate(&db, "example adventure", false).unwrap());
 
     // The failed writer dropped its body. A later job must refetch rather than
     // mark an empty cache successful.
     let retried = prepare();
     commit_one(&lib, 1, retried).unwrap();
-    assert!(has_title_candidate(&db, &title_hint("  Example–Adventure (Disc 2) [copy]")).unwrap());
+    assert!(
+        has_title_candidate(
+            &db,
+            &title_hint("  Example–Adventure (Disc 2) [copy]"),
+            false
+        )
+        .unwrap()
+    );
     assert_eq!(candidates(&lib, 1, "EXAMPLE ADVENTURE").unwrap().len(), 1);
     assert_eq!(
         title_hint("A (Different) Title [backup] (Japan)"),

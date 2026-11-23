@@ -170,9 +170,7 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3()
-            .when(!self.is_gba(), |s| {
-                s.child(label(&p, self.tr(Text::LibraryManualHint)))
-            })
+            .child(label(&p, self.tr(Text::LibraryManualHint)))
             .children(FIELDS.iter().enumerate().map(|(i, &(field, key, _))| {
                 div()
                     .flex()

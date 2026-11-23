@@ -42,7 +42,7 @@ impl Desktop {
                             .when(!stacked, |card| card.w(px(session_width)).flex_shrink_0()),
                     ),
             )
-            .when(!self.is_gba(), |s| s.child(self.recent_games_card(cx)))
+            .child(self.recent_games_card(cx))
     }
 
     fn gba_launch_card(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -354,20 +354,7 @@ impl Desktop {
                             .when(!stacked, |sidebar| {
                                 sidebar.w(px(side_width)).flex_shrink_0()
                             })
-                            .when(self.is_gba(), |s| {
-                                s.child(
-                                    card(p)
-                                        .p_4()
-                                        .gap_3()
-                                        .child(heading(
-                                            &self.fonts,
-                                            p,
-                                            self.tr(Text::Controller),
-                                            "GBA",
-                                        ))
-                                        .child(label(p, self.tr(Text::GbaKeys))),
-                                )
-                            })
+                            .when(self.is_gba(), |s| s.child(self.gba_controller_card(cx)))
                             .when(!self.is_gba(), |s| {
                                 s.child(self.quick_slot_card())
                                     .child(

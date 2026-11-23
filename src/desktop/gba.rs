@@ -3,6 +3,7 @@ use super::{Desktop, GamePlatform, WorkspacePage, actions::ImagePicker, componen
 use eidoryn_psx::{
     i18n::Text,
     library::Library,
+    preferences::GbaRenderer,
     systems::gba::{Command, Runner, Snapshot},
 };
 use gpui::{Context, div, prelude::*};
@@ -16,6 +17,9 @@ pub(super) struct Session {
     pub runner: Option<Runner>,
     pub snapshot: Snapshot,
     pub focus_game: bool,
+    pub graphics_request: Option<(u64, bool)>,
+    pub capturing_debug: bool,
+    pub keybindings_draft: Option<eidoryn_psx::keybindings::GbaKeyBindings>,
     close: CloseState,
 }
 
@@ -27,22 +31,9 @@ enum CloseState {
     WaitingForWindow,
 }
 
-const KEYS: [&str; 10] = [
-    "x",
-    "z",
-    "backspace",
-    "enter",
-    "right",
-    "left",
-    "up",
-    "down",
-    "e",
-    "q",
-];
-
 impl Desktop {
     pub(super) fn is_gba(&self) -> bool {
-        self.library.platform == GamePlatform::Gba
+        self.active_core == GamePlatform::Gba
     }
 
     pub(super) fn running(&self) -> bool {
@@ -54,14 +45,7 @@ impl Desktop {
     }
 
     pub(super) fn supports_shortcut(&self, action: eidoryn_psx::shortcuts::ShortcutAction) -> bool {
-        use eidoryn_psx::shortcuts::ShortcutAction::{
-            CleanFullscreen, Crt, Enlarge, Fullscreen, Reset, Settings, Toggle,
-        };
-        !self.is_gba()
-            || matches!(
-                action,
-                Toggle | Reset | Enlarge | Crt | Settings | Fullscreen | CleanFullscreen
-            )
+        !self.is_gba() || action.available_on_gba()
     }
 
     pub(super) fn core_selector(&self, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -79,7 +63,7 @@ impl Desktop {
                 ]
                 .into_iter()
                 .map(|(core, id, title)| {
-                    let selected = core == self.library.platform;
+                    let selected = core == self.active_core;
                     button(&self.fonts, &p, id, core.as_str(), selected)
                         .debug_selector(move || id.into())
                         .role(gpui::Role::Button)
@@ -94,11 +78,12 @@ impl Desktop {
     }
 
     pub(super) fn switch_core(&mut self, core: GamePlatform, cx: &mut Context<Self>) {
-        if self.gba.close != CloseState::Open || self.library.platform == core {
+        if self.gba.close != CloseState::Open || self.active_core == core {
             return;
         }
         self.image_picker.take();
         self.stop_input(cx);
+        self.discard_binding_drafts();
         if self.is_gba() {
             self.gba_command(Command::Pause, cx);
         } else if let Err(error) = self.runner.send(super::Command::Pause) {
@@ -107,20 +92,17 @@ impl Desktop {
             return;
         }
         self.notice = None;
-        self.library.change_platform(core);
-        self.reorder_library();
+        self.active_core = core;
+        self.library.cancel_pending_launch();
         self.snapshot_menu = None;
         self.snapshot_confirmation = None;
         self.renaming_state = None;
         self.graphics.open = false;
-        if matches!(self.page, WorkspacePage::SaveStates | WorkspacePage::Debug) {
+        if self.page == WorkspacePage::SaveStates {
             self.page = WorkspacePage::Console;
         }
         if let Some(image) = &mut self.image {
             image.dirty = true;
-        }
-        if self.page == WorkspacePage::Library {
-            self.enter_library(cx);
         }
         cx.notify();
     }
@@ -130,6 +112,7 @@ impl Desktop {
         if !self.is_gba() || self.closing() {
             return;
         }
+        self.library.cancel_pending_launch();
         self.image_picker.take();
         if self.gba.runner.is_none() {
             let store = self.library.store.clone();
@@ -140,7 +123,18 @@ impl Desktop {
                 .ok_or_else(|| "Cannot locate the GBA data directory".to_owned())
                 .and_then(|dir| Runner::start(store, dir));
             match result {
-                Ok(runner) => self.gba.runner = Some(runner),
+                Ok(runner) => {
+                    self.gba.runner = Some(runner);
+                    if self.preferences.gba_renderer == GbaRenderer::Hardware {
+                        self.gba_command(
+                            Command::SetHardware {
+                                enabled: true,
+                                request: 0,
+                            },
+                            cx,
+                        );
+                    }
+                }
                 Err(error) => {
                     self.notice = Some(error);
                     cx.notify();
@@ -154,18 +148,38 @@ impl Desktop {
     }
 
     pub(super) fn receive_gba(&mut self, cx: &mut Context<Self>) {
-        let Some(next) = self.gba.runner.as_ref().and_then(Runner::take_snapshot) else {
+        let Some(mut next) = self.gba.runner.as_ref().and_then(Runner::take_snapshot) else {
             return;
         };
+        if !self.gba.capturing_debug {
+            next.debug = None;
+        }
         let active = self.is_gba();
+        if let Some((request, enabled)) = self.gba.graphics_request
+            && request == next.graphics_request
+        {
+            self.gba.graphics_request = None;
+            if next.graphics_error.is_none() {
+                self.preferences.gba_renderer = GbaRenderer::from_hardware(enabled);
+                self.save_preferences();
+            }
+        }
         let loaded = next.media_revision != self.gba.snapshot.media_revision;
         let changed = !Arc::ptr_eq(&next.rgb, &self.gba.snapshot.rgb);
         let displays_video = matches!(self.page, WorkspacePage::Game | WorkspacePage::Console)
             || self.presentation.shows_video();
         let redraw = loaded
+            || (next.video_fps - self.gba.snapshot.video_fps).abs() > f64::EPSILON
+            || next.graphics_request != self.gba.snapshot.graphics_request
+            || next.graphics_error != self.gba.snapshot.graphics_error
+            || next.graphics_device != self.gba.snapshot.graphics_device
+            || next.debug.is_some()
             || (changed && displays_video)
             || next.running != self.gba.snapshot.running
             || next.error != self.gba.snapshot.error;
+        if loaded && let Some(path) = &next.path {
+            self.remember_media(path, false);
+        }
         if active && loaded {
             self.page = WorkspacePage::Game;
             self.gba.focus_game = true;
@@ -266,11 +280,15 @@ impl Desktop {
     }
 
     pub(super) fn gba_key(&mut self, key: &str, down: bool, cx: &mut Context<Self>) {
-        if let Some(i) = KEYS.iter().position(|&k| k == key) {
+        if let Some(button) = self.preferences.gba_keybindings.button(key) {
+            let mask = button.mask();
+            if down == (self.pressed_buttons & mask != 0) {
+                return;
+            }
             if down {
-                self.pressed_buttons |= 1 << i;
+                self.pressed_buttons |= mask;
             } else {
-                self.pressed_buttons &= !(1 << i);
+                self.pressed_buttons &= !mask;
             }
             self.gba_command(Command::Buttons(self.pressed_buttons), cx);
         }

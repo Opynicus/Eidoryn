@@ -110,12 +110,23 @@ impl Batch {
         mode: Mode,
         cancel: &AtomicBool,
     ) -> Result<Prepared, ProviderError> {
+        let gba = super::is_gba(
+            &*lib.worker_connection().map_err(ProviderError::Database)?,
+            id,
+        )?;
         self.prepare_with(lib, id, mode, cancel, |serial| {
             #[cfg(feature = "ui-tests")]
             if let Some(responses) = &lib.scrape_responses {
+                if gba {
+                    return super::gba::recorded_response(&responses.metadata, serial, cancel);
+                }
                 return super::wikidata::recorded_response(responses.metadata.clone(), serial);
             }
-            super::lookup_release(serial, cancel)
+            if gba {
+                super::gba::lookup(serial, cancel)
+            } else {
+                super::lookup_release(serial, cancel)
+            }
         })
     }
 
@@ -231,13 +242,15 @@ fn complete_cached_edition(
     serial: &str,
     evidence: &Evidence,
 ) -> rusqlite::Result<bool> {
-    let releases = cached_for(conn, serial)?;
+    let releases = cached_for(conn, serial, evidence.gba)?;
     let edition = if let Some(id) = &evidence.selected {
         releases.iter().find(|r| &r.id == id)
     } else {
         matching_serial(&releases, Some(serial), evidence.region.as_deref())
     };
-    let Some(edition) = edition.filter(|r| !r.date.is_empty() && !r.title.is_empty()) else {
+    let Some(edition) =
+        edition.filter(|r| (evidence.gba || !r.date.is_empty()) && !r.title.is_empty())
+    else {
         return Ok(false);
     };
     conn.prepare_cached(
@@ -347,7 +360,7 @@ impl Prepared {
                 }
             }
         }
-        let releases = cached_for(tx, &serial).map_err(|e| e.to_string())?;
+        let releases = cached_for(tx, &serial, ev.gba).map_err(|e| e.to_string())?;
         let release = if let Some(key) = &ev.selected {
             releases.iter().find(|r| &r.id == key)
         } else {

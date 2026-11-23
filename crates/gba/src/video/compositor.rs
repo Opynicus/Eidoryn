@@ -76,6 +76,7 @@ fn channels(a: u16, b: u16, mix: impl Fn(u16, u16) -> u16) -> u16 {
     channel(0) | channel(5) | channel(10)
 }
 
+#[derive(Default)]
 pub(super) struct Effects {
     targets: u16,
     mode: u16,
@@ -126,4 +127,55 @@ pub(super) fn window_masks(
         }
     }
     masks
+}
+
+// Each scanline stores its effect registers followed by the visible pair of layers at each dot.
+// Both are captured at LCD time, before a later HBlank DMA can replace palette or register data.
+#[cfg(feature = "gpu")]
+impl Effects {
+    pub fn packed(&self) -> [u32; 2] {
+        [
+            u32::from(self.targets),
+            u32::from(self.eva) | (u32::from(self.evb) << 8) | (u32::from(self.evy) << 16),
+        ]
+    }
+
+    pub fn unpack([control, coefficients]: [u32; 2]) -> Self {
+        Self {
+            targets: control as u16,
+            mode: ((control >> 6) & 3) as u16,
+            eva: (coefficients & 31) as u16,
+            evb: ((coefficients >> 8) & 31) as u16,
+            evy: ((coefficients >> 16) & 31) as u16,
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl Stack {
+    pub fn packed(self, window: u8) -> [u32; 2] {
+        [
+            u32::from(self.top.color) | (u32::from(self.next.color) << 16),
+            u32::from(self.top.layer)
+                | (u32::from(self.next.layer) << 8)
+                | (u32::from(self.top.semi) << 16)
+                | (u32::from(window) << 24),
+        ]
+    }
+
+    pub fn unpack([colors, layers]: [u32; 2]) -> (Self, u8) {
+        let pixel = |color, layer, semi| Pixel {
+            color,
+            layer,
+            semi,
+            rank: 0,
+        };
+        (
+            Self {
+                top: pixel(colors as u16, layers as u8, layers & (1 << 16) != 0),
+                next: pixel((colors >> 16) as u16, (layers >> 8) as u8, false),
+            },
+            (layers >> 24) as u8,
+        )
+    }
 }

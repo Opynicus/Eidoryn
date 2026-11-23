@@ -12,13 +12,7 @@ enum CardAction {
 }
 
 impl CardAction {
-    fn available(gba: bool) -> &'static [Self] {
-        if gba {
-            &[Self::Details, Self::Remove]
-        } else {
-            &[Self::Scrape, Self::Details, Self::Remove]
-        }
-    }
+    const ALL: [Self; 3] = [Self::Scrape, Self::Details, Self::Remove];
 
     fn item(self) -> (Text, &'static str, &'static str) {
         match self {
@@ -236,7 +230,7 @@ impl Desktop {
             }))
             .on_key_down(cx.listener(Self::card_menu_key))
             .children(
-                CardAction::available(self.is_gba())
+                CardAction::ALL
                     .iter()
                     .copied()
                     .enumerate()
@@ -289,11 +283,10 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let choices = CardAction::available(self.is_gba());
         let Some(menu) = &mut self.library.card_menu else {
             return;
         };
-        let count = choices.len();
+        let count = CardAction::ALL.len();
         match (
             event.keystroke.key.as_str(),
             event.keystroke.modifiers.shift,
@@ -301,7 +294,7 @@ impl Desktop {
             ("up", _) | ("tab", true) => menu.active = (menu.active + count - 1) % count,
             ("down", _) | ("tab", false) => menu.active = (menu.active + 1) % count,
             ("enter" | "space", _) => {
-                let action = choices[menu.active];
+                let action = CardAction::ALL[menu.active];
                 self.choose_card_action(action, window, cx);
             }
             ("escape", _) => {

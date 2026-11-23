@@ -17,8 +17,12 @@ mod tests;
 pub enum Command {
     Load { path: PathBuf, title: String },
     Buttons(u16),
+    SetHardware { enabled: bool, request: u64 },
     Toggle,
     Pause,
+    SetDebug(bool),
+    Step,
+    Slice,
     Reset,
     PrepareClose(mpsc::Sender<Result<(), String>>),
     ClearStatistics(i64, mpsc::Sender<Result<(), String>>),
@@ -30,8 +34,13 @@ pub struct Snapshot {
     pub title: String,
     pub running: bool,
     pub rgb: Arc<[u8]>,
+    pub video_fps: f64,
+    pub graphics_device: Option<String>,
+    pub graphics_error: Option<String>,
+    pub graphics_request: u64,
     pub media_revision: u64,
     pub error: Option<String>,
+    pub debug: Option<Arc<eidoryn_gba::debug::DebugSnapshot>>,
 }
 
 pub struct Runner {
@@ -170,12 +179,37 @@ impl Cartridge {
     }
 }
 
+struct FrameRate {
+    start: Instant,
+    frames: u32,
+}
+
+impl FrameRate {
+    fn new(start: Instant) -> Self {
+        Self { start, frames: 0 }
+    }
+
+    fn completed_frame(&mut self, now: Instant) -> Option<f64> {
+        self.frames += 1;
+        let elapsed = now.duration_since(self.start);
+        if elapsed < Duration::from_secs(1) {
+            return None;
+        }
+        let fps = f64::from(self.frames) / elapsed.as_secs_f64();
+        *self = Self::new(now);
+        Some(fps)
+    }
+}
+
 struct Worker {
     saves: PathBuf,
     tracker: Option<Playtime>,
     cartridge: Option<Cartridge>,
+    hardware: bool,
     snapshot: Snapshot,
     last_save: Instant,
+    frame_rate: Option<FrameRate>,
+    capture_debug: bool,
 }
 
 impl Worker {
@@ -184,8 +218,11 @@ impl Worker {
             saves: data_dir.join("saves/gba"),
             tracker,
             cartridge: None,
+            hardware: false,
             snapshot: Snapshot::default(),
             last_save: Instant::now(),
+            frame_rate: None,
+            capture_debug: false,
         }
     }
 
@@ -197,13 +234,28 @@ impl Worker {
         Ok(())
     }
 
+    fn reset_frame_rate(&mut self) {
+        self.frame_rate = None;
+        self.snapshot.video_fps = 0.0;
+    }
+
     fn pause(&mut self) {
+        self.reset_frame_rate();
         self.snapshot.running = false;
         if let Some(cart) = &mut self.cartridge {
             cart.machine.set_buttons(0);
         }
         if let Some(clock) = &mut self.tracker {
             clock.sample(false);
+        }
+    }
+
+    fn configure_graphics(&mut self) {
+        self.reset_frame_rate();
+        if let Some(cart) = &mut self.cartridge {
+            self.snapshot.graphics_error =
+                cart.machine.set_hardware_acceleration(self.hardware).err();
+            self.snapshot.graphics_device = cart.machine.graphics_device().map(str::to_owned);
         }
     }
 
@@ -223,8 +275,19 @@ impl Worker {
                     title,
                     running: true,
                     media_revision: self.snapshot.media_revision.wrapping_add(1),
+                    graphics_request: self.snapshot.graphics_request,
                     ..Snapshot::default()
                 };
+                self.configure_graphics();
+            }
+            Command::SetHardware { enabled, request } => {
+                let previous = std::mem::replace(&mut self.hardware, enabled);
+                self.configure_graphics();
+                if self.snapshot.graphics_error.is_some() {
+                    self.hardware = previous;
+                }
+                self.snapshot.graphics_request = request;
+                return Ok(true);
             }
             Command::Buttons(keys) => {
                 if self.snapshot.running
@@ -241,12 +304,30 @@ impl Worker {
                 self.pause();
                 self.flush()?;
             }
+            Command::SetDebug(enabled) => {
+                self.capture_debug = enabled;
+                return Ok(true);
+            }
+            Command::Step | Command::Slice => {
+                self.pause();
+                if let Some(cart) = &mut self.cartridge {
+                    let result = if matches!(command, Command::Step) {
+                        cart.machine.step()
+                    } else {
+                        cart.machine.run_frame()
+                    };
+                    result.map_err(|error| error.to_string())?;
+                    self.snapshot.rgb = Arc::from(cart.machine.pixels());
+                }
+                self.flush()?;
+            }
             Command::Reset => {
+                self.pause();
                 self.flush()?;
                 if let Some(cart) = &mut self.cartridge {
                     cart.machine.reset();
                     self.snapshot.rgb = Arc::from(cart.machine.pixels());
-                    self.snapshot.running = true;
+                    self.snapshot.running = !self.capture_debug;
                 }
             }
             Command::PrepareClose(done) => {
@@ -270,7 +351,14 @@ impl Worker {
         let Some(cart) = &mut self.cartridge else {
             return Ok(());
         };
+        let meter = self
+            .frame_rate
+            .get_or_insert_with(|| FrameRate::new(Instant::now()));
         cart.machine.run_frame().map_err(|e| e.to_string())?;
+        // Even identical framebuffers count. Debug stepping and worker notifications do not.
+        if let Some(fps) = meter.completed_frame(Instant::now()) {
+            self.snapshot.video_fps = fps;
+        }
         if cart.machine.pixels() != self.snapshot.rgb.as_ref() {
             self.snapshot.rgb = Arc::from(cart.machine.pixels());
         }
@@ -313,7 +401,20 @@ impl Worker {
                     self.snapshot.error = Some(error);
                 }
             }
+            if let Some(error) = self
+                .cartridge
+                .as_mut()
+                .and_then(|cart| cart.machine.take_graphics_error())
+            {
+                self.snapshot.graphics_error = Some(error);
+                self.snapshot.graphics_device = None;
+            }
             let mut snapshot = self.snapshot.clone();
+            if self.capture_debug
+                && let Some(cart) = &self.cartridge
+            {
+                snapshot.debug = Some(Arc::new(cart.machine.debug_snapshot()));
+            }
             if snapshot.error.is_none() {
                 snapshot.error = self.tracker.as_ref().and_then(Playtime::error);
             }

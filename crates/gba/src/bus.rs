@@ -85,6 +85,25 @@ impl Memory {
         self.io[0x300] = 0; // The firmware sets POSTFLG after a cold boot.
     }
 
+    // Inspect firmware directly even when CPU data reads see the protected prefetch latch.
+    fn bios_bytes<const N: usize>(&self, aligned: u32) -> Option<[u8; N]> {
+        self.bios
+            .as_ref()?
+            .get(aligned as usize..)?
+            .first_chunk::<N>()
+            .copied()
+    }
+
+    pub fn peek16(&self, addr: u32) -> u16 {
+        self.bios_bytes(addr & !1)
+            .map_or_else(|| self.read16(addr), u16::from_le_bytes)
+    }
+
+    pub fn peek32(&self, addr: u32) -> u32 {
+        self.bios_bytes(addr & !3)
+            .map_or_else(|| self.read32(addr), u32::from_le_bytes)
+    }
+
     pub fn has_bios(&self) -> bool {
         self.bios.is_some()
     }
@@ -100,6 +119,8 @@ impl Memory {
         }
         std::mem::swap(&mut self.sram, &mut fresh.sram);
         fresh.sram_dirty = self.sram_dirty;
+        #[cfg(feature = "gpu")]
+        fresh.video.retain_renderer(&mut self.video);
         *self = fresh;
     }
 

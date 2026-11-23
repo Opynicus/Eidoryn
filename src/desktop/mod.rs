@@ -10,10 +10,10 @@ mod fonts;
 mod gba;
 mod graphics;
 mod icons;
+mod inspector;
 mod library;
 mod library_ui;
 mod probe;
-mod ps1_inspector;
 mod recent_games;
 mod rewind;
 mod save_states;
@@ -228,6 +228,7 @@ fn open_window(
                             );
                         }
                         Desktop {
+                            active_core: GamePlatform::Ps1,
                             gba: gba::Session::default(),
                             library,
                             sidebar: None,
@@ -301,6 +302,7 @@ fn open_window(
 
 #[allow(clippy::struct_excessive_bools)] // Independent view, debugger, and appearance preferences.
 struct Desktop {
+    active_core: GamePlatform,
     gba: gba::Session,
     library: library::Workspace,
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
@@ -336,7 +338,7 @@ struct Desktop {
     renaming_state: Option<save_states::RenameState>,
     rewind_sources: u8,
     rewind_disable_origin: Option<FocusHandle>,
-    rebinding: Option<eidoryn_psx::keybindings::PadButton>,
+    rebinding: Option<controller::RecordingButton>,
     keybindings_draft: Option<eidoryn_psx::keybindings::KeyBindings>,
     shortcut_editor: shortcuts::ShortcutEditor,
     probe: Option<probe::Probe>,

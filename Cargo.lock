@@ -1547,7 +1547,12 @@ dependencies = [
 name = "eidoryn-gba"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "eidoryn-host",
+ "pollster 1.0.1",
  "sha2",
+ "unarm",
+ "wgpu 30.0.2",
 ]
 
 [[package]]
@@ -1557,6 +1562,7 @@ dependencies = [
  "cpal",
  "serde",
  "serde_json",
+ "wgpu-types 30.0.2",
 ]
 
 [[package]]
@@ -1573,6 +1579,7 @@ dependencies = [
  "bincode",
  "bytemuck",
  "chd",
+ "eidoryn-host",
  "eidoryn-jit-runtime",
  "flate2",
  "pollster 1.0.1",
@@ -6423,6 +6430,12 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "unarm"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80223c12405fafe97ecf0e30b93401bd30b18def40df9fde264afd0bc0468111"
 
 [[package]]
 name = "unarray"

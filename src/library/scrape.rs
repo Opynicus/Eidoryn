@@ -240,15 +240,17 @@ fn work(
         return Work::Cancelled;
     }
     match claim.kind {
-        JobKind::Metadata => match metadata.prepare(lib, claim.game, claim.mode, cancel) {
-            Ok(prepared) => Work::Metadata(prepared),
-            Err(e) => Work::Failed(Failure {
-                code: e.code(),
-                message: "Release metadata lookup failed",
-                retry: e.retryable(),
-                deadline: e.retry_after(),
-            }),
-        },
+        JobKind::Metadata | JobKind::GbaMetadata => {
+            match metadata.prepare(lib, claim.game, claim.mode, cancel) {
+                Ok(prepared) => Work::Metadata(prepared),
+                Err(e) => Work::Failed(Failure {
+                    code: e.code(),
+                    message: "Release metadata lookup failed",
+                    retry: e.retryable(),
+                    deadline: e.retry_after(),
+                }),
+            }
+        }
         JobKind::Cover(provider) => match covers::scrape_claim(
             lib, claim.game, provider, template, claim.mode, cancel, claim,
         ) {
@@ -445,13 +447,16 @@ fn commit_result(
         Work::Metadata(prepared) => match prepared.commit_claim(tx, claim.game)? {
             Some(metadata::RefreshOutcome::Updated) => "updated",
             Some(metadata::RefreshOutcome::Candidates) => {
-                if claim.mode == Mode::Full {
+                if claim.mode == Mode::Full && claim.kind == JobKind::Metadata {
                     jobs::release_serial_covers(tx, claim.id).map_err(|e| e.to_string())?;
                 }
                 // The completion trigger skips the providers still waiting for an edition.
                 "skip_cover"
             }
             Some(metadata::RefreshOutcome::NoSerial) | None => "skip_cover",
+            Some(metadata::RefreshOutcome::NotFound) if claim.kind == JobKind::GbaMetadata => {
+                "skip_cover"
+            }
             Some(metadata::RefreshOutcome::NotFound) => "not_found",
         },
         Work::Cover(ref outcome) => outcome,

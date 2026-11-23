@@ -6,6 +6,20 @@ rust-version = "1.95"
 license = "GPL-3.0-only"
 description = "Independent Game Boy Advance emulation core for Eidoryn"
 
+[features]
+vulkan = ["gpu", "wgpu/vulkan"]
+opengl = ["gpu", "wgpu/gles"]
+dx12 = ["gpu", "wgpu/dx12"]
+metal = ["gpu", "wgpu/metal"]
+gpu = ["dep:eidoryn-host", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
+
+[dependencies]
+unarm = { version = "2.3", default-features = false, features = ["arm", "thumb", "v4t"] }
+eidoryn-host = { path = "../host", features = ["graphics"], optional = true }
+wgpu = { version = "=30.0.2", default-features = false, features = ["std", "parking_lot", "wgsl"], optional = true }
+pollster = { version = "=1.0.1", optional = true }
+bytemuck = { version = "=1.25.2", optional = true }
+
 [dev-dependencies]
 sha2 = "0.10"
 

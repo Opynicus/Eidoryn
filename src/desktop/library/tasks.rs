@@ -200,14 +200,13 @@ impl Desktop {
     }
 
     pub(super) fn clear_playtime(&mut self, id: i64, cx: &mut Context<Self>) {
-        if self.is_gba() && self.gba.runner.is_none() {
+        let cartridge = self.library.entry(id).is_some_and(Entry::is_cartridge);
+        if cartridge && self.gba.runner.is_none() {
             self.library_write(cx, move |store| store.clear_statistics(id));
             return;
         }
         let (completed, rx) = mpsc::channel();
-        let sent = if self.is_gba()
-            && let Some(runner) = &self.gba.runner
-        {
+        let sent = if cartridge && let Some(runner) = &self.gba.runner {
             runner.send(eidoryn_psx::systems::gba::Command::ClearStatistics(
                 id, completed,
             ))
@@ -461,10 +460,7 @@ impl Desktop {
                 match result {
                     Ok(rows) => {
                         let missing_art = rows.iter().any(|e| {
-                            e.game.platform_kind() == Some(GamePlatform::Ps1)
-                                && !e.cache_cleared
-                                && e.thumbnail.is_none()
-                                && e.serial.is_some()
+                            !e.cache_cleared && e.thumbnail.is_none() && e.serial.is_some()
                         });
                         // The bounded list is sorted. Missing rows were removed or grouped.
                         v.library
@@ -607,14 +603,10 @@ impl Desktop {
 
     pub(super) fn launch_library(&mut self, id: i64, cx: &mut Context<Self>) {
         self.library.select(id);
-        let Some(entry) = self.library.entries.iter().find(|e| e.game.id == id) else {
+        let Some(entry) = self.library.entry(id) else {
             return;
         };
-        let Some(platform) = entry
-            .game
-            .platform_kind()
-            .filter(|&p| p == self.library.platform)
-        else {
+        let Some(platform) = entry.game.platform_kind() else {
             return;
         };
         let title = entry.title.clone();
@@ -630,10 +622,10 @@ impl Desktop {
         };
         let path = loc.path.clone();
         let fast_boot = loc.fast_boot;
-        self.library.location = Some(loc.id);
-        self.library.pending_bios = None;
         let location = loc.id;
         let available = loc.available;
+        self.library.location = Some(location);
+        self.library.pending_bios = None;
         let bios = self.bios.clone();
         self.library.launch_generation = self.library.launch_generation.wrapping_add(1);
         let generation = self.library.launch_generation;
@@ -663,7 +655,14 @@ impl Desktop {
                 if !available_file {
                     v.library_picker(Picker::Relocate(location), cx);
                     v.notice = Some(v.tr(Text::LibraryMissing).to_owned());
-                } else if platform == GamePlatform::Gba {
+                    cx.notify();
+                    return;
+                }
+                v.switch_core(platform, cx);
+                if v.active_core != platform || v.closing() {
+                    return;
+                }
+                if platform == GamePlatform::Gba {
                     v.open_gba(path, title, cx);
                 } else if bios.is_some() && choice.is_none() {
                     v.bios = None;
@@ -993,9 +992,8 @@ impl Desktop {
         if self.library.cover.is_some() {
             panel = panel.child(self.cover_progress(cx));
         }
-        if !self.is_gba()
-            && (self.library.scraping.busy()
-                || (self.library.scan.is_none() && self.library.cover.is_none()))
+        if self.library.scraping.busy()
+            || (self.library.scan.is_none() && self.library.cover.is_none())
         {
             panel = panel.child(self.scrape_status(cx));
         }

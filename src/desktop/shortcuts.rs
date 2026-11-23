@@ -4,6 +4,7 @@ use super::{
 };
 use eidoryn_psx::{
     i18n::Text,
+    keybindings::ControllerButton,
     shortcuts::{ShortcutAction, ShortcutBindings, ShortcutChord},
 };
 use gpui::{App, Context, Div, KeyDownEvent, Keystroke, Role, div, prelude::*, px, rgb};
@@ -91,7 +92,9 @@ impl Desktop {
         let Some(bindings) = &self.shortcut_editor.draft else {
             return;
         };
-        if bindings.validate(&self.preferences.keybindings).is_err() {
+        if bindings.validate(&self.preferences.keybindings).is_err()
+            || bindings.gba_controller_conflict(&self.preferences.gba_keybindings)
+        {
             self.notice = Some(self.tr(Text::BindingInvalid).into());
         } else if let Some(bindings) = self.shortcut_editor.draft.take() {
             self.stop_rewind(cx);
@@ -147,9 +150,16 @@ impl Desktop {
             .conflict(action)
             .map(|other| self.tr(action_title(other)).to_owned())
             .or_else(|| {
-                binding
-                    .and_then(|chord| chord.pad_conflict(&self.preferences.keybindings))
-                    .map(|pad| format!("{} · {}", self.tr(Text::Controller), pad.name()))
+                let chord = binding?;
+                if let Some(button) = chord.pad_conflict(&self.preferences.keybindings) {
+                    return Some(format!("PS1 · {}", button.name()));
+                }
+                if action.available_on_gba() {
+                    return chord
+                        .pad_conflict(&self.preferences.gba_keybindings)
+                        .map(|button| format!("GBA · {}", button.name()));
+                }
+                None
             });
         div()
             .flex()

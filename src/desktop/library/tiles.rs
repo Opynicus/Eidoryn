@@ -240,7 +240,7 @@ impl Desktop {
                 );
         }
         let tone = TONES[entry.game.id.rem_euclid(TONES.len() as i64) as usize];
-        let cartridge = entry.game.platform_kind() == Some(GamePlatform::Gba);
+        let cartridge = entry.is_cartridge();
         let placeholder = media_shape(cartridge);
         let cover = cover.bg(rgb(tone));
         if entry.cache_cleared {
@@ -320,6 +320,7 @@ impl Desktop {
             .flex_wrap()
             .gap(px(4.))
             .items_center()
+            .child(badge(entry.game.platform.clone(), p.text, p.border))
             .when(!entry.cache_cleared, |row| {
                 row.child(badge(
                     entry

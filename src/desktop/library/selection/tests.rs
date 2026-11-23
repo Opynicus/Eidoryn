@@ -31,6 +31,32 @@ fn checked(view: &Entity<Desktop>, cx: &VisualTestContext) -> Vec<i64> {
 }
 
 #[gpui::test]
+fn platform_search_and_batch_selection_survive_core_changes(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let (db, view, cx) = open_library(root.path(), cx);
+    let path = root.path().join("Cartridge.gba");
+    std::fs::write(&path, [0u8; 256]).unwrap();
+    db.scan_files(&[path], &AtomicBool::default(), |_| {})
+        .unwrap();
+    view.update(cx, Desktop::reload_library);
+    cx.run_until_parked();
+
+    click_control(cx, "lib-check-1");
+    click_control(cx, "lib-check-4");
+    click_control(cx, "core-gba");
+    assert_eq!(checked(&view, cx), [1, 4]);
+
+    click_control(cx, "library-search");
+    cx.simulate_input("ps1");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("library-entry-1").is_some());
+    assert!(cx.debug_bounds("library-entry-4").is_none());
+    click_control(cx, "core-ps1");
+    assert_eq!(checked(&view, cx), [1]);
+    assert!(cx.debug_bounds("library-entry-4").is_none());
+}
+
+#[gpui::test]
 fn grid_and_list_share_checks_and_only_remove_confirmed_search_results(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().unwrap();
     let (db, view, cx) = open_library(root.path(), cx);

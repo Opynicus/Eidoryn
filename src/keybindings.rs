@@ -1,4 +1,4 @@
-//! Desktop keyboard bindings for the PS1 digital controller.
+//! Desktop keyboard bindings for emulated controllers.
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -82,32 +82,128 @@ impl PadButton {
     }
 }
 
-/// Only overrides are stored; missing entries retain their original defaults.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct KeyBindings(BTreeMap<PadButton, String>);
+/// Button positions correspond to bits in the GBA KEYINPUT register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GbaButton {
+    A = 0,
+    B = 1,
+    Select = 2,
+    Start = 3,
+    Right = 4,
+    Left = 5,
+    Up = 6,
+    Down = 7,
+    R = 8,
+    L = 9,
+}
 
-impl KeyBindings {
-    pub fn key(&self, button: PadButton) -> &str {
+impl GbaButton {
+    pub const fn mask(self) -> u16 {
+        1 << self as u8
+    }
+}
+
+/// Describes the buttons and factory keyboard layout of one controller.
+pub trait ControllerButton: Copy + Ord + 'static {
+    const BUTTONS: &'static [Self];
+    fn name(self) -> &'static str;
+    fn default_key(self) -> &'static str;
+}
+
+impl ControllerButton for PadButton {
+    const BUTTONS: &'static [Self] = &Self::ALL;
+
+    fn name(self) -> &'static str {
+        self.name()
+    }
+
+    fn default_key(self) -> &'static str {
+        self.default_key()
+    }
+}
+
+impl ControllerButton for GbaButton {
+    const BUTTONS: &'static [Self] = &[
+        Self::Up,
+        Self::Down,
+        Self::Left,
+        Self::Right,
+        Self::A,
+        Self::B,
+        Self::Start,
+        Self::Select,
+        Self::L,
+        Self::R,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Up => "↑",
+            Self::Down => "↓",
+            Self::Left => "←",
+            Self::Right => "→",
+            Self::A => "A",
+            Self::B => "B",
+            Self::Start => "Start",
+            Self::Select => "Select",
+            Self::L => "L",
+            Self::R => "R",
+        }
+    }
+
+    fn default_key(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::A => "x",
+            Self::B => "z",
+            Self::Start => "enter",
+            Self::Select => "backspace",
+            Self::L => "q",
+            Self::R => "e",
+        }
+    }
+}
+
+pub type KeyBindings = ControllerBindings<PadButton>;
+pub type GbaKeyBindings = ControllerBindings<GbaButton>;
+
+/// Only overrides are stored; missing entries retain their original defaults.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ControllerBindings<B: ControllerButton>(BTreeMap<B, String>);
+
+impl<B: ControllerButton> Default for ControllerBindings<B> {
+    fn default() -> Self {
+        Self(BTreeMap::new())
+    }
+}
+
+impl<B: ControllerButton> ControllerBindings<B> {
+    pub fn key(&self, button: B) -> &str {
         self.0
             .get(&button)
             .map_or(button.default_key(), String::as_str)
     }
 
-    pub fn button(&self, key: &str) -> Option<PadButton> {
-        PadButton::ALL
-            .into_iter()
+    pub fn button(&self, key: &str) -> Option<B> {
+        B::BUTTONS
+            .iter()
+            .copied()
             .find(|&button| self.key(button).eq_ignore_ascii_case(key))
     }
 
-    pub fn conflict(&self, button: PadButton) -> Option<PadButton> {
-        PadButton::ALL.into_iter().find(|&other| {
+    pub fn conflict(&self, button: B) -> Option<B> {
+        B::BUTTONS.iter().copied().find(|&other| {
             other != button && self.key(other).eq_ignore_ascii_case(self.key(button))
         })
     }
 
     /// Editing may temporarily duplicate keys; validate the complete map before applying it.
-    pub fn rebind(&mut self, button: PadButton, key: &str) -> Result<(), String> {
+    pub fn rebind(&mut self, button: B, key: &str) -> Result<(), String> {
         if !supported_key(key) {
             return Err(format!("Unsupported controller key: {key}"));
         }
@@ -116,7 +212,7 @@ impl KeyBindings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        for button in PadButton::ALL {
+        for &button in B::BUTTONS {
             let key = self.key(button);
             if !supported_key(key) {
                 return Err(format!("Unsupported controller key: {key}"));
@@ -158,6 +254,34 @@ pub(crate) fn supported_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gba_keys_preserve_all_keyinput_bits_and_load_partial_overrides() {
+        let defaults = GbaKeyBindings::default();
+        for (bit, key) in [
+            "x",
+            "z",
+            "backspace",
+            "enter",
+            "right",
+            "left",
+            "up",
+            "down",
+            "e",
+            "q",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(defaults.button(key).unwrap().mask(), 1 << bit);
+        }
+        let remapped: GbaKeyBindings = serde_json::from_str(r#"{"a":"j","l":"w"}"#).unwrap();
+        remapped.validate().unwrap();
+        assert_eq!(remapped.button("J"), Some(GbaButton::A));
+        assert_eq!(remapped.button("w"), Some(GbaButton::L));
+        assert_eq!(remapped.button("x"), None);
+        assert_eq!(remapped.button("up"), Some(GbaButton::Up));
+    }
 
     #[test]
     fn rebind_allows_swaps_and_validates_only_the_completed_map() {

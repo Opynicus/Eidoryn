@@ -860,6 +860,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
     window.focus(&focus, cx);
     let preferences = eidoryn_psx::preferences::Preferences::default();
     Desktop {
+        active_core: super::GamePlatform::Ps1,
         gba: super::gba::Session::default(),
         library: library::Workspace::new(None),
         sidebar: None,
@@ -1427,7 +1428,7 @@ fn custom_bindings_persist_drive_input_and_reset(cx: &mut TestAppContext) {
     cx.simulate_click(square.center(), gpui::Modifiers::none());
     assert_eq!(
         view.read_with(cx, |v, _| v.rebinding),
-        Some(PadButton::Square)
+        Some(PadButton::Square.into())
     );
     press_keys(cx, "space");
     assert_eq!(view.read_with(cx, |v, _| v.rebinding), None);
@@ -1502,10 +1503,16 @@ fn binding_capture_handles_cancel_and_keyboard_activation(cx: &mut TestAppContex
     let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1280.), px(1000.)));
     press_keys(cx, "f8 tab tab tab tab enter tab tab tab tab enter");
-    assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.rebinding),
+        Some(PadButton::Up.into())
+    );
     for key in ["tab", "ctrl-r", "shift-j"] {
         press_keys(cx, key);
-        assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
+        assert_eq!(
+            view.read_with(cx, |v, _| v.rebinding),
+            Some(PadButton::Up.into())
+        );
         assert!(view.read_with(cx, |v, _| v.graphics.open));
         assert!(view.read_with(cx, |v, _| v.clean_fullscreen));
     }
@@ -1542,7 +1549,10 @@ fn binding_capture_handles_cancel_and_keyboard_activation(cx: &mut TestAppContex
         is_held: true,
         prefer_character_input: false,
     });
-    assert_eq!(view.read_with(cx, |v, _| v.rebinding), Some(PadButton::Up));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.rebinding),
+        Some(PadButton::Up.into())
+    );
     cx.deactivate_window();
     assert_eq!(view.read_with(cx, |v, _| v.rebinding), None);
     cx.update(|window, _| window.activate_window());

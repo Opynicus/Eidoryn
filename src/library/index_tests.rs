@@ -1033,7 +1033,7 @@ fn mixed_library_keeps_platforms_stats_and_catalog_work_separate() {
             )
             .unwrap()
     );
-    assert_eq!(scrape::due_games(&f.db).unwrap().len(), 1);
+    assert_eq!(scrape::due_games(&f.db).unwrap().len(), 2);
     scrape::enqueue_games(
         &f.db,
         &[cart.id],
@@ -1041,22 +1041,16 @@ fn mixed_library_keeps_platforms_stats_and_catalog_work_separate() {
         covers::Provider::Libretro,
     )
     .unwrap();
-    assert_eq!(scrape::due_games(&f.db).unwrap()[0].0, disc.id);
+    assert_eq!(scrape::due_games(&f.db).unwrap()[0].0, cart.id);
     assert!(
         metadata::search_candidates(&f.db, cart.id, "SCUS-94900")
             .unwrap()
             .is_empty()
     );
-    assert_eq!(
-        covers::fetch_missing(
-            &f.db,
-            cart.id,
-            covers::Provider::Libretro,
-            "",
-            &AtomicBool::new(false)
-        )
-        .unwrap(),
-        "skipped"
+    let jobs = scrape::recent_jobs(&f.db).unwrap();
+    assert!(
+        jobs.iter()
+            .any(|job| job.title == "DEMO" && job.provider == "libretro-gba")
     );
     assert!(
         f.db.confirm_copy(cart.locations[0].id, disc.locations[0].id)

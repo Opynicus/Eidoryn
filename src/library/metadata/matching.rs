@@ -78,12 +78,18 @@ pub(super) fn title_hint(title: &str) -> String {
     normalized_title(title)
 }
 
-pub(super) fn has_title_candidate(conn: &Connection, hint: &str) -> rusqlite::Result<bool> {
+pub(super) fn has_title_candidate(
+    conn: &Connection,
+    hint: &str,
+    gba: bool,
+) -> rusqlite::Result<bool> {
     if hint.is_empty() {
         return Ok(false);
     }
-    conn.prepare_cached("SELECT 1 FROM release_names WHERE name=?")?
-        .exists([hint])
+    conn.prepare_cached(
+        "SELECT 1 FROM release_names WHERE name=?1 AND (release_id GLOB 'libretro-gba/*')=?2",
+    )?
+    .exists(params![hint, gba])
 }
 
 pub(super) fn index_names(tx: &Transaction<'_>, release: &Release) -> rusqlite::Result<()> {
@@ -109,11 +115,11 @@ pub fn candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, S
     let mut stmt = if needle.is_empty() {
         conn.prepare_cached(
             "SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases
-             WHERE serial=?1 OR id IN (SELECT release_id FROM release_names WHERE name=?2) ORDER BY id")
+             WHERE (id GLOB 'libretro-gba/*')=?3 AND (serial=?1 OR id IN (SELECT release_id FROM release_names WHERE name=?2)) ORDER BY id")
     } else {
         conn.prepare_cached(
             "SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases
-             WHERE instr(serial,?1)>0 OR id IN (SELECT release_id FROM release_names WHERE ?2<>'' AND instr(name,?2)>0)
+             WHERE (id GLOB 'libretro-gba/*')=?3 AND (instr(serial,?1)>0 OR id IN (SELECT release_id FROM release_names WHERE ?2<>'' AND instr(name,?2)>0))
              ORDER BY (serial=?1) DESC, title, id LIMIT 100")
     }.map_err(|e| e.to_string())?;
     let (serial, name) = if needle.is_empty() {
@@ -125,13 +131,13 @@ pub fn candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, S
         (needle.to_ascii_uppercase(), normalized_title(needle))
     };
     for row in stmt
-        .query_map(params![serial, name], Release::from_row)
+        .query_map(params![serial, name, evidence.gba], Release::from_row)
         .map_err(|e| e.to_string())?
     {
         result.push(row.map_err(|e| e.to_string())?);
     }
     if result.is_empty() && !needle.is_empty() && !is_release_serial(&serial) {
-        return fuzzy_suggestions(&conn, &name).map_err(|e| e.to_string());
+        return fuzzy_suggestions(&conn, &name, evidence.gba).map_err(|e| e.to_string());
     }
     Ok(result)
 }
@@ -152,7 +158,7 @@ fn trigrams(text: &str) -> HashSet<[char; 3]> {
 }
 /// Shortlisted, user-confirmed suggestions only. Character trigrams work with
 /// Japanese titles as well as Latin words and avoid sending local filenames upstream.
-fn fuzzy_suggestions(conn: &Connection, needle: &str) -> rusqlite::Result<Vec<Release>> {
+fn fuzzy_suggestions(conn: &Connection, needle: &str, gba: bool) -> rusqlite::Result<Vec<Release>> {
     const MAX_SUGGESTIONS: usize = 8;
     let length = needle.chars().count();
     if !(5..=128).contains(&length) {
@@ -161,9 +167,9 @@ fn fuzzy_suggestions(conn: &Connection, needle: &str) -> rusqlite::Result<Vec<Re
     let wanted = trigrams(needle);
     let mut best: Vec<(usize, String)> = Vec::new();
     let mut keys = conn.prepare_cached(
-        "SELECT name,release_id FROM release_names WHERE length(name) BETWEEN ?1 AND ?2",
+        "SELECT name,release_id FROM release_names WHERE length(name) BETWEEN ?1 AND ?2 AND (release_id GLOB 'libretro-gba/*')=?3",
     )?;
-    let mut rows = keys.query(params![length * 3 / 4, length * 5 / 4 + 1])?;
+    let mut rows = keys.query(params![length * 3 / 4, length * 5 / 4 + 1, gba])?;
     while let Some(row) = rows.next()? {
         let key = trigrams(row.get_ref(0)?.as_str()?);
         // Sørensen–Dice similarity of at least 75% is required even for a suggestion.

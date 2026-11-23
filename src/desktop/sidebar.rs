@@ -24,7 +24,7 @@ impl Key {
             palette: desktop.workspace_palette(),
             language: desktop.language,
             page: desktop.page,
-            core: desktop.library.platform,
+            core: desktop.active_core,
         }
     }
 }
@@ -283,10 +283,7 @@ impl Desktop {
             .children(
                 DESTINATIONS
                     .into_iter()
-                    .filter(|(_, _, _, page)| {
-                        !self.is_gba()
-                            || !matches!(page, WorkspacePage::Debug | WorkspacePage::SaveStates)
-                    })
+                    .filter(|(_, _, _, page)| !self.is_gba() || *page != WorkspacePage::SaveStates)
                     .map(|(id, symbol, title, page)| {
                         let selected = page == self.page;
                         nav_item(p, id, symbol, self.tr(title), compact, selected).on_click(
@@ -305,7 +302,7 @@ impl Desktop {
                         .border_color(rgb(p.border))
                         .pt_3()
                         .child(
-                            label(p, format!("EIDORYN / {}", self.library.platform.as_str()))
+                            label(p, format!("EIDORYN / {}", self.active_core.as_str()))
                                 .font(self.fonts.bold()),
                         )
                         .child(

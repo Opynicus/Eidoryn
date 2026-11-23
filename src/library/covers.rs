@@ -334,12 +334,14 @@ fn fetch_edition(
     }
     // A local filename and manual display title are private. Only send a catalog
     // title to a title-based service, or a verified disc serial to a serial-based one.
-    let (serial, title, region, generation, cleared) = conn.query_row(
+    let gba = super::metadata::is_gba(&conn, id).map_err(|e| e.to_string())?;
+    let provider = if gba { Provider::Libretro } else { provider };
+    let (serial, title, region, generation, cleared, release_id) = conn.query_row(
         "SELECT COALESCE(release_serial,disc_serial),auto_title,
                 COALESCE(auto_region, CASE WHEN release_serial IS NULL OR release_serial=disc_serial THEN disc_region END),
-                cache_generation,cache_cleared FROM game_metadata WHERE game_id=?",
+                cache_generation,cache_cleared,release_id FROM game_metadata WHERE game_id=?",
         [id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?,
-                      r.get::<_, Option<String>>(2)?, r.get(3)?, r.get::<_, bool>(4)?))
+                      r.get::<_, Option<String>>(2)?, r.get(3)?, r.get::<_, bool>(4)?,r.get::<_, Option<String>>(5)?))
     ).map_err(|e|e.to_string())?;
     if cleared
         && matches!(
@@ -358,6 +360,9 @@ fn fetch_edition(
         CoverRequest::Edition(release) => Some(release),
         _ => None,
     };
+    if chosen.is_some_and(|r| r.id.starts_with("libretro-gba/") != gba) {
+        return Err("Cover edition is from a different platform".into());
+    }
     let title = chosen
         .map(|r| r.title.as_str())
         .or(title.as_deref())
@@ -391,7 +396,17 @@ fn fetch_edition(
         kind,
     };
     drop(conn);
-    let key = provider_key(provider, template, serial, title, region)?;
+    let key = if gba {
+        let selected = chosen
+            .map(|release| release.id.as_str())
+            .or(release_id.as_deref());
+        let Some(url) = gba_boxart(selected, serial, title, region, cancel)? else {
+            return Ok("skipped".into());
+        };
+        url
+    } else {
+        provider_key(provider, template, serial, title, region)?
+    };
     let _permit = (provider == Provider::ScreenScraper)
         .then(|| SCREENSCRAPER_REQUESTS.acquire(cancel))
         .transpose()?;
@@ -402,26 +417,52 @@ fn fetch_edition(
         }
         let client = transport::api().map_err(|e| e.to_string())?;
         let result = match provider {
+            Provider::Libretro if gba => Lookup::Image(key.clone()),
             Provider::Libretro => libretro::resolve(lib, client, serial, region, cancel)?,
             Provider::ScreenScraper => screenscraper::resolve(client, serial, region, cancel)?,
             Provider::Igdb => igdb::resolve(client, title, region, cancel)?,
             Provider::Custom => Lookup::Image(cover_url(template, serial)?),
         };
         check_cancel(cancel)?;
-        match result {
-            Lookup::Missing => Ok(None),
-            Lookup::Http(response) => Ok(Some(response)),
-            Lookup::Image(image) if provider == Provider::ScreenScraper => {
-                screenscraper::fetch_image(client, image, cancel)
-            }
-            Lookup::Image(image) => {
-                let client = transport::art().map_err(|e| e.to_string())?;
-                transport::cover(client.get(image), MAX_BYTES, cancel)
-                    .map(Some)
-                    .map_err(|e| e.to_string())
-            }
-        }
+        download_lookup(client, result, provider, cancel)
     })
+}
+
+fn gba_boxart(
+    selected: Option<&str>,
+    serial: &str,
+    title: &str,
+    region: &str,
+    cancel: &AtomicBool,
+) -> Result<Option<Url>, String> {
+    let name = if let Some(id) = selected {
+        (id == super::metadata::gba::edition_id(serial, title)).then(|| title.to_owned())
+    } else {
+        super::metadata::gba::boxart_name(serial, region, cancel)?
+    };
+    name.map(|name| libretro::image_url(super::metadata::gba::COVER_BASE, &name))
+        .transpose()
+}
+
+fn download_lookup(
+    client: &reqwest::Client,
+    result: Lookup,
+    provider: Provider,
+    cancel: &AtomicBool,
+) -> Result<Option<http::Response<Vec<u8>>>, String> {
+    match result {
+        Lookup::Missing => Ok(None),
+        Lookup::Http(response) => Ok(Some(response)),
+        Lookup::Image(image) if provider == Provider::ScreenScraper => {
+            screenscraper::fetch_image(client, image, cancel)
+        }
+        Lookup::Image(image) => {
+            let client = transport::art().map_err(|e| e.to_string())?;
+            transport::cover(client.get(image), MAX_BYTES, cancel)
+                .map(Some)
+                .map_err(|e| e.to_string())
+        }
+    }
 }
 
 // Include the complete URL when identifying an asset, while persisting only its

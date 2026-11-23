@@ -1,4 +1,4 @@
-use super::shortcuts::shortcut_keystroke;
+use super::shortcuts::{ShortcutEditor, shortcut_keystroke};
 use super::{Desktop, FullscreenView, SettingsTab, WorkspacePage};
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::shortcuts::ShortcutAction;
@@ -114,7 +114,7 @@ impl Desktop {
         }
         if self.rewind_sources != 0 {
             let stroke = shortcut_keystroke(&event.keystroke, cx);
-            self.release_rewind_key(Some(&stroke.key), &stroke.modifiers, cx);
+            self.release_rewind_key(Some(&stroke.key), stroke.modifiers, cx);
         }
         if let Some(button) = self.preferences.keybindings.button(&event.keystroke.key)
             && self.pressed_buttons & button.mask() != 0
@@ -126,7 +126,7 @@ impl Desktop {
     pub(super) fn release_rewind_key(
         &mut self,
         released: Option<&str>,
-        modifiers: &gpui::Modifiers,
+        modifiers: gpui::Modifiers,
         cx: &mut Context<Self>,
     ) {
         use super::rewind::RewindSource;
@@ -137,7 +137,7 @@ impl Desktop {
                 .binding(ShortcutAction::Rewind)
                 .is_none_or(|chord| {
                     released.is_some_and(|key| chord.matches_key(key))
-                        || !chord.modifiers.is_subset_of(modifiers)
+                        || !chord.modifiers.is_subset_of(&modifiers)
                 })
         {
             self.hold_rewind(RewindSource::Keyboard, false, cx);
@@ -358,8 +358,10 @@ impl Desktop {
     ) {
         match action {
             ShortcutAction::Toggle => self.toggle_playback(cx),
-            ShortcutAction::Step => self.command(Command::Step, cx),
-            ShortcutAction::Slice => self.command(Command::Slice, cx),
+            ShortcutAction::Step => {
+                self.step_debugger(super::inspector::DebugStep::Instruction, cx);
+            }
+            ShortcutAction::Slice => self.step_debugger(super::inspector::DebugStep::Slice, cx),
             ShortcutAction::Enlarge => self.toggle_view(window, cx),
             ShortcutAction::Crt => self.toggle_crt(cx),
             ShortcutAction::Settings => self.open_settings(cx),
@@ -373,7 +375,7 @@ impl Desktop {
             ShortcutAction::QuickSave => self.command(Command::QuickSave, cx),
             ShortcutAction::QuickLoad => self.command(Command::QuickLoad, cx),
             ShortcutAction::Rewind => {
-                self.hold_rewind(super::rewind::RewindSource::Keyboard, true, cx)
+                self.hold_rewind(super::rewind::RewindSource::Keyboard, true, cx);
             }
         }
     }
@@ -437,6 +439,7 @@ impl Desktop {
     ) {
         if self.is_gba() && self.page != page {
             self.image_picker.take();
+            self.release_buttons(cx);
         }
         self.snapshot_confirmation = None;
         self.dismiss_library_context_menu();
@@ -454,13 +457,18 @@ impl Desktop {
             self.release_buttons(cx);
             self.command(Command::RefreshSaveStates, cx);
         }
-        self.rebinding = None;
-        self.keybindings_draft = None;
-        self.shortcut_editor = Default::default();
+        self.discard_binding_drafts();
         self.rewind_disable_origin = None;
         self.graphics.open = false;
         window.focus(&self.focus, cx);
         cx.notify();
+    }
+
+    pub(super) fn discard_binding_drafts(&mut self) {
+        self.rebinding = None;
+        self.keybindings_draft = None;
+        self.gba.keybindings_draft = None;
+        self.shortcut_editor = ShortcutEditor::default();
     }
 
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -468,22 +476,14 @@ impl Desktop {
         self.dismiss_library_context_menu();
         self.stop_rewind(cx);
         self.release_buttons(cx);
-        self.rebinding = None;
-        self.keybindings_draft = None;
-        self.shortcut_editor = Default::default();
+        self.discard_binding_drafts();
         self.graphics.open = true;
-        self.settings_tab = if self.is_gba() {
-            SettingsTab::Appearance
-        } else {
-            SettingsTab::Graphics
-        };
+        self.settings_tab = SettingsTab::Graphics;
         cx.notify();
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.rebinding = None;
-        self.keybindings_draft = None;
-        self.shortcut_editor = Default::default();
+        self.discard_binding_drafts();
         self.rewind_disable_origin = None;
         self.graphics.open = false;
         window.focus(&self.focus, cx);
