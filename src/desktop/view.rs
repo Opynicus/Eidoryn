@@ -226,7 +226,7 @@ impl Desktop {
                 )
             })
             .children(
-                self.workspace_notice(cx)
+                self.workspace_notice()
                     .map(|banner| banner.absolute().top_0().left_0().right_0()),
             )
     }
@@ -339,7 +339,7 @@ impl Desktop {
                                     .flex()
                                     .flex_col()
                                     .gap_4()
-                                    .children(self.workspace_notice(cx))
+                                    .children(self.workspace_notice())
                                     .child(page),
                             ),
                     )
@@ -473,11 +473,11 @@ impl Desktop {
             )
     }
 
-    fn workspace_notice(&self, cx: &Context<Self>) -> Option<gpui::Div> {
+    fn workspace_notice(&self) -> Option<gpui::Div> {
         if self.graphics.open {
             None
         } else {
-            self.gba_setup_panel(cx).or_else(|| self.notice_banner())
+            self.notice_banner()
         }
     }
     pub(super) fn notice_banner(&self) -> Option<gpui::Div> {

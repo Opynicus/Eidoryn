@@ -1,5 +1,3 @@
-#[path = "../../../tests/support/gba_firmware.rs"]
-mod firmware;
 #[path = "../../../tests/support/gba.rs"]
 mod fixture;
 
@@ -52,116 +50,56 @@ fn wait_for_gba(
     }
 }
 
-fn install_firmware(dir: &Path) {
-    let folder = dir.join("firmware");
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("gba_bios.bin"), firmware::firmware()).unwrap();
-}
-
 #[gpui::test]
-fn first_gba_launch_imports_firmware_and_resumes_the_cartridge(cx: &mut TestAppContext) {
+fn direct_open_starts_a_cartridge_without_bios_in_each_session(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap();
     let rom = temp.path().join("game.gba");
     fixture::write_cartridge(&rom);
-    let source = temp.path().join("dump.bin");
-    let bios = firmware::firmware();
-    std::fs::write(&source, &bios).unwrap();
-    let library = Library::open(&temp.path().join("library.db")).unwrap();
+
+    for _ in 0..2 {
+        let library = Library::open(&temp.path().join("library.db")).unwrap();
+        let (view, visual) = cx.add_window_view(desktop);
+        visual.simulate_resize(size(px(1280.), px(900.)));
+        visual.run_until_parked();
+        view.update(visual, |v, _| v.library = Workspace::new(Some(library)));
+        click_control(visual, "core-gba");
+        click_control(visual, "open-gba");
+        visual.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
+        wait_for_gba(&view, visual, |v| {
+            v.page == WorkspacePage::Game
+                && v.running()
+                && v.gba.snapshot.path.as_ref() == Some(&rom)
+                && v.gba.snapshot.rgb.starts_with(&[0, 0, 255])
+        });
+        assert!(!visual.did_prompt_for_paths());
+        assert!(visual.opened_url().is_none());
+        visual.update(|window, _| window.remove_window());
+        drop(view);
+        visual.run_until_parked();
+    }
+    assert!(!temp.path().join("firmware").exists());
+}
+
+#[gpui::test]
+fn switching_cores_discards_an_open_cartridge_picker(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let rom = temp.path().join("game.gba");
+    fixture::write_cartridge(&rom);
     let (view, cx) = cx.add_window_view(desktop);
     cx.simulate_resize(size(px(1280.), px(900.)));
     cx.run_until_parked();
-    view.update(cx, |v, _| v.library = Workspace::new(Some(library)));
     click_control(cx, "core-gba");
-    assert!(cx.debug_bounds("open-bios").is_none());
     click_control(cx, "open-gba");
     click_control(cx, "core-ps1");
     click_control(cx, "core-gba");
-    cx.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
+    cx.simulate_path_prompt_response(|_| Some(vec![rom]));
     cx.run_until_parked();
     assert!(view.read_with(cx, |v, _| v.gba.runner.is_none()));
-
-    click_control(cx, "open-gba");
-    cx.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
-    wait_for_gba(&view, cx, |v| v.gba.firmware_setup.is_some());
-    click_control(cx, "download-mgba");
-    assert_eq!(
-        cx.opened_url().as_deref(),
-        Some("https://mgba.io/downloads.html")
-    );
-    click_control(cx, "import-gba-firmware");
-    cx.simulate_path_prompt_response(|_| None);
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("gba-firmware-setup").is_some());
-    assert!(view.read_with(cx, |v, _| v.page == WorkspacePage::Console && !v.running()));
-    click_control(cx, "cancel-gba-firmware");
-    assert!(cx.debug_bounds("gba-firmware-setup").is_none());
-
-    click_control(cx, "open-gba");
-    cx.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
-    wait_for_gba(&view, cx, |v| v.gba.firmware_setup.is_some());
-    click_control(cx, "import-gba-firmware");
-    cx.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("gba-import-error").is_some());
-    let installed = temp.path().join("firmware/gba_bios.bin");
-    assert!(!installed.exists());
-    click_control(cx, "import-gba-firmware");
-    cx.simulate_path_prompt_response(|opts| {
-        assert!(opts.files && !opts.multiple && !opts.directories);
-        Some(vec![source.clone()])
-    });
-    wait_for_gba(&view, cx, |v| {
-        v.gba.snapshot.path.as_ref() == Some(&rom) && v.running()
-    });
-    assert!(cx.debug_bounds("gba-firmware-setup").is_none());
-    assert_eq!(std::fs::read(installed).unwrap(), bios);
-    std::fs::remove_file(source).unwrap();
-    let second_rom = temp.path().join("second.gba");
-    fixture::write_cartridge(&second_rom);
-    view.update(cx, |v, cx| {
-        v.open_gba(second_rom.clone(), "Second game".into(), cx)
-    });
-    wait_for_gba(&view, cx, |v| {
-        v.gba.snapshot.path.as_ref() == Some(&second_rom) && v.running()
-    });
-    assert!(!cx.did_prompt_for_paths());
 }
 
 #[gpui::test]
-fn library_firmware_import_is_cancelled_by_switching_cores(cx: &mut TestAppContext) {
+fn library_launch_uses_hle_and_keeps_the_ps1_selection(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap();
-    let library = prepare_library(temp.path());
-    let source = temp.path().join("firmware.bin");
-    std::fs::write(&source, firmware::firmware()).unwrap();
-    let (view, cx) = cx.add_window_view(desktop);
-    view.update(cx, |v, _| v.library = Workspace::new(Some(library)));
-    cx.simulate_resize(size(px(1280.), px(900.)));
-    cx.run_until_parked();
-    click_control(cx, "core-gba");
-    click_control(cx, "nav-library");
-    click_control(cx, "library-entry-2");
-    click_control(cx, "lib-start");
-    wait_for_gba(&view, cx, |v| v.gba.firmware_setup.is_some());
-    click_control(cx, "import-gba-firmware");
-    click_control(cx, "core-ps1");
-    click_control(cx, "core-gba");
-    cx.simulate_path_prompt_response(|_| Some(vec![source.clone()]));
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("gba-firmware-setup").is_none());
-    assert!(!temp.path().join("firmware/gba_bios.bin").exists());
-    assert!(view.read_with(cx, |v, _| v.page == WorkspacePage::Library && !v.running()));
-    click_control(cx, "library-entry-2");
-    click_control(cx, "lib-start");
-    wait_for_gba(&view, cx, |v| v.gba.firmware_setup.is_some());
-    click_control(cx, "import-gba-firmware");
-    cx.simulate_path_prompt_response(|_| Some(vec![source]));
-    wait_for_gba(&view, cx, |v| v.page == WorkspacePage::Game && v.running());
-}
-
-#[gpui::test]
-fn library_launch_uses_shared_gba_firmware_and_keeps_the_ps1_selection(cx: &mut TestAppContext) {
-    let temp = tempfile::tempdir().unwrap();
-    install_firmware(temp.path());
     let ps1_bios = temp.path().join("ps1.bin");
     std::fs::write(&ps1_bios, vec![0; eidoryn_psx::bus::BIOS_SIZE]).unwrap();
     let library = prepare_library(temp.path());
@@ -198,6 +136,8 @@ fn library_launch_uses_shared_gba_firmware_and_keeps_the_ps1_selection(cx: &mut 
             size(240.into(), 160.into())
         );
     });
+    assert!(!cx.did_prompt_for_paths());
+    assert!(!temp.path().join("firmware").exists());
     press_keys(cx, "f8");
     cx.run_until_parked();
     assert!(cx.debug_bounds("tab-appearance").is_some());

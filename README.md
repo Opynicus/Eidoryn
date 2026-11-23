@@ -14,7 +14,7 @@ Experimental project developed with extensive AI assistance. Hardware accuracy a
 
 ## Project Overview
 
-Eidoryn is an experimental Rust emulator with a native GPUI interface. It includes independent PlayStation (PS1) and Game Boy Advance (GBA) cores developed in this project. Both use the desktop game library. Supply your own game images and the BIOS for the selected system.
+Eidoryn is an experimental Rust emulator with a native GPUI interface. It includes independent PlayStation (PS1) and Game Boy Advance (GBA) cores developed in this project. Both use the desktop game library. Supply your own game images. The GBA core includes its own high-level emulation (HLE) of BIOS services.
 
 ## Features
 
@@ -44,7 +44,7 @@ Disc swapping is not supported. Memory-card saves use the game's own save points
 - Rust **1.95 or newer** and Cargo. A release build is recommended for running games.
 - The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for the Linux build dependencies.
 - Hardware rendering requires a physical GPU and driver with compute shader support. Windows supports DirectX 12, Vulkan and OpenGL 4.3+; older devices without a compatible hardware backend can use software rendering.
-- Supply your own game images. Normal PS1 disc boot uses a PlayStation BIOS (512 KiB). GBA cartridges use a Game Boy Advance BIOS (16 KiB).
+- Supply your own game images. Normal PS1 disc boot also requires a 512 KiB PlayStation BIOS.
 
 This UI redesign branch produces temporary test releases for Linux x86-64 Wayland, Linux x86-64 X11, and Windows x86-64, with SHA-256 checksums. These prereleases are built from the test branch and do not replace the latest release. On Linux, choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. On Windows, extract the full ZIP and run `eidoryn.exe` from its directory. Windows desktop display, input, and audio still need hands-on validation; native CI covers compilation, tests, and the headless demo. See [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) for available test packages.
 
@@ -64,17 +64,17 @@ The user data directory contains `library.sqlite3` with the library index, cache
 
 ### Play a GBA cartridge
 
-Choose **GBA** in the top bar, open **Game library**, then add a local `.gba` cartridge or scan its folder. The first time you start a game, Eidoryn asks you to import a 16 KiB BIOS dumped from your own GBA. It creates the firmware directory, copies the file to `firmware/gba_bios.bin` under the user data directory and continues starting the selected game. All regions share that copy, so you can move the original file afterwards. A valid BIOS configured in an earlier version also works.
+Choose **GBA** in the top bar, add a local `.gba` cartridge to **Game library**, then click **Start game**. You can also open the cartridge from the console. The GBA core starts at the cartridge entry point and handles BIOS calls in Rust, so the ROM is all you need on first launch.
 
-**Download mGBA** opens the emulator’s official download page. mGBA’s built-in BIOS runs inside mGBA. If you already set an external GBA BIOS file in mGBA’s BIOS settings, select **Import GBA BIOS** in Eidoryn and choose that same file. [Download mGBA](https://mgba.io/downloads.html)
+The built-in BIOS services include interrupt waits, memory copies, integer math, affine transforms and decompression. If a game calls an unimplemented service, the error identifies the call number and the cartridge instruction address.
 
 In Game view, use the arrow keys for the D-pad, **X / Z** for A / B, **Q / E** for L / R, **Enter** for Start and **Backspace** for Select.
 
 Games that use 32 KiB SRAM can save through their own menus. Eidoryn keeps these saves in `saves/gba/<ROM SHA-256>.sav` under the user data directory. Moving or renaming the ROM preserves its save.
 
-The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending and VBlank interrupts. The shared GBA firmware handles BIOS calls. CPU and DMA timing are approximate. Audio, link cable, Flash/EEPROM saves, rewind and save states remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
+The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending and VBlank interrupts. CPU and DMA timing are approximate. Audio, link cable, Flash/EEPROM saves, rewind and save states remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
 
-To run the local cartridge tests, set `EIDORYN_GBA_BIOS` to your GBA BIOS file. The tests read cartridges from the repository’s `tests/` folder by default. Set `EIDORYN_GBA_TEST_ROMS` to test a specific ROM or directory. Run `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture` to boot the firmware and execute 1,800 frames without input after it hands control to each cartridge. Set `EIDORYN_GBA_BOOT_FRAMES` to change the duration. A boot failure reports which cartridge was running and whether the failure occurred before or after the firmware handed it control.
+Run `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture` to start each local cartridge with HLE and run 1,800 frames without input. The tests read ROMs from the repository’s `tests/` folder by default. Set `EIDORYN_GBA_TEST_ROMS` to select a specific ROM or directory and `EIDORYN_GBA_BOOT_FRAMES` to change the duration.
 
 For regional editions of *Castlevania: Aria of Sorrow*, run `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored --nocapture` with the same folder, or use `EIDORYN_ARIA_ROM` to select a single image. The verified Japanese and US retail images have reference checks for their title screens, save slots and the Castle Corridor. Other editions are checked for visible output during boot and compared against an idle run of the same image to detect keypad response. Each run uses a fresh in-memory save.
 

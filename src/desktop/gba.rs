@@ -2,12 +2,11 @@
 use super::{Desktop, GamePlatform, WorkspacePage, actions::ImagePicker, components::button};
 use eidoryn_psx::{
     i18n::Text,
+    library::Library,
     systems::gba::{Command, Runner, Snapshot},
 };
 use gpui::{Context, div, prelude::*};
 use std::{path::PathBuf, sync::Arc};
-
-mod firmware;
 
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
@@ -17,7 +16,6 @@ pub(super) struct Session {
     pub runner: Option<Runner>,
     pub snapshot: Snapshot,
     pub focus_game: bool,
-    firmware_setup: Option<firmware::Setup>,
     close: CloseState,
 }
 
@@ -99,7 +97,7 @@ impl Desktop {
         if self.gba.close != CloseState::Open || self.library.platform == core {
             return;
         }
-        self.cancel_gba_setup();
+        self.image_picker.take();
         self.stop_input(cx);
         if self.is_gba() {
             self.gba_command(Command::Pause, cx);
@@ -127,19 +125,21 @@ impl Desktop {
         cx.notify();
     }
 
-    fn start_gba(
-        &mut self,
-        path: PathBuf,
-        title: String,
-        data_dir: PathBuf,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn open_gba(&mut self, path: PathBuf, title: String, cx: &mut Context<Self>) {
+        self.switch_core(GamePlatform::Gba, cx);
+        if !self.is_gba() || self.closing() {
+            return;
+        }
+        self.image_picker.take();
         if self.gba.runner.is_none() {
-            match Runner::start(
-                self.library.store.clone(),
-                data_dir,
-                self.preferences.gba_bios_path.clone(),
-            ) {
+            let store = self.library.store.clone();
+            let data_dir = store.as_ref().map(|s| s.base_dir().to_owned()).or_else(|| {
+                Library::default_path().and_then(|p| p.parent().map(ToOwned::to_owned))
+            });
+            let result = data_dir
+                .ok_or_else(|| "Cannot locate the GBA data directory".to_owned())
+                .and_then(|dir| Runner::start(store, dir));
+            match result {
                 Ok(runner) => self.gba.runner = Some(runner),
                 Err(error) => {
                     self.notice = Some(error);

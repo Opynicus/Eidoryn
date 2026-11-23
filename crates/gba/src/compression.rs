@@ -2,6 +2,9 @@
 //! halfword writes, including when the caller passes work RAM as the destination.
 use crate::{Error, cpu::Bus};
 
+mod huffman;
+pub(super) use huffman::huffman;
+
 struct Output {
     next: u32,
     remaining: u32,
@@ -29,6 +32,61 @@ fn take(bus: &impl Bus, src: &mut u32) -> u8 {
     let byte = bus.read8(*src);
     *src = src.wrapping_add(1);
     byte
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DiffFormat {
+    Bytes,
+    BytePairs,
+    Halfwords,
+}
+
+pub(super) fn unfilter(
+    bus: &mut impl Bus,
+    format: DiffFormat,
+    src: u32,
+    dst: u32,
+) -> Result<(u32, u32), Error> {
+    let src = src & !3;
+    let header = bus.read32(src);
+    // Halfword destinations finish the last pair even when the header length is odd.
+    let length = header >> 8;
+    let size = if format == DiffFormat::Bytes {
+        length
+    } else {
+        length.next_multiple_of(2)
+    };
+    let unit = if format == DiffFormat::Halfwords {
+        2
+    } else {
+        1
+    };
+    if header as u8 != (0x80 | unit) {
+        return Err(Error::InvalidCompressedData("invalid differential header"));
+    }
+    let payload = src.wrapping_add(4);
+    if format == DiffFormat::Halfwords {
+        let mut value = 0_u16;
+        for offset in (0..size).step_by(2) {
+            value = value.wrapping_add(bus.read16(payload.wrapping_add(offset)));
+            bus.write16(dst.wrapping_add(offset), value);
+        }
+    } else {
+        let halfword = format == DiffFormat::BytePairs;
+        let mut out = Output {
+            next: if halfword { dst & !1 } else { dst },
+            remaining: size,
+            halfword,
+            low: 0,
+        };
+        let mut value = 0_u8;
+        let mut src = payload;
+        while out.remaining != 0 {
+            value = value.wrapping_add(take(bus, &mut src));
+            out.put(bus, value);
+        }
+    }
+    Ok((payload.wrapping_add(size), dst.wrapping_add(size)))
 }
 
 pub(super) fn bit_unpack(
@@ -167,6 +225,100 @@ mod tests {
     const ROM: u32 = 0x0800_0000;
     const WRAM: u32 = 0x0200_0000;
     const VRAM: u32 = 0x0600_0000;
+
+    #[test]
+    fn differential_swis_accumulate_deltas_at_the_requested_width() {
+        let mut machine = crate::Machine::from_rom(vec![0; crate::HEADER_LEN]).unwrap();
+        machine.memory.write32(WRAM, 0x0000_0381); // Three declared bytes, four deltas.
+        machine
+            .memory
+            .write32(WRAM + 4, u32::from_le_bytes([250, 12, 255, 7]));
+        for (call, dst, transferred, last) in [(0x16, WRAM + 17, 3, 0), (0x17, VRAM, 4, 12)] {
+            machine.cpu.regs[..2].copy_from_slice(&[WRAM, dst]);
+            machine.bios_call(call).unwrap();
+            assert_eq!(
+                [0, 1, 2, 3].map(|offset| machine.memory.read8(dst + offset)),
+                [250, 6, 5, last]
+            );
+            assert_eq!(
+                machine.cpu.regs[..2],
+                [WRAM + 4 + transferred, dst + transferred]
+            );
+        }
+        machine.memory.write32(WRAM, 0x0000_0582); // Three halfword transfers.
+        for (offset, delta) in [(4, 0xff10), (6, 0x0205), (8, 0xffff)] {
+            machine.memory.write16(WRAM + offset, delta);
+        }
+        machine.cpu.regs[..2].copy_from_slice(&[WRAM, VRAM]);
+        machine.bios_call(0x18).unwrap();
+        assert_eq!(
+            [0, 2, 4].map(|offset| machine.memory.read16(VRAM + offset)),
+            [0xff10, 0x0115, 0x0114]
+        );
+        assert_eq!(machine.cpu.regs[..2], [WRAM + 10, VRAM + 6]);
+        machine.cpu.regs[..2].copy_from_slice(&[WRAM, VRAM]);
+        assert!(matches!(
+            machine.bios_call(0x17),
+            Err(Error::InvalidCompressedData(_))
+        ));
+    }
+
+    #[test]
+    fn huffman_swi_decodes_branches_across_input_words_and_vram_stores() {
+        let mut machine = crate::Machine::from_rom(vec![0; crate::HEADER_LEN]).unwrap();
+        machine.memory.write32(WRAM, 0x0000_1828); // 24 bytes, 8-bit symbols
+        // Root: 0 = C, 1 = subtree with offset one, so 10 = A and 11 = B.
+        machine
+            .memory
+            .write32(WRAM + 4, u32::from_le_bytes([3, 0x80, b'C', 0xc1]));
+        machine
+            .memory
+            .write32(WRAM + 8, u32::from_le_bytes([0, 0, b'A', b'B']));
+        // Six repeats of "AABC" (10 10 11 0) span two input words.
+        let bitstream = (0..6).fold(0_u64, |bits, _| (bits << 7) | 0b101_0110) << 22;
+        machine.memory.write32(WRAM + 12, (bitstream >> 32) as u32);
+        machine.memory.write32(WRAM + 16, bitstream as u32);
+        machine.cpu.regs[..2].copy_from_slice(&[WRAM, VRAM]);
+        machine.bios_call(0x13).unwrap();
+        for addr in (VRAM..VRAM + 24).step_by(4) {
+            assert_eq!(machine.memory.read32(addr).to_le_bytes(), *b"AABC");
+        }
+        assert_eq!(machine.cpu.regs[..2], [WRAM + 20, VRAM + 24]);
+    }
+
+    #[test]
+    fn huffman_rotates_a_halfword_aligned_stream_load_and_finishes_the_output_word() {
+        let mut bus = Memory::new(vec![0; crate::HEADER_LEN]);
+        bus.write32(WRAM, 0x0000_0328);
+        bus.write32(WRAM + 4, u32::from_le_bytes([2, 0xc0, b'A', b'B']));
+        // Stream starts at +10. An ARM word load rotates 0x90006000 into 0x60009000.
+        bus.write32(WRAM + 8, 0x9000_6000);
+        assert_eq!(
+            huffman(&mut bus, WRAM, VRAM).unwrap(),
+            (WRAM + 14, VRAM + 4)
+        );
+        assert_eq!(bus.read32(VRAM).to_le_bytes(), *b"ABBA");
+    }
+
+    #[test]
+    fn huffman_packs_low_nibbles_first_and_rejects_invalid_trees() {
+        let mut bus = Memory::new(vec![0; crate::HEADER_LEN]);
+        bus.write32(WRAM, 0x0000_0424);
+        bus.write32(WRAM + 4, u32::from_le_bytes([1, 0xc0, 4, 9]));
+        bus.write32(WRAM + 8, 0b1011_0010 << 24);
+        huffman(&mut bus, WRAM, VRAM).unwrap();
+        assert_eq!(bus.read32(VRAM).to_le_bytes(), [0x49, 0x99, 0x44, 0x49]);
+        bus.write8(WRAM + 5, 0xbf); // A 63-pair offset exceeds this four-byte table.
+        assert!(matches!(
+            huffman(&mut bus, WRAM, VRAM),
+            Err(Error::InvalidCompressedData(_))
+        ));
+        bus.write8(WRAM, 0x20);
+        assert!(matches!(
+            huffman(&mut bus, WRAM, VRAM),
+            Err(Error::InvalidCompressedData(_))
+        ));
+    }
 
     #[test]
     fn bit_unpack_expands_a_glyph_into_vram_with_optional_transparent_index_bias() {

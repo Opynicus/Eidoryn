@@ -130,9 +130,6 @@ pub struct Preferences {
     pub keybindings: KeyBindings,
     pub shortcuts: ShortcutBindings,
     pub bios_path: Option<PathBuf>,
-    /// Compatibility with GBA firmware paths saved before the fixed data-directory location.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gba_bios_path: Option<PathBuf>,
     pub recent_discs: Vec<RecentDisc>,
     pub library: LibraryPreferences,
     pub rewind_enabled: bool,
@@ -158,7 +155,6 @@ impl Default for Preferences {
             keybindings: KeyBindings::default(),
             shortcuts: ShortcutBindings::default(),
             bios_path: None,
-            gba_bios_path: None,
             recent_discs: Vec::new(),
             library: LibraryPreferences::default(),
             rewind_enabled: false,

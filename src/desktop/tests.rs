@@ -865,7 +865,7 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
         sidebar: None,
         navigation: sidebar::Navigation::default(),
         bios_details_open: false,
-        bios_selection: None,
+        image_picker: None,
         memory_details_open: false,
         fonts: fonts::Fonts::new(Arc::clone(cx.text_system())),
         language: Language::ZhCn,

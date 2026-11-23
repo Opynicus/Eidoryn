@@ -294,7 +294,7 @@ impl Cpu {
     }
 }
 
-fn load_word(bus: &impl Bus, addr: u32) -> u32 {
+pub(super) fn load_word(bus: &impl Bus, addr: u32) -> u32 {
     bus.read32(addr & !3).rotate_right((addr & 3) * 8)
 }
 

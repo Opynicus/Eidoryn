@@ -1,41 +1,10 @@
-use eidoryn_gba::{BIOS_LEN, HEADER_LEN, MAX_ROM_LEN, Machine};
+use eidoryn_gba::{HEADER_LEN, MAX_ROM_LEN};
 use std::{
-    env,
     ffi::OsString,
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
 };
-
-/// Starts the same firmware boot as the desktop, then aligns the input replay to cartridge entry.
-pub fn boot(rom: Vec<u8>, bios: &[u8]) -> Result<Machine, String> {
-    let mut machine = Machine::with_bios(rom, bios.to_vec()).map_err(|e| e.to_string())?;
-    for frame in 1..=900 {
-        machine
-            .run_frame()
-            .map_err(|e| format!("firmware boot frame {frame}: {e}"))?;
-        if machine.cartridge_started() {
-            return Ok(machine);
-        }
-    }
-    Err("BIOS did not enter the cartridge within 900 frames".into())
-}
-
-fn local_bios() -> Vec<u8> {
-    let path = env::var_os("EIDORYN_GBA_BIOS")
-        .map(PathBuf::from)
-        .expect("Set EIDORYN_GBA_BIOS to your 16 KiB GBA BIOS for local cartridge tests");
-    let read = || -> io::Result<Vec<u8>> {
-        let mut bytes = Vec::with_capacity(BIOS_LEN);
-        fs::File::open(&path)?
-            .take(BIOS_LEN as u64 + 1)
-            .read_to_end(&mut bytes)?;
-        Ok(bytes)
-    };
-    let bytes = read().unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    eidoryn_gba::validate_bios(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    bytes
-}
 
 fn cartridge_files(source: &Path) -> io::Result<Vec<PathBuf>> {
     if !fs::metadata(source)?.is_dir() {
@@ -74,9 +43,8 @@ fn load(path: &Path) -> Result<Vec<u8>, String> {
 pub fn check(
     source: Option<OsString>,
     accepts: impl Fn(&[u8]) -> bool,
-    run: impl Fn(Vec<u8>, &[u8]) -> Result<(), String>,
+    run: impl Fn(Vec<u8>) -> Result<(), String>,
 ) {
-    let bios = local_bios();
     let source = source.map_or_else(
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests"),
         PathBuf::from,
@@ -103,7 +71,7 @@ pub fn check(
             code.escape_default(),
             rom[0xbc]
         );
-        match run(rom, &bios) {
+        match run(rom) {
             Ok(()) => eprintln!("PASS {label}"),
             Err(e) => failures.push(format!("{label}: {e}")),
         }

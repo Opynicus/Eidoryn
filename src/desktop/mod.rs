@@ -233,7 +233,7 @@ fn open_window(
                             sidebar: None,
                             navigation: sidebar::Navigation::default(),
                             bios_details_open: false,
-                            bios_selection: None,
+                            image_picker: None,
                             memory_details_open: false,
                             fonts: fonts::Fonts::new(Arc::clone(cx.text_system())),
                             graphics: graphics::GraphicsControls::new(
@@ -306,7 +306,7 @@ struct Desktop {
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
     navigation: sidebar::Navigation,
     bios_details_open: bool,
-    bios_selection: Option<gpui::Task<()>>,
+    image_picker: Option<gpui::Task<()>>,
     memory_details_open: bool,
     fonts: fonts::Fonts,
     language: eidoryn_psx::i18n::Language,

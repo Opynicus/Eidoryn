@@ -144,10 +144,6 @@ impl Desktop {
         }
     }
     pub(super) fn pick_image(&mut self, kind: ImagePicker, cx: &mut Context<Self>) {
-        if matches!(kind, ImagePicker::Gba) {
-            self.cancel_gba_setup();
-            cx.notify();
-        }
         let prompt = self.tr(match kind {
             ImagePicker::Bios => Text::BiosPicker,
             ImagePicker::Exe => Text::ExePicker,
@@ -202,7 +198,7 @@ impl Desktop {
         });
         match kind {
             // A newer selection cancels the pending picker or validation before it can update the UI.
-            ImagePicker::Bios | ImagePicker::Gba => self.bios_selection = Some(task),
+            ImagePicker::Bios | ImagePicker::Gba => self.image_picker = Some(task),
             ImagePicker::Exe => task.detach(),
         }
     }
@@ -440,7 +436,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         if self.is_gba() && self.page != page {
-            self.cancel_gba_setup();
+            self.image_picker.take();
         }
         self.snapshot_confirmation = None;
         self.dismiss_library_context_menu();

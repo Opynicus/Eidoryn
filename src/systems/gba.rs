@@ -14,9 +14,6 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-mod firmware;
-pub use firmware::{import_firmware, needs_firmware_import};
-
 pub enum Command {
     Load { path: PathBuf, title: String },
     Buttons(u16),
@@ -44,11 +41,7 @@ pub struct Runner {
 }
 
 impl Runner {
-    pub fn start(
-        store: Option<Library>,
-        data_dir: PathBuf,
-        legacy_bios: Option<PathBuf>,
-    ) -> Result<Self, String> {
+    pub fn start(store: Option<Library>, data_dir: PathBuf) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel();
         let latest = Arc::new(Mutex::new(None));
         let output = Arc::clone(&latest);
@@ -58,7 +51,7 @@ impl Runner {
             .map_err(|e| e.to_string())?;
         let worker = thread::Builder::new()
             .name("eidoryn-gba".into())
-            .spawn(move || Worker::new(&data_dir, legacy_bios, tracker).run(&rx, &output))
+            .spawn(move || Worker::new(&data_dir, tracker).run(&rx, &output))
             .map_err(|e| e.to_string())?;
         Ok(Self {
             tx: Some(tx),
@@ -97,12 +90,7 @@ struct Cartridge {
 }
 
 impl Cartridge {
-    fn load(
-        path: &Path,
-        bios: Vec<u8>,
-        saves: &Path,
-        current: Option<&Self>,
-    ) -> Result<(Self, String), String> {
+    fn load(path: &Path, saves: &Path, current: Option<&Self>) -> Result<(Self, String), String> {
         if !path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gba"))
@@ -119,7 +107,7 @@ impl Cartridge {
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         let identity = format!("{:x}", Sha256::digest(&bytes));
-        let mut machine = Machine::with_bios(bytes, bios).map_err(|e| e.to_string())?;
+        let mut machine = Machine::from_rom(bytes).map_err(|e| e.to_string())?;
         fs::create_dir_all(saves).map_err(|e| format!("{}: {e}", saves.display()))?;
         let save = saves.join(format!("{identity}.sav"));
         let lock = if let Some(loaded) = current.filter(|c| c.save == save) {
@@ -183,8 +171,6 @@ impl Cartridge {
 }
 
 struct Worker {
-    bios: PathBuf,
-    legacy_bios: Option<PathBuf>,
     saves: PathBuf,
     tracker: Option<Playtime>,
     cartridge: Option<Cartridge>,
@@ -193,10 +179,8 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(data_dir: &Path, legacy_bios: Option<PathBuf>, tracker: Option<Playtime>) -> Self {
+    fn new(data_dir: &Path, tracker: Option<Playtime>) -> Self {
         Self {
-            bios: firmware::installed_path(data_dir),
-            legacy_bios,
             saves: data_dir.join("saves/gba"),
             tracker,
             cartridge: None,
@@ -226,17 +210,10 @@ impl Worker {
     fn apply(&mut self, command: Command) -> Result<bool, String> {
         match command {
             Command::Load { path, title } => {
-                let bios = match firmware::load(&self.bios, self.legacy_bios.as_deref()) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        self.snapshot.error = Some(error.to_string());
-                        return Ok(true);
-                    }
-                };
                 self.pause();
                 self.flush()?;
                 let (cart, identity) =
-                    Cartridge::load(&path, bios, &self.saves, self.cartridge.as_ref())?;
+                    Cartridge::load(&path, &self.saves, self.cartridge.as_ref())?;
                 if let Some(clock) = &mut self.tracker {
                     clock.select(path.clone(), identity, false);
                 }

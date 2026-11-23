@@ -116,13 +116,13 @@ fn region_signature(machine: &Machine, x: usize, y: usize, w: usize, h: usize) -
         })
 }
 
-fn check_editions(run: impl Fn(Vec<u8>, &[u8], Option<&Reference>) -> Result<(), String>) {
+fn check_editions(run: impl Fn(Vec<u8>, Option<&Reference>) -> Result<(), String>) {
     local_roms::check(
         env::var_os("EIDORYN_ARIA_ROM").or_else(|| env::var_os("EIDORYN_GBA_TEST_ROMS")),
         |rom| &rom[0xac..0xaf] == b"A2C",
-        |rom, bios| {
+        |rom| {
             let digest = format!("{:x}", Sha256::digest(&rom));
-            run(rom, bios, REFERENCES.iter().find(|r| r.sha256 == digest))
+            run(rom, REFERENCES.iter().find(|r| r.sha256 == digest))
         },
     );
 }
@@ -142,17 +142,16 @@ fn advance(machine: &mut Machine, frame: u32, input: u16) -> Result<(), String> 
 /// Compare a keyed run to an independent idle boot, including for images with reference data.
 fn replay(
     rom: Vec<u8>,
-    bios: &[u8],
     input: Option<fn(u32) -> u16>,
     checkpoints: &[Checkpoint],
     min_frames: u32,
 ) -> Result<(), String> {
     let mut idle = if input.is_some() {
-        Some(local_roms::boot(rom.clone(), bios)?)
+        Some(Machine::from_rom(rom.clone()).map_err(|e| e.to_string())?)
     } else {
         None
     };
-    let mut machine = local_roms::boot(rom, bios)?;
+    let mut machine = Machine::from_rom(rom).map_err(|e| e.to_string())?;
     let mut pending: Vec<_> = checkpoints.iter().collect();
     let end = checkpoints
         .iter()
@@ -198,20 +197,20 @@ fn replay(
 }
 
 #[test]
-#[ignore = "requires a locally supplied Aria of Sorrow cartridge and GBA BIOS"]
+#[ignore = "requires a locally supplied Aria of Sorrow cartridge"]
 fn boots_each_edition_without_input() {
-    check_editions(|rom, bios, reference| {
+    check_editions(|rom, reference| {
         let checkpoints = reference.map_or(&[][..], |r| std::slice::from_ref(&r.title));
-        replay(rom, bios, None, checkpoints, 1600)
+        replay(rom, None, checkpoints, 1600)
     });
 }
 
 #[test]
-#[ignore = "requires a locally supplied Aria of Sorrow cartridge and GBA BIOS"]
+#[ignore = "requires a locally supplied Aria of Sorrow cartridge"]
 fn input_advances_each_edition() {
-    check_editions(|rom, bios, reference| {
+    check_editions(|rom, reference| {
         let input = reference.map_or(buttons as fn(u32) -> u16, |r| r.input);
         let checkpoints = reference.map_or(&[][..], |r| r.gameplay);
-        replay(rom, bios, Some(input), checkpoints, 3600)
+        replay(rom, Some(input), checkpoints, 3600)
     });
 }
