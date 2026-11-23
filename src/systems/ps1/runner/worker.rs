@@ -24,6 +24,7 @@ use std::{
 const DISPLAY_INTERVAL: Duration = Duration::from_micros(16_667);
 // Check input between bounded chunks, but only wait after completing a video frame.
 const HOST_BUDGET: Duration = Duration::from_millis(4);
+const MAX_INPUTS_BEFORE_BATCH: usize = 32;
 
 pub(super) fn run(
     machine: Machine,
@@ -38,25 +39,7 @@ pub(super) fn run(
     let mut worker = Worker::new(machine, auto_run, store, audio, mode);
     worker.unlatched_preview = preview;
     loop {
-        let wait = worker.rewind.wait_duration().or_else(|| {
-            worker
-                .running
-                .then(|| worker.pacing.wait_duration(Instant::now()))
-        });
-        #[cfg(feature = "desktop")]
-        let wait = wait.or_else(|| worker.playtime.as_ref().map(|_| Duration::from_secs(1)));
-        let command = if let Some(wait) = wait {
-            match receiver.recv_timeout(wait) {
-                Ok(command) => Some(command),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        } else {
-            match receiver.recv() {
-                Ok(command) => Some(command),
-                Err(_) => break,
-            }
-        };
+        let command = worker.next_command(receiver);
         #[cfg(feature = "desktop")]
         if command.is_none() && !worker.running && worker.rewind.active.is_none() {
             if worker.update_statistics_warning() && !worker.publish(output, false) {
@@ -173,6 +156,40 @@ struct Worker {
 }
 
 impl Worker {
+    /// Apply live pad transitions in FIFO order while waiting for the next guest batch.
+    /// A burst cannot indefinitely displace a due batch. Controls remain queue barriers.
+    fn next_command(&mut self, receiver: &mpsc::Receiver<Command>) -> Option<Command> {
+        let mut inputs = 0;
+        loop {
+            let guest_wait = self.rewind.wait_duration().or_else(|| {
+                self.running
+                    .then(|| self.pacing.wait_duration(Instant::now()))
+            });
+            if inputs >= MAX_INPUTS_BEFORE_BATCH && guest_wait == Some(Duration::ZERO) {
+                return None;
+            }
+            let wait = guest_wait;
+            #[cfg(feature = "desktop")]
+            let wait = wait.or_else(|| self.playtime.as_ref().map(|_| Duration::from_secs(1)));
+            let command = match wait {
+                Some(wait) => match receiver.recv_timeout(wait) {
+                    Ok(command) => command,
+                    Err(mpsc::RecvTimeoutError::Timeout) => return None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => Command::Shutdown,
+                },
+                None => receiver.recv().unwrap_or(Command::Shutdown),
+            };
+            if let Command::SetButtons(buttons) = command
+                && guest_wait.is_some()
+            {
+                self.set_buttons(buttons);
+                inputs += 1;
+            } else {
+                return Some(command);
+            }
+        }
+    }
+
     fn new(
         mut machine: Machine,
         running: bool,
@@ -589,8 +606,8 @@ impl Worker {
                 self.set_rewind_seconds(seconds);
                 return false;
             }
-            Command::SetButtons(buttons) if self.rewind.active.is_some() => {
-                self.rewind.active.as_mut().expect("active rewind").held = buttons & !6;
+            Command::SetButtons(buttons) => {
+                self.set_buttons(buttons);
                 return false;
             }
             Command::SetSnapshotMode(_) | Command::DeleteState { .. } => {}
@@ -599,7 +616,7 @@ impl Worker {
             }
         }
         let view_only = matches!(command, Command::SetSnapshotMode(_));
-        let input_only = matches!(command, Command::SetButtons(_) | Command::SetTurbo(_));
+        let input_only = matches!(command, Command::SetTurbo(_));
         if !view_only && !input_only && !matches!(command, Command::RefreshSaveStates) {
             self.success_message = None;
         }
@@ -684,11 +701,6 @@ impl Worker {
         }
         match command {
             Command::SetSnapshotMode(mode) => self.snapshot_mode = mode,
-            Command::SetButtons(buttons) => {
-                self.input
-                    .set_buttons(buttons, self.machine.bus.elapsed_cycles());
-                self.update_input();
-            }
             Command::SetTurbo(config) => {
                 self.input
                     .configure(config, self.machine.bus.elapsed_cycles());
@@ -750,6 +762,7 @@ impl Worker {
             }
             Command::FlushCards => self.message = None,
             Command::SaveState
+            | Command::SetButtons(_)
             | Command::SetAntiAliasing(_)
             | Command::SetRewinding(_)
             | Command::SetRewindEnabled(_)
@@ -864,6 +877,16 @@ impl Worker {
         frame_finished || !self.running
     }
 
+    fn set_buttons(&mut self, buttons: u16) {
+        if let Some(rewind) = &mut self.rewind.active {
+            rewind.held = buttons & !6;
+        } else {
+            self.input
+                .set_buttons(buttons, self.machine.bus.elapsed_cycles());
+            self.update_input();
+        }
+    }
+
     fn update_input(&mut self) {
         self.machine
             .bus
@@ -958,6 +981,71 @@ impl Worker {
 mod tests {
     use super::*;
     use crate::systems::ps1::{input::TurboConfig, timing::CPU_CLOCK_HZ};
+
+    #[test]
+    fn due_guest_advances_during_a_queued_burst_of_pad_input() {
+        let (sender, receiver) = mpsc::channel();
+        for mask in [0x4000, 0, 0x8000, 0].into_iter().cycle().take(256) {
+            sender.send(Command::SetButtons(mask)).unwrap();
+        }
+        sender.send(Command::SetButtons(0x4020)).unwrap();
+        sender
+            .send(Command::SetSnapshotMode(SnapshotMode::Debug))
+            .unwrap();
+        sender.send(Command::Shutdown).unwrap();
+        let output = SharedSnapshot::default();
+        run(
+            Machine::demo(),
+            true,
+            &receiver,
+            &output,
+            CardStore::default(),
+            None,
+            (SnapshotMode::Display, None),
+        );
+        let snapshot = output.lock().unwrap().take().unwrap();
+        assert!(snapshot.slices > 0, "queued input starved the guest");
+        assert_eq!(snapshot.mode, SnapshotMode::Debug);
+        assert_eq!(snapshot.pad_buttons, 0x4020);
+    }
+
+    #[test]
+    fn batched_pad_repress_restarts_turbo_before_the_next_control() {
+        let square = 0x8000;
+        let mut worker = Worker::new(
+            Machine::demo(),
+            true,
+            CardStore::default(),
+            None,
+            SnapshotMode::Display,
+        );
+        worker.apply(Command::SetTurbo(TurboConfig::new(square, 10).unwrap()));
+        worker.apply(Command::SetButtons(square));
+        worker.machine.bus.tick(CPU_CLOCK_HZ / 20).unwrap();
+        worker.update_input();
+        assert_eq!(worker.machine.bus.sio.buttons(), 0);
+
+        let (sender, receiver) = mpsc::channel();
+        for command in [
+            Command::SetButtons(0),
+            Command::SetButtons(square),
+            Command::Toggle,
+            Command::SetButtons(0x4000),
+        ] {
+            sender.send(command).unwrap();
+        }
+        assert!(matches!(
+            worker.next_command(&receiver),
+            Some(Command::Toggle)
+        ));
+        assert_eq!(worker.machine.bus.sio.buttons(), square);
+        worker.apply(Command::Toggle);
+        assert!(!worker.running);
+        assert!(matches!(
+            worker.next_command(&receiver),
+            Some(Command::SetButtons(0x4000))
+        ));
+    }
 
     #[test]
     fn unread_presentation_warning_survives_coalesced_frames_once() {

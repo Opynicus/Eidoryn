@@ -561,10 +561,25 @@ impl ComputeRenderer {
     }
 
     pub(super) fn display(&mut self, display: DisplaySettings) -> Result<Vec<u8>, String> {
+        self.display_pixels::<Vec<_>>(display)
+            .map(Vec::into_flattened)
+    }
+
+    pub(super) fn capture(&mut self, display: DisplaySettings) -> Result<Arc<[u8]>, String> {
+        // Pack directly into the shared framebuffer while mapped. Flattening three
+        // bytes per pixel keeps its one-byte alignment and the same allocation.
+        self.display_pixels::<Arc<[[u8; 3]]>>(display)
+            .map(bytemuck::allocation::cast_slice_arc)
+    }
+
+    fn display_pixels<P: FromIterator<[u8; 3]>>(
+        &mut self,
+        display: DisplaySettings,
+    ) -> Result<P, String> {
         self.flush()?;
         let (width, height) = display.output_dimensions();
         if display.disabled {
-            return Ok(vec![0; width * height * 3]);
+            return Ok(std::iter::repeat_n([0; 3], width * height).collect());
         }
         let params = [
             display.dimensions.0 as u32,
@@ -605,11 +620,12 @@ impl ComputeRenderer {
         let bytes = (width * height * 4) as u64;
         encoder.copy_buffer_to_buffer(output, 0, &self.staging, 0, bytes);
         self.readback(encoder, bytes, |bytes| {
-            let mut rgb = Vec::with_capacity(width * height * 3);
-            for pixel in bytes.as_chunks::<4>().0 {
-                rgb.extend_from_slice(&pixel[..3]);
-            }
-            rgb
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&[r, g, b, _]| [r, g, b])
+                .collect()
         })
     }
 

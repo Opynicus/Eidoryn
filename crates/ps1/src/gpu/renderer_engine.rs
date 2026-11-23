@@ -283,6 +283,19 @@ impl Engine {
         }
     }
 
+    pub(super) fn capture(&mut self, display: DisplaySettings) -> Result<Arc<[u8]>, String> {
+        match self {
+            Self::Software(raster) => Ok(raster.display_rgb(display).into()),
+            #[cfg(any(
+                feature = "dx12",
+                feature = "vulkan",
+                feature = "opengl",
+                feature = "metal"
+            ))]
+            Self::Hardware(gpu) => gpu.capture(display),
+        }
+    }
+
     pub(super) fn snapshot(&mut self) -> Result<Rasterizer, String> {
         match self {
             Self::Software(raster) => Ok(raster.clone()),

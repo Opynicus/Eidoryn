@@ -23,7 +23,7 @@ chd = { version = "=0.4.0", features = ["verify_block_crc"] }
 eidoryn-jit-runtime = { path = "../jit-runtime", optional = true }
 wgpu = { version = "=30.0.2", default-features = false, features = ["std", "parking_lot", "wgsl"], optional = true }
 pollster = { version = "=1.0.1", optional = true }
-bytemuck = { version = "=1.25.2", optional = true }
+bytemuck = { version = "=1.25.2", features = ["extern_crate_alloc"], optional = true }
 
 [dev-dependencies]
 flate2 = "1.1"
