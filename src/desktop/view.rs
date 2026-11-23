@@ -48,8 +48,12 @@ impl Render for Desktop {
                     || self.graphics.open
                     || self.renaming_state.is_some()
                     || self.notice.is_some()
-                    || self.snapshot.message.is_some()
-                    || self.snapshot.success_message.is_some(),
+                    || if self.is_gba() {
+                        self.gba.snapshot.error.is_some()
+                            || self.gba.snapshot.success_message.is_some()
+                    } else {
+                        self.snapshot.message.is_some() || self.snapshot.success_message.is_some()
+                    },
                 |root| root.font(self.fonts.normal()),
             )
             .on_drop(
@@ -243,7 +247,9 @@ impl Desktop {
 
     pub(super) fn playback_label(&self) -> &'static str {
         if self.is_gba() {
-            return self.tr(if self.gba.snapshot.running {
+            return self.tr(if self.gba.snapshot.rewinding {
+                Text::Rewinding
+            } else if self.gba.snapshot.running {
                 Text::Running
             } else if self.gba.snapshot.path.is_some() {
                 Text::Paused
@@ -514,19 +520,20 @@ impl Desktop {
                 )
             })
             .or_else(|| {
-                self.snapshot
-                    .success_message
-                    .as_ref()
-                    .filter(|_| !self.is_gba())
-                    .map(|message| {
-                        (
-                            message,
-                            p.success,
-                            p.on_success,
-                            p.success_border(),
-                            "success-notice",
-                        )
-                    })
+                (if self.is_gba() {
+                    self.gba.snapshot.success_message.as_ref()
+                } else {
+                    self.snapshot.success_message.as_ref()
+                })
+                .map(|message| {
+                    (
+                        message,
+                        p.success,
+                        p.on_success,
+                        p.success_border(),
+                        "success-notice",
+                    )
+                })
             })
             .map(|(message, background, foreground, border, selector)| {
                 div()

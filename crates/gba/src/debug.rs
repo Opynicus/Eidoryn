@@ -133,7 +133,9 @@ mod tests {
 
         // The 8-bit SRAM bus broadcasts the first byte across a CPU word fetch.
         machine.cpu.regs[15] = 0x0e00_0000;
-        machine.memory.sram[..4].copy_from_slice(&[1, 2, 3, 4]);
+        for (offset, value) in [1, 2, 3, 4].into_iter().enumerate() {
+            machine.memory.write8(0x0e00_0000 + offset as u32, value);
+        }
         assert_eq!(machine.debug_snapshot().instructions[0].opcode, 0x0101_0101);
     }
 

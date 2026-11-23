@@ -4,7 +4,7 @@ use super::super::{
 };
 use eidoryn_psx::{
     i18n::Text,
-    systems::ps1::{runner::Command, state_file::checkpoint_time},
+    systems::{checkpoints::checkpoint_time, ps1::runner::Command},
 };
 use gpui::{
     Anchor, AnchoredPositionMode, Bounds, Context, FocusHandle, KeyDownEvent, Pixels, Window,
@@ -77,8 +77,7 @@ impl Desktop {
 
     fn snapshot_menu_content(&self, menu: &SnapshotMenu, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let entries =
-            &self.snapshot.save_states[..self.snapshot.save_states.len().min(RECENT_SNAPSHOTS)];
+        let entries = &self.state_history()[..self.state_history().len().min(RECENT_SNAPSHOTS)];
         let selected = menu.selected.min(entries.len());
         let trigger = Rc::clone(&menu.trigger_bounds);
         card(p)
@@ -164,10 +163,10 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let last = self.state_history().len().min(RECENT_SNAPSHOTS);
         let Some(menu) = &mut self.snapshot_menu else {
             return;
         };
-        let last = self.snapshot.save_states.len().min(RECENT_SNAPSHOTS);
         let selected = menu.selected.min(last);
         match (
             event.keystroke.key.as_str(),
@@ -180,7 +179,7 @@ impl Desktop {
             ("home", _) => menu.selected = 0,
             ("end", _) => menu.selected = last,
             ("enter" | "space", _) => {
-                let path = self.snapshot.save_states[..last]
+                let path = self.state_history()[..last]
                     .get(selected)
                     .map(|state| state.path.clone());
                 self.choose_snapshot_menu_item(path, window, cx);

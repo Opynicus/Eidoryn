@@ -8,9 +8,9 @@ use super::{
 use eidoryn_psx::{
     i18n::Text,
     shortcuts::ShortcutAction,
-    systems::ps1::{
-        runner::{Command, QuickSlot},
-        state_file::{SaveStateInfo, checkpoint_time},
+    systems::{
+        checkpoints::{QuickSlot, SaveStateInfo, checkpoint_time},
+        ps1::runner::Command,
     },
 };
 use gpui::{Context, Focusable, Window, div, prelude::*, px, rgb, rgba};
@@ -28,6 +28,25 @@ pub(super) struct RenameState {
 }
 
 impl Desktop {
+    fn state_history(&self) -> &[SaveStateInfo] {
+        if self.is_gba() {
+            &self.gba.snapshot.save_states
+        } else {
+            &self.snapshot.save_states
+        }
+    }
+
+    fn quick_slot(&self) -> (QuickSlot, u64) {
+        if self.is_gba() {
+            (
+                self.gba.snapshot.quick_slot,
+                self.gba.snapshot.quick_slot_revision,
+            )
+        } else {
+            (self.snapshot.quick_slot, self.snapshot.quick_slot_revision)
+        }
+    }
+
     pub(super) fn save_states_page(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         let stacked = self.content_width(window) < px(740.);
@@ -53,7 +72,12 @@ impl Desktop {
                     true,
                 )
                 .debug_selector(|| "save-state".into())
-                .on_click(cx.listener(|view, _, _, cx| view.command(Command::SaveState, cx))),
+                .when(self.is_gba() && self.gba.snapshot.path.is_none(), |b| {
+                    b.tab_index(-1).opacity(0.45).cursor_default()
+                })
+                .when(!self.is_gba() || self.gba.snapshot.path.is_some(), |b| {
+                    b.on_click(cx.listener(|view, _, _, cx| view.command(Command::SaveState, cx)))
+                }),
             );
         let side = div()
             .min_w_0()
@@ -119,7 +143,7 @@ impl Desktop {
                                     format!(
                                         "{}  ·  {}",
                                         self.display_title(),
-                                        self.snapshot.save_states.len()
+                                        self.state_history().len()
                                     ),
                                 )
                                 .truncate(),
@@ -138,7 +162,7 @@ impl Desktop {
                         })),
                     ),
             )
-            .when(self.snapshot.save_states.is_empty(), |card| {
+            .when(self.state_history().is_empty(), |card| {
                 card.child(
                     label(p, self.tr(Text::NoSaveStates))
                         .w_full()
@@ -147,8 +171,7 @@ impl Desktop {
                 )
             })
             .children(
-                self.snapshot
-                    .save_states
+                self.state_history()
                     .iter()
                     .enumerate()
                     .map(|(index, state)| self.history_row(index, state, cx)),
@@ -263,7 +286,7 @@ impl Desktop {
 
     pub(super) fn quick_slot_card(&self) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let (title, modified) = match self.snapshot.quick_slot {
+        let (title, modified) = match self.quick_slot().0 {
             QuickSlot::Saved(time) => (self.display_title(), Some(time)),
             QuickSlot::Empty => (self.tr(Text::EmptyQuickSlot), None),
             QuickSlot::Unavailable => (self.tr(Text::QuickSlotUnavailable), None),
@@ -300,23 +323,17 @@ impl Desktop {
 
     pub(super) fn sync_save_state_selection(&mut self) {
         if !self
-            .snapshot
-            .save_states
+            .state_history()
             .iter()
             .any(|state| Some(&state.path) == self.selected_save_state.as_ref())
         {
-            self.selected_save_state = self
-                .snapshot
-                .save_states
-                .first()
-                .map(|state| state.path.clone());
+            self.selected_save_state = self.state_history().first().map(|state| state.path.clone());
         }
     }
 
     pub(super) fn quick_state_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let slot = self.snapshot.quick_slot;
-        let revision = self.snapshot.quick_slot_revision;
+        let (slot, revision) = self.quick_slot();
         let can_load = matches!(slot, QuickSlot::Saved(_));
         div()
             .flex()
@@ -544,8 +561,7 @@ impl Desktop {
         self.snapshot_confirmation = None;
         self.stop_rewind(cx);
         let Some(state) = self
-            .snapshot
-            .save_states
+            .state_history()
             .iter()
             .find(|state| Some(&state.path) == self.selected_save_state.as_ref())
         else {

@@ -9,6 +9,8 @@ use eidoryn_psx::{
 use gpui::{Context, div, prelude::*};
 use std::{path::PathBuf, sync::Arc};
 
+mod battery;
+
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
 
@@ -42,10 +44,6 @@ impl Desktop {
         } else {
             self.snapshot.running
         }
-    }
-
-    pub(super) fn supports_shortcut(&self, action: eidoryn_psx::shortcuts::ShortcutAction) -> bool {
-        !self.is_gba() || action.available_on_gba()
     }
 
     pub(super) fn core_selector(&self, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -99,7 +97,7 @@ impl Desktop {
         self.renaming_state = None;
         self.graphics.open = false;
         if self.page == WorkspacePage::SaveStates {
-            self.page = WorkspacePage::Console;
+            self.command(super::Command::RefreshSaveStates, cx);
         }
         if let Some(image) = &mut self.image {
             image.dirty = true;
@@ -125,6 +123,14 @@ impl Desktop {
             match result {
                 Ok(runner) => {
                     self.gba.runner = Some(runner);
+                    self.gba_command(
+                        Command::SetRewindSeconds(self.preferences.rewind_seconds),
+                        cx,
+                    );
+                    self.gba_command(
+                        Command::SetRewindEnabled(self.preferences.rewind_enabled),
+                        cx,
+                    );
                     if self.preferences.gba_renderer == GbaRenderer::Hardware {
                         self.gba_command(
                             Command::SetHardware {
@@ -142,7 +148,10 @@ impl Desktop {
                 }
             }
         }
-        self.release_buttons(cx);
+        self.stop_input(cx);
+        self.snapshot_menu = None;
+        self.snapshot_confirmation = None;
+        self.renaming_state = None;
         self.notice = None;
         self.gba_command(Command::Load { path, title }, cx);
     }
@@ -176,7 +185,21 @@ impl Desktop {
             || next.debug.is_some()
             || (changed && displays_video)
             || next.running != self.gba.snapshot.running
-            || next.error != self.gba.snapshot.error;
+            || next.error != self.gba.snapshot.error
+            || next.success_message != self.gba.snapshot.success_message
+            || next.rewinding != self.gba.snapshot.rewinding
+            || next.rewind_enabled != self.gba.snapshot.rewind_enabled
+            || next.rewind_states != self.gba.snapshot.rewind_states
+            || next.quick_slot_revision != self.gba.snapshot.quick_slot_revision
+            || next.quick_slot != self.gba.snapshot.quick_slot
+            || !Arc::ptr_eq(&next.save_states, &self.gba.snapshot.save_states);
+        if active
+            && next.renamed_state != self.gba.snapshot.renamed_state
+            && let Some((old, new)) = &next.renamed_state
+            && self.selected_save_state.as_ref() == Some(old)
+        {
+            self.selected_save_state = Some(new.clone());
+        }
         if loaded && let Some(path) = &next.path {
             self.remember_media(path, false);
         }
@@ -261,6 +284,8 @@ impl Desktop {
         if self.is_gba() {
             if self.gba.snapshot.path.is_none() {
                 self.pick_image(ImagePicker::Gba, cx);
+            } else if self.rewind_sources != 0 || self.gba.snapshot.rewinding {
+                self.stop_rewind(cx);
             } else {
                 self.release_buttons(cx);
                 self.gba_command(Command::Toggle, cx);
@@ -272,11 +297,18 @@ impl Desktop {
 
     pub(super) fn reset_playback(&mut self, cx: &mut Context<Self>) {
         if self.is_gba() {
-            self.release_buttons(cx);
+            self.stop_input(cx);
             self.gba_command(Command::Reset, cx);
         } else {
             self.command(super::Command::Reset, cx);
         }
+    }
+
+    pub(super) fn accepts_gba_button(&self, key: &str, modifiers: gpui::Modifiers) -> bool {
+        self.is_gba()
+            && !modifiers.modified()
+            && (self.page == WorkspacePage::Game || self.presentation.shows_video())
+            && self.preferences.gba_keybindings.button(key).is_some()
     }
 
     pub(super) fn gba_key(&mut self, key: &str, down: bool, cx: &mut Context<Self>) {

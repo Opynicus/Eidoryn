@@ -39,18 +39,15 @@ impl ShortcutAction {
         Self::Rewind,
     ];
 
-    pub fn available_on_gba(self) -> bool {
+    /// GBA supports the full set of desktop shortcuts, including history and rewind.
+    pub const fn available_on_gba(self) -> bool {
+        true
+    }
+
+    pub fn is_checkpoint(self) -> bool {
         matches!(
             self,
-            Self::Toggle
-                | Self::Enlarge
-                | Self::Crt
-                | Self::Settings
-                | Self::Step
-                | Self::Slice
-                | Self::Fullscreen
-                | Self::CleanFullscreen
-                | Self::Reset
+            Self::Snapshot | Self::QuickSave | Self::QuickLoad | Self::Rewind
         )
     }
 
@@ -210,11 +207,10 @@ impl ShortcutBindings {
     }
 
     pub fn gba_controller_conflict(&self, pad: &GbaKeyBindings) -> bool {
-        self.0.iter().any(|(action, chord)| {
-            action.available_on_gba()
-                && chord
-                    .as_ref()
-                    .is_some_and(|chord| chord.pad_conflict(pad).is_some())
+        self.0.values().any(|chord| {
+            chord
+                .as_ref()
+                .is_some_and(|chord| chord.pad_conflict(pad).is_some())
         })
     }
 

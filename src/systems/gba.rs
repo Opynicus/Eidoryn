@@ -1,16 +1,20 @@
 //! Desktop host for a GBA cartridge. All machine execution and file I/O run off the UI thread.
+use super::checkpoints::{DEFAULT_REWIND_SECONDS, QuickSlot, SaveStateInfo, StateDirectory};
 use crate::library::{Library, playtime::Playtime};
 use eidoryn_gba::Machine;
-use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
+mod battery;
+mod checkpoints;
+mod rewind;
 #[cfg(test)]
 mod tests;
 
@@ -21,6 +25,20 @@ pub enum Command {
     Toggle,
     Pause,
     SetDebug(bool),
+    SaveState,
+    QuickSave,
+    QuickSaveIfUnchanged { revision: u64, slot: QuickSlot },
+    QuickLoad,
+    LoadState { path: PathBuf },
+    RenameState { path: PathBuf, name: String },
+    DeleteState { path: PathBuf, modified: SystemTime },
+    RefreshSaveStates,
+    SetRewindEnabled(bool),
+    SetRewindSeconds(u16),
+    SetRewinding(bool),
+    SyncBattery,
+    ImportBattery { path: PathBuf, media_revision: u64 },
+    ExportBattery { path: PathBuf, media_revision: u64 },
     Step,
     Slice,
     Reset,
@@ -33,6 +51,17 @@ pub struct Snapshot {
     pub path: Option<PathBuf>,
     pub title: String,
     pub running: bool,
+    pub save_states: Arc<[SaveStateInfo]>,
+    pub quick_slot: QuickSlot,
+    pub quick_slot_revision: u64,
+    pub renamed_state: Option<(PathBuf, PathBuf)>,
+    pub rewind_enabled: bool,
+    pub rewind_max_seconds: u16,
+    pub rewinding: bool,
+    pub rewind_states: usize,
+    pub rewind_seconds: f64,
+    pub battery_path: Option<PathBuf>,
+    pub success_message: Option<String>,
     pub rgb: Arc<[u8]>,
     pub video_fps: f64,
     pub graphics_device: Option<String>,
@@ -115,8 +144,11 @@ impl Cartridge {
         file.take(eidoryn_gba::MAX_ROM_LEN as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        let identity = format!("{:x}", Sha256::digest(&bytes));
         let mut machine = Machine::from_rom(bytes).map_err(|e| e.to_string())?;
+        let mut identity = String::with_capacity(64);
+        for byte in machine.rom_digest() {
+            write!(identity, "{byte:02x}").expect("String formatting is infallible");
+        }
         fs::create_dir_all(saves).map_err(|e| format!("{}: {e}", saves.display()))?;
         let save = saves.join(format!("{identity}.sav"));
         let lock = if let Some(loaded) = current.filter(|c| c.save == save) {
@@ -133,23 +165,7 @@ impl Cartridge {
                 .map_err(|e| format!("{}: {e}", save.display()))?;
             Arc::new(lock)
         };
-        match fs::metadata(&save) {
-            Ok(meta) if !meta.is_file() => {
-                return Err(format!("Expected a regular save file: {}", save.display()));
-            }
-            Ok(_) => {
-                let file = File::open(&save).map_err(|e| format!("{}: {e}", save.display()))?;
-                let mut bytes = Vec::new();
-                file.take(machine.sram().len() as u64 + 1)
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| e.to_string())?;
-                machine
-                    .restore_sram(&bytes)
-                    .map_err(|e| format!("{}: {e}", save.display()))?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("{}: {e}", save.display())),
-        }
+        battery::load_existing(&mut machine, &save)?;
         Ok((
             Self {
                 machine,
@@ -159,23 +175,6 @@ impl Cartridge {
             },
             identity,
         ))
-    }
-
-    fn flush(&mut self) -> Result<(), String> {
-        self.pending_save |= self.machine.take_sram_dirty();
-        if self.pending_save {
-            let write = || -> std::io::Result<()> {
-                let mut temp =
-                    tempfile::NamedTempFile::new_in(self.save.parent().expect("save directory"))?;
-                temp.write_all(self.machine.sram())?;
-                temp.as_file().sync_all()?;
-                temp.persist(&self.save)?;
-                Ok(())
-            };
-            write().map_err(|e| format!("{}: {e}", self.save.display()))?;
-            self.pending_save = false;
-        }
-        Ok(())
     }
 }
 
@@ -203,6 +202,9 @@ impl FrameRate {
 
 struct Worker {
     saves: PathBuf,
+    states: Option<StateDirectory>,
+    rewind: rewind::Rewind,
+    held: u16,
     tracker: Option<Playtime>,
     cartridge: Option<Cartridge>,
     hardware: bool,
@@ -216,10 +218,16 @@ impl Worker {
     fn new(data_dir: &Path, tracker: Option<Playtime>) -> Self {
         Self {
             saves: data_dir.join("saves/gba"),
+            states: None,
+            rewind: rewind::Rewind::default(),
+            held: 0,
             tracker,
             cartridge: None,
             hardware: false,
-            snapshot: Snapshot::default(),
+            snapshot: Snapshot {
+                rewind_max_seconds: DEFAULT_REWIND_SECONDS,
+                ..Snapshot::default()
+            },
             last_save: Instant::now(),
             frame_rate: None,
             capture_debug: false,
@@ -240,6 +248,8 @@ impl Worker {
     }
 
     fn pause(&mut self) {
+        self.end_rewind();
+        self.held = 0;
         self.reset_frame_rate();
         self.snapshot.running = false;
         if let Some(cart) = &mut self.cartridge {
@@ -259,37 +269,105 @@ impl Worker {
         }
     }
 
+    fn load_cartridge(&mut self, path: PathBuf, title: String) -> Result<(), String> {
+        self.pause();
+        self.flush()?;
+        let (cart, identity) = Cartridge::load(&path, &self.saves, self.cartridge.as_ref())?;
+        self.states = Some(StateDirectory::new(
+            self.saves.join("states").join(&identity),
+            StateDirectory::file_prefix(&title),
+            "gbastate",
+        ));
+        if let Some(clock) = &mut self.tracker {
+            clock.select(path.clone(), identity, false);
+        }
+        let battery_path = Some(cart.save.clone());
+        self.cartridge = Some(cart);
+        self.snapshot = Snapshot {
+            path: Some(path),
+            title,
+            running: true,
+            battery_path,
+            rewind_enabled: self.snapshot.rewind_enabled,
+            rewind_max_seconds: self.snapshot.rewind_max_seconds,
+            quick_slot_revision: self.snapshot.quick_slot_revision.wrapping_add(1),
+            media_revision: self.snapshot.media_revision.wrapping_add(1),
+            graphics_request: self.snapshot.graphics_request,
+            ..Snapshot::default()
+        };
+        self.configure_graphics();
+        self.reset_rewind()?;
+        Ok(())
+    }
+
+    fn set_hardware(&mut self, enabled: bool, request: u64) {
+        let previous = std::mem::replace(&mut self.hardware, enabled);
+        self.configure_graphics();
+        if self.snapshot.graphics_error.is_some() {
+            self.hardware = previous;
+        }
+        self.snapshot.graphics_request = request;
+    }
+
+    fn step_debugger(&mut self, frame: bool) -> Result<(), String> {
+        self.pause();
+        if let Some(cart) = &mut self.cartridge {
+            if frame {
+                cart.machine.run_frame()
+            } else {
+                cart.machine.step()
+            }
+            .map_err(|error| error.to_string())?;
+            self.snapshot.rgb = Arc::from(cart.machine.pixels());
+            if frame {
+                self.completed_rewind_frame()?;
+            }
+        }
+        self.flush()
+    }
+
+    fn reset_machine(&mut self) -> Result<(), String> {
+        self.pause();
+        self.flush()?;
+        if let Some(cart) = &mut self.cartridge {
+            cart.machine.reset();
+            self.snapshot.rgb = Arc::from(cart.machine.pixels());
+            self.snapshot.running = !self.capture_debug;
+            self.reset_rewind()?;
+        }
+        Ok(())
+    }
+
     fn apply(&mut self, command: Command) -> Result<bool, String> {
-        match command {
+        if !matches!(
+            command,
+            Command::SetRewinding(_)
+                | Command::Buttons(_)
+                | Command::SetDebug(_)
+                | Command::RefreshSaveStates
+                | Command::ClearStatistics(..)
+        ) {
+            self.end_rewind();
+        }
+        if !matches!(
+            command,
+            Command::Buttons(_) | Command::SetDebug(_) | Command::RefreshSaveStates
+        ) {
+            self.snapshot.success_message = None;
+        }
+        let operation = match command {
             Command::Load { path, title } => {
-                self.pause();
-                self.flush()?;
-                let (cart, identity) =
-                    Cartridge::load(&path, &self.saves, self.cartridge.as_ref())?;
-                if let Some(clock) = &mut self.tracker {
-                    clock.select(path.clone(), identity, false);
-                }
-                self.cartridge = Some(cart);
-                self.snapshot = Snapshot {
-                    path: Some(path),
-                    title,
-                    running: true,
-                    media_revision: self.snapshot.media_revision.wrapping_add(1),
-                    graphics_request: self.snapshot.graphics_request,
-                    ..Snapshot::default()
-                };
-                self.configure_graphics();
+                self.load_cartridge(path, title)?;
+                self.refresh_states()
             }
             Command::SetHardware { enabled, request } => {
-                let previous = std::mem::replace(&mut self.hardware, enabled);
-                self.configure_graphics();
-                if self.snapshot.graphics_error.is_some() {
-                    self.hardware = previous;
-                }
-                self.snapshot.graphics_request = request;
+                self.set_hardware(enabled, request);
                 return Ok(true);
             }
             Command::Buttons(keys) => {
+                if self.snapshot.running || self.snapshot.rewinding {
+                    self.held = keys;
+                }
                 if self.snapshot.running
                     && let Some(cart) = &mut self.cartridge
                 {
@@ -299,40 +377,26 @@ impl Worker {
             }
             Command::Toggle if !self.snapshot.running => {
                 self.snapshot.running = self.cartridge.is_some();
+                if let Some(cart) = &mut self.cartridge {
+                    cart.machine.set_buttons(self.held);
+                }
+                Ok(())
             }
             Command::Pause | Command::Toggle => {
                 self.pause();
                 self.flush()?;
+                Ok(())
             }
             Command::SetDebug(enabled) => {
                 self.capture_debug = enabled;
                 return Ok(true);
             }
-            Command::Step | Command::Slice => {
-                self.pause();
-                if let Some(cart) = &mut self.cartridge {
-                    let result = if matches!(command, Command::Step) {
-                        cart.machine.step()
-                    } else {
-                        cart.machine.run_frame()
-                    };
-                    result.map_err(|error| error.to_string())?;
-                    self.snapshot.rgb = Arc::from(cart.machine.pixels());
-                }
-                self.flush()?;
-            }
-            Command::Reset => {
-                self.pause();
-                self.flush()?;
-                if let Some(cart) = &mut self.cartridge {
-                    cart.machine.reset();
-                    self.snapshot.rgb = Arc::from(cart.machine.pixels());
-                    self.snapshot.running = !self.capture_debug;
-                }
-            }
+            Command::Step | Command::Slice => self.step_debugger(matches!(command, Command::Slice)),
+            Command::Reset => self.reset_machine(),
             Command::PrepareClose(done) => {
                 self.pause();
                 let _ = done.send(self.flush());
+                Ok(())
             }
             Command::ClearStatistics(game, done) => {
                 if let Some(clock) = &mut self.tracker {
@@ -342,8 +406,38 @@ impl Worker {
                 }
                 return Ok(false);
             }
+            Command::SetRewindEnabled(enabled) => self.set_rewind_enabled(enabled),
+            Command::SetRewindSeconds(seconds) => self.set_rewind_seconds(seconds),
+            Command::SetRewinding(true) => self.begin_rewind(),
+            Command::SetRewinding(false) => {
+                self.end_rewind();
+                Ok(())
+            }
+            Command::SaveState => self.save_state(false),
+            Command::QuickSave => self.save_state(true),
+            Command::QuickSaveIfUnchanged { revision, slot } => {
+                self.quick_save_if_unchanged(revision, slot)
+            }
+            Command::QuickLoad => self.quick_load(),
+            Command::LoadState { path } => self.load_state(&path),
+            Command::RenameState { path, name } => self.rename_state(path, &name),
+            Command::DeleteState { path, modified } => self.delete_state(&path, modified),
+            Command::RefreshSaveStates if self.states.is_none() => Ok(()),
+            Command::RefreshSaveStates => self.refresh_states(),
+            Command::SyncBattery => self.sync_battery(),
+            Command::ImportBattery { media_revision, .. }
+            | Command::ExportBattery { media_revision, .. }
+                if self.snapshot.media_revision != media_revision =>
+            {
+                Err("The cartridge changed while selecting a battery save".into())
+            }
+            Command::ImportBattery { path, .. } => self.import_battery(&path),
+            Command::ExportBattery { path, .. } => self.export_battery(&path),
+        };
+        self.snapshot.error = operation.err();
+        if self.snapshot.error.is_some() {
+            self.snapshot.success_message = None;
         }
-        self.snapshot.error = None;
         Ok(true)
     }
 
@@ -365,6 +459,7 @@ impl Worker {
         if let Some(clock) = &mut self.tracker {
             clock.sample(true);
         }
+        self.completed_rewind_frame()?;
         if self.last_save.elapsed() >= Duration::from_secs(1) {
             self.flush()?;
         }
@@ -375,7 +470,14 @@ impl Worker {
         let field = Duration::from_secs_f64(1.0 / eidoryn_gba::FRAME_RATE);
         let mut next = Instant::now();
         loop {
-            let result = if self.snapshot.running {
+            let result = if self.snapshot.rewinding {
+                let wait = self.rewind.wait_duration();
+                match rx.recv_timeout(wait) {
+                    Ok(command) => self.apply(command),
+                    Err(mpsc::RecvTimeoutError::Timeout) => self.rewind_one(),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            } else if self.snapshot.running {
                 // A zero timeout still checks queued input and shutdown when rendering is late.
                 match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
                     Ok(command) => self.apply(command),

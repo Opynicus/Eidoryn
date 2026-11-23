@@ -227,3 +227,233 @@ fn static_picture_counts_while_playing_and_debug_commands_reset_rate() {
     let restarted = wait_for(&runner, |s| s.running);
     assert!(restarted.video_fps.abs() < f64::EPSILON);
 }
+
+#[test]
+fn quick_slot_and_history_round_trip_across_sessions_and_cartridge_moves() {
+    use crate::systems::checkpoints::QuickSlot;
+    use std::fs;
+    let temp = tempfile::tempdir().unwrap();
+    let rom = temp.path().join("probe.gba");
+    fixture::write_cartridge(&rom);
+    let load = |path| Command::Load {
+        path,
+        title: "Probe".into(),
+    };
+    let mut worker = super::Worker::new(temp.path(), None);
+    worker.apply(load(rom.clone())).unwrap();
+    worker.frame().unwrap();
+    let initial = worker.snapshot.rgb.clone();
+    let revision = worker.snapshot.quick_slot_revision;
+    let quick = || Command::QuickSaveIfUnchanged {
+        revision,
+        slot: QuickSlot::Empty,
+    };
+    worker.apply(quick()).unwrap();
+    assert!(matches!(worker.snapshot.quick_slot, QuickSlot::Saved(_)));
+    worker.apply(Command::Buttons(1)).unwrap();
+    worker.frame().unwrap();
+    worker.frame().unwrap();
+    assert_ne!(worker.snapshot.rgb, initial);
+    worker.apply(quick()).unwrap();
+    assert!(worker.snapshot.error.is_some());
+    assert!(worker.snapshot.running);
+    worker.apply(Command::SaveState).unwrap();
+    let saved = worker.snapshot.rgb.clone();
+    let entry = worker.snapshot.save_states[0].clone();
+    worker
+        .apply(Command::RenameState {
+            path: entry.path,
+            name: "before boss".into(),
+        })
+        .unwrap();
+    let entry = worker.snapshot.save_states[0].clone();
+    assert_eq!(entry.name, "before boss");
+    worker.apply(Command::QuickLoad).unwrap();
+    assert_eq!(worker.snapshot.rgb, initial);
+    assert!(worker.snapshot.running);
+    worker.flush().unwrap();
+    drop(worker);
+
+    let moved = temp.path().join("relocated.gba");
+    fs::rename(rom, &moved).unwrap();
+    let other = temp.path().join("other.gba");
+    let mut modified = fs::read(&moved).unwrap();
+    modified[0xad] ^= 1;
+    fs::write(&other, modified).unwrap();
+    let mut worker = super::Worker::new(temp.path(), None);
+    worker.apply(load(other)).unwrap();
+    assert!(worker.snapshot.save_states.is_empty());
+    assert_eq!(worker.snapshot.quick_slot, QuickSlot::Empty);
+    worker
+        .apply(Command::LoadState {
+            path: entry.path.clone(),
+        })
+        .unwrap();
+    assert!(worker.snapshot.error.is_some());
+    assert!(worker.snapshot.running);
+    worker.apply(load(moved)).unwrap();
+    assert_eq!(
+        worker.snapshot.save_states.as_ref(),
+        std::slice::from_ref(&entry)
+    );
+    worker.apply(Command::Pause).unwrap();
+    worker
+        .apply(Command::LoadState {
+            path: entry.path.clone(),
+        })
+        .unwrap();
+    assert!(!worker.snapshot.running);
+    assert_eq!(worker.snapshot.rgb, saved);
+    worker
+        .apply(Command::DeleteState {
+            path: entry.path.clone(),
+            modified: std::time::UNIX_EPOCH,
+        })
+        .unwrap();
+    assert!(worker.snapshot.error.is_some());
+    assert!(entry.path.exists());
+    worker
+        .apply(Command::DeleteState {
+            path: entry.path,
+            modified: entry.modified,
+        })
+        .unwrap();
+    assert!(worker.snapshot.save_states.is_empty());
+    assert!(matches!(worker.snapshot.quick_slot, QuickSlot::Saved(_)));
+}
+
+#[test]
+fn held_rewind_restores_live_input_and_paused_rewind_stays_paused() {
+    let temp = tempfile::tempdir().unwrap();
+    let rom = temp.path().join("rewind.gba");
+    fixture::write_cartridge(&rom);
+    let mut worker = super::Worker::new(temp.path(), None);
+    worker
+        .apply(Command::Load {
+            path: rom,
+            title: "Probe".into(),
+        })
+        .unwrap();
+    worker.frame().unwrap();
+    let blue = worker.snapshot.rgb.clone();
+    worker.apply(Command::SetRewindEnabled(true)).unwrap();
+    worker.apply(Command::Buttons(1)).unwrap();
+    for _ in 0..16 {
+        worker.frame().unwrap();
+    }
+    assert_eq!(worker.snapshot.rewind_states, 2);
+    let red = worker.snapshot.rgb.clone();
+    assert_ne!(red, blue);
+    worker.apply(Command::SetRewinding(true)).unwrap();
+    assert!(worker.snapshot.rewinding);
+    assert!(!worker.snapshot.running);
+    assert_eq!(worker.snapshot.rgb, red);
+    worker.rewind_one().unwrap();
+    assert_eq!(worker.snapshot.rgb, blue);
+    assert_eq!(worker.snapshot.rewind_states, 0);
+    assert!(!worker.rewind_one().unwrap());
+    worker.apply(Command::Buttons(1)).unwrap();
+    worker.apply(Command::SetRewinding(false)).unwrap();
+    assert!(worker.snapshot.running);
+    worker.frame().unwrap();
+    worker.frame().unwrap();
+    assert_eq!(worker.snapshot.rgb, red);
+    worker.apply(Command::Pause).unwrap();
+    worker.apply(Command::SetRewinding(true)).unwrap();
+    assert!(worker.snapshot.rewinding);
+    worker.apply(Command::SetRewinding(false)).unwrap();
+    assert!(!worker.snapshot.running);
+    worker.apply(Command::SetRewindEnabled(false)).unwrap();
+    assert_eq!(worker.snapshot.rewind_states, 0);
+    assert!(worker.snapshot.rewind_seconds.abs() < f64::EPSILON);
+}
+
+#[test]
+fn sav_import_and_export_require_the_original_session_and_restart_after_import() {
+    let temp = tempfile::tempdir().unwrap();
+    let rom = temp.path().join("probe.gba");
+    fixture::write_cartridge(&rom);
+    let mut worker = super::Worker::new(temp.path(), None);
+    worker
+        .apply(Command::Load {
+            path: rom,
+            title: "Probe".into(),
+        })
+        .unwrap();
+    worker.frame().unwrap();
+    let revision = worker.snapshot.media_revision;
+    let export = temp.path().join("player.sav");
+    worker
+        .apply(Command::ExportBattery {
+            path: export.clone(),
+            media_revision: revision - 1,
+        })
+        .unwrap();
+    assert!(worker.snapshot.error.is_some());
+    assert!(!export.exists());
+    worker
+        .apply(Command::ExportBattery {
+            path: export.clone(),
+            media_revision: revision,
+        })
+        .unwrap();
+    let mut image = std::fs::read(&export).unwrap();
+    image[0] = 10;
+    std::fs::write(&export, &image).unwrap();
+    worker.apply(Command::SetRewindEnabled(true)).unwrap();
+    worker.frame().unwrap();
+    worker
+        .apply(Command::ImportBattery {
+            path: export,
+            media_revision: revision,
+        })
+        .unwrap();
+    assert!(worker.snapshot.error.is_none());
+    assert_eq!(worker.snapshot.rewind_states, 0);
+    assert_eq!(
+        std::fs::read(worker.snapshot.battery_path.as_ref().unwrap()).unwrap(),
+        image
+    );
+    worker.frame().unwrap();
+    worker.frame().unwrap();
+    worker.apply(Command::SyncBattery).unwrap();
+    let persisted = std::fs::read(worker.snapshot.battery_path.as_ref().unwrap()).unwrap();
+    assert_eq!(persisted[0], 11);
+}
+
+#[test]
+fn rewind_defers_battery_writes_and_only_persists_the_resumed_timeline() {
+    let temp = tempfile::tempdir().unwrap();
+    let rom = temp.path().join("rewind.gba");
+    fixture::write_cartridge(&rom);
+    let mut worker = super::Worker::new(temp.path(), None);
+    worker
+        .apply(Command::Load {
+            path: rom,
+            title: "Probe".into(),
+        })
+        .unwrap();
+    worker.frame().unwrap();
+    worker.apply(Command::SyncBattery).unwrap();
+    let path = worker.snapshot.battery_path.clone().unwrap();
+    let oldest = std::fs::read(&path).unwrap();
+    worker.apply(Command::SetRewindEnabled(true)).unwrap();
+    let mut latest = oldest.clone();
+    latest[10] ^= 0xff;
+    worker
+        .cartridge
+        .as_mut()
+        .unwrap()
+        .machine
+        .restore_sram(&latest)
+        .unwrap();
+    worker.apply(Command::SyncBattery).unwrap();
+    worker.frame().unwrap();
+    worker.apply(Command::SetRewinding(true)).unwrap();
+    assert!(worker.snapshot.rewinding);
+    assert_eq!(worker.cartridge.as_ref().unwrap().machine.sram(), oldest);
+    assert_eq!(std::fs::read(&path).unwrap(), latest);
+    worker.apply(Command::SetRewinding(false)).unwrap();
+    worker.apply(Command::Pause).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), oldest);
+}

@@ -19,7 +19,7 @@ Eidoryn is an experimental Rust emulator with a native GPUI interface. It includ
 ## Features
 
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
-- **GBA emulation** includes an ARM/Thumb interpreter, scanline graphics, keypad input and cartridge SRAM.
+- **GBA emulation** includes an ARM/Thumb interpreter, scanline graphics, keypad input and SRAM, Flash and EEPROM cartridge saves.
 - **PS1 graphics and performance options:** serial and multithreaded software rendering, optional wgpu hardware acceleration with runtime backend detection, enlarged and fullscreen views, and a CRT display filter.
 - **Desktop experience:** English and Simplified Chinese, keyboard navigation, five built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
 - **Media and saves:** ISO, BIN, multi-track CUE/BIN, and CHD CD images; two memory-card slots with automatic persistence, plus timestamped save states for returning to any saved moment.
@@ -72,9 +72,11 @@ In Game view, use the arrow keys for the D-pad, **X / Z** for A / B, **Q / E** f
 
 Press **F8** and open **Controller** to edit keyboard bindings for the selected core. Under **Graphics**, enable GBA hardware acceleration to composite layers and apply LCD color effects on the GPU. The debugger shows ARM/Thumb disassembly, registers, the stack and LCD status. **F10** steps one instruction and **F9** advances one frame.
 
-Games that use 32 KiB SRAM can save through their own menus. Eidoryn keeps these saves in `saves/gba/<ROM SHA-256>.sav` under the user data directory. Moving or renaming the ROM preserves its save.
+Save from the game's own menu to update its raw `.sav` file. Eidoryn supports SRAM (32 KiB), Flash (64 or 128 KiB) and EEPROM (512 bytes or 8 KiB). Each save lives under `saves/gba/<ROM SHA-256>.sav` in the user data directory, so moving or renaming the ROM keeps its progress. The **Cartridge save** panel in Game view can sync, export or import a save. Import restarts the cartridge and clears rewind history.
 
-The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending and VBlank interrupts. CPU and DMA timing are approximate. Audio, link cable, Flash/EEPROM saves, rewind and save states remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
+GBA uses the same **Snapshots** menu, quick slot, save-state manager and rewind controls as PS1. GBA snapshots are stored in `saves/gba/states/<ROM SHA-256>/` under the user data directory. Loading a snapshot or releasing rewind keeps the previous running or paused state. The restored timeline includes the cartridge save memory. Use **Export .sav** to keep a separate copy of in-game progress before loading an older timeline.
+
+The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending and VBlank interrupts. CPU and DMA timing are approximate. Audio and link cable support remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
 
 Run `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture` to start each local cartridge with HLE and run 1,800 frames without input. The tests read ROMs from the repository’s `tests/` folder by default. Set `EIDORYN_GBA_TEST_ROMS` to select a specific ROM or directory and `EIDORYN_GBA_BOOT_FRAMES` to change the duration.
 
@@ -154,7 +156,7 @@ Memory cards default to `saves/card1.mcd` and `saves/card2.mcd` relative to the 
 
 ### Save states
 
-Select **New snapshot** on the **Save states** page or press **Ctrl+S** to capture the current emulated machine. Each capture creates a new timestamped file in `saves/<game>/` relative to the working directory. Existing captures are retained.
+Select **New snapshot** on the **Save states** page or press **Ctrl+S** to capture the current emulated machine. Each PS1 capture creates a new timestamped file in `saves/<game>/` relative to the working directory. Existing captures are retained.
 
 In **Game view**, open **Snapshots** and select one of the current game’s three most recent snapshots to load it. Select **Manage snapshots** at the bottom of the menu, or **Save states** in the sidebar, to see the full history. Each row shows the snapshot name and time and offers load, rename, and delete actions. To permanently remove a snapshot file, select **Delete snapshot**, check its name and time, and confirm. Loading preserves the previous execution state. A running game continues, and a paused game stays paused. This restores CPU, memory, graphics, audio, device timing, disc-drive state, and connected memory-card contents together; it also works with memory cards disabled. Original disc images must remain available when restoring disc sessions. Save states use a versioned format and are not guaranteed to work across incompatible emulator versions.
 

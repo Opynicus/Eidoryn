@@ -538,7 +538,8 @@ impl Desktop {
             if !self.is_gba() {
                 self.receive_media_selection(&snapshot, cx);
             }
-            if snapshot.renamed_state != self.snapshot.renamed_state
+            if !self.is_gba()
+                && snapshot.renamed_state != self.snapshot.renamed_state
                 && let Some((old, new)) = &snapshot.renamed_state
                 && self.selected_save_state.as_ref() == Some(old)
             {

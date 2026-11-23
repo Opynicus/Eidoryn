@@ -214,3 +214,55 @@ fn input_advances_each_edition() {
         replay(rom, Some(input), checkpoints, 3600)
     });
 }
+
+#[test]
+#[ignore = "requires a locally supplied Aria of Sorrow cartridge"]
+fn restores_and_replays_each_edition() {
+    check_editions(|rom, reference| {
+        let input = reference.map_or(buttons as fn(u32) -> u16, |r| r.input);
+        let mut machine = Machine::from_rom(rom).map_err(|e| e.to_string())?;
+        for frame in 1..=360 {
+            advance(&mut machine, frame, input(frame))?;
+        }
+        let saved = machine.save_state().map_err(|e| e.to_string())?;
+        let replay = |machine: &mut Machine| {
+            for frame in 361..=390 {
+                advance(machine, frame, input(frame))?;
+            }
+            machine.save_state().map_err(|e| e.to_string())
+        };
+        let expected = replay(&mut machine)?;
+        machine.load_state(&saved).map_err(|e| e.to_string())?;
+        if replay(&mut machine)? != expected {
+            return Err("replay after restore diverged from uninterrupted execution".into());
+        }
+        Ok(())
+    });
+}
+
+#[test]
+#[ignore = "requires a locally supplied Aria of Sorrow cartridge"]
+fn game_initialized_battery_survives_cold_boot() {
+    check_editions(|rom, reference| {
+        let input = reference.map_or(buttons as fn(u32) -> u16, |r| r.input);
+        let mut cart = Machine::from_rom(rom.clone()).map_err(|e| e.to_string())?;
+        for frame in 1..=600 {
+            advance(&mut cart, frame, input(frame))?;
+        }
+        let battery = cart.battery_save();
+        if battery.len() != 32 * 1024 || !battery.iter().any(|&b| b != 0xff) {
+            return Err("game did not initialize its 32 KiB SRAM".into());
+        }
+        let mut restarted = Machine::from_rom(rom).map_err(|e| e.to_string())?;
+        restarted
+            .restore_battery_save(battery)
+            .map_err(|e| e.to_string())?;
+        for frame in 1..=300 {
+            advance(&mut restarted, frame, 0)?;
+        }
+        if restarted.battery_save() != battery {
+            return Err("cold boot changed the previously initialized SRAM".into());
+        }
+        Ok(())
+    });
+}

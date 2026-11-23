@@ -300,3 +300,151 @@ fn debugger_inspects_and_steps_the_selected_cartridge(cx: &mut TestAppContext) {
     assert!(view.read_with(cx, |v, _| !v.gba.capturing_debug
         && v.gba.snapshot.debug.is_none()));
 }
+
+fn cartridge_window<'a>(
+    cx: &'a mut TestAppContext,
+    dir: &Path,
+    record_rewind: bool,
+) -> (gpui::Entity<Desktop>, &'a mut VisualTestContext) {
+    let rom = dir.join("Game.gba");
+    fixture::write_cartridge(&rom);
+    let library = Library::open(&dir.join("games.sqlite")).unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    cx.simulate_resize(size(px(1280.), px(1050.)));
+    view.update(cx, |v, cx| {
+        v.preferences_path = Some(dir.join("settings.json"));
+        v.preferences.rewind_enabled = record_rewind;
+        v.library = Workspace::new(Some(library));
+        v.open_gba(rom, "Game".into(), cx);
+    });
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.rgb.starts_with(&[0, 0, 255]));
+    (view, cx)
+}
+
+#[gpui::test]
+fn gba_quick_slot_history_and_rewind_follow_the_selected_core(cx: &mut TestAppContext) {
+    use eidoryn_psx::systems::checkpoints::QuickSlot;
+    let temp = tempfile::tempdir().unwrap();
+    let (view, cx) = cartridge_window(cx, temp.path(), true);
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.rewind_states > 0);
+    cx.simulate_keystrokes("ctrl-z");
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.rewinding);
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("ctrl-z").unwrap(),
+    });
+    wait_for_gba(&view, cx, |v| {
+        v.rewind_sources == 0 && !v.gba.snapshot.rewinding && v.running()
+    });
+    press_keys(cx, "f5");
+    wait_for_gba(&view, cx, |v| !v.running());
+    click_control(cx, "quick-save");
+    wait_for_gba(&view, cx, |v| {
+        matches!(v.gba.snapshot.quick_slot, QuickSlot::Saved(_))
+    });
+    press_keys(cx, "ctrl-s");
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.save_states.len() == 1);
+    click_control(cx, "manage-states");
+    assert!(cx.debug_bounds("recent-snapshot-0").is_some());
+    click_control(cx, "manage-all-snapshots");
+    assert!(cx.debug_bounds("load-snapshot-0").is_some());
+    click_control(cx, "core-ps1");
+    assert_eq!(view.read_with(cx, |v, _| v.page), WorkspacePage::SaveStates);
+    assert!(cx.debug_bounds("load-snapshot-0").is_none());
+    click_control(cx, "core-gba");
+    click_control(cx, "quick-load");
+    wait_for_gba(&view, cx, |v| {
+        v.gba
+            .snapshot
+            .success_message
+            .as_deref()
+            .is_some_and(|s| s.contains("Loaded"))
+    });
+    assert!(!view.read_with(cx, |v, _| v.running()));
+    click_control(cx, "delete-snapshot-0");
+    click_control(cx, "confirm-delete-snapshot");
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.save_states.is_empty());
+}
+
+#[gpui::test]
+fn cartridge_save_controls_sync_export_and_confirm_import(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let (view, cx) = cartridge_window(cx, temp.path(), false);
+    let sav = view.read_with(cx, |v, _| v.gba.snapshot.battery_path.clone().unwrap());
+    click_control(cx, "gba-sync-save");
+    wait_for_gba(&view, cx, |_| sav.is_file());
+    let original = std::fs::read(&sav).unwrap();
+    assert_eq!(original.len(), 32 * 1024);
+    let exported = temp.path().join("portable.sav");
+    click_control(cx, "gba-export-save");
+    cx.simulate_new_path_selection(|_| Some(exported.clone()));
+    wait_for_gba(&view, cx, |_| exported.is_file());
+    assert_eq!(std::fs::read(&exported).unwrap(), original);
+    let mut replacement = original.clone();
+    replacement[0] = 7;
+    replacement[321] = 0x42;
+    std::fs::write(&exported, replacement).unwrap();
+    for confirm in [false, true] {
+        click_control(cx, "gba-import-save");
+        cx.simulate_path_prompt_response(|_| Some(vec![exported.clone()]));
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+        let text = view.read_with(cx, |v, _| {
+            v.tr(if confirm {
+                eidoryn_psx::i18n::Text::ImportCartridgeSave
+            } else {
+                eidoryn_psx::i18n::Text::RenameCancel
+            })
+        });
+        cx.simulate_prompt_answer(text);
+        cx.run_until_parked();
+        if !confirm {
+            assert_eq!(std::fs::read(&sav).unwrap(), original);
+        }
+    }
+    wait_for_gba(&view, cx, |v| {
+        v.gba.snapshot.rgb.get(3..6) == Some(&[66, 0, 0])
+    });
+    assert_eq!(std::fs::read(sav).unwrap()[321], 0x42);
+}
+
+#[gpui::test]
+fn legacy_gba_button_keeps_priority_over_a_new_snapshot_shortcut(cx: &mut TestAppContext) {
+    use eidoryn_psx::{keybindings::GbaButton, shortcuts::ShortcutAction};
+    let temp = tempfile::tempdir().unwrap();
+    let (view, cx) = cartridge_window(cx, temp.path(), false);
+    view.update(cx, |v, _| {
+        v.preferences
+            .gba_keybindings
+            .rebind(GbaButton::A, "j")
+            .unwrap();
+        v.preferences.shortcuts.set(
+            ShortcutAction::Snapshot,
+            Some("j".to_owned().try_into().unwrap()),
+        );
+        v.preferences
+            .save(&temp.path().join("settings.json"))
+            .unwrap();
+    });
+    cx.simulate_keystrokes("j");
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.rgb.starts_with(&[255, 0, 0]));
+    assert!(view.read_with(cx, |v, _| v.gba.snapshot.save_states.is_empty()));
+}
+
+#[gpui::test]
+fn switching_cores_while_importing_keeps_the_original_save(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let (view, cx) = cartridge_window(cx, temp.path(), false);
+    let sav = view.read_with(cx, |v, _| v.gba.snapshot.battery_path.clone().unwrap());
+    click_control(cx, "gba-sync-save");
+    wait_for_gba(&view, cx, |_| sav.is_file());
+    let original = std::fs::read(&sav).unwrap();
+    let replacement = temp.path().join("another.sav");
+    std::fs::write(&replacement, vec![55; original.len()]).unwrap();
+    click_control(cx, "gba-import-save");
+    click_control(cx, "core-ps1");
+    click_control(cx, "core-gba");
+    cx.simulate_path_prompt_response(|_| Some(vec![replacement]));
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(std::fs::read(sav).unwrap(), original);
+}

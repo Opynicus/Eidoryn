@@ -55,7 +55,31 @@ impl Desktop {
     }
 
     pub(super) fn command(&mut self, command: Command, cx: &mut Context<Self>) {
-        if self.closing() || self.is_gba() && !matches!(command, Command::RequestClose) {
+        if self.closing() {
+            return;
+        }
+        if self.is_gba() && !matches!(command, Command::RequestClose) {
+            use eidoryn_psx::systems::gba::Command as Gba;
+            let action = match command {
+                Command::SaveState => Gba::SaveState,
+                Command::QuickSave => Gba::QuickSave,
+                Command::QuickSaveIfUnchanged { revision, slot } => {
+                    Gba::QuickSaveIfUnchanged { revision, slot }
+                }
+                Command::QuickLoad => Gba::QuickLoad,
+                Command::LoadState { path } => Gba::LoadState { path },
+                Command::RenameState { path, name } => Gba::RenameState { path, name },
+                Command::DeleteState { path, modified } => Gba::DeleteState { path, modified },
+                Command::RefreshSaveStates => Gba::RefreshSaveStates,
+                Command::SetRewinding(held) => Gba::SetRewinding(held),
+                _ => return,
+            };
+            if !matches!(action, Gba::SetRewinding(_)) {
+                self.stop_rewind(cx);
+            }
+            self.notice = None;
+            self.gba_command(action, cx);
+            cx.notify();
             return;
         }
         if matches!(command, Command::Toggle)
@@ -108,13 +132,13 @@ impl Desktop {
         }
     }
     pub(super) fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.is_gba() {
-            self.gba_key(&event.keystroke.key, false, cx);
-            return;
-        }
         if self.rewind_sources != 0 {
             let stroke = shortcut_keystroke(&event.keystroke, cx);
             self.release_rewind_key(Some(&stroke.key), stroke.modifiers, cx);
+        }
+        if self.is_gba() {
+            self.gba_key(&event.keystroke.key, false, cx);
+            return;
         }
         if let Some(button) = self.preferences.keybindings.button(&event.keystroke.key)
             && self.pressed_buttons & button.mask() != 0
@@ -279,7 +303,7 @@ impl Desktop {
             }
             return;
         }
-        let modifiers = &event.keystroke.modifiers;
+        let modifiers = event.keystroke.modifiers;
         // A focused control owns its ordinary navigation and activation keys.
         let control_key = !self.focus.is_focused(window)
             && !modifiers.modified()
@@ -302,7 +326,10 @@ impl Desktop {
             }
             return;
         }
-        if let Some(action) = action.filter(|a| self.supports_shortcut(*a)) {
+        // Preserve the controller binding in profiles created when these shortcuts
+        // only applied to PS1. The editor prevents new conflicts on either core.
+        let gba_button = self.accepts_gba_button(key, modifiers);
+        if let Some(action) = action.filter(|a| !(gba_button && a.is_checkpoint())) {
             self.run_shortcut(action, window, cx);
             cx.stop_propagation();
             return;
@@ -333,9 +360,7 @@ impl Desktop {
             }
         }
         if self.is_gba() {
-            if !modifiers.modified()
-                && (self.page == WorkspacePage::Game || self.presentation.shows_video())
-            {
+            if gba_button {
                 self.gba_key(key, true, cx);
             }
             return;

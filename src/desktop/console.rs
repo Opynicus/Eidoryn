@@ -272,7 +272,7 @@ impl Desktop {
     }
 
     pub(super) fn play_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let (text, symbol) = if !self.is_gba() && self.snapshot.rewinding {
+        let (text, symbol) = if self.rewinding() {
             (Text::EndRewind, "pause")
         } else if self.running() {
             (Text::Pause, "pause")
@@ -288,7 +288,7 @@ impl Desktop {
             true,
         )
         .debug_selector(|| "transport-run".into())
-        .when(self.snapshot.rewinding, |b| b.tab_index(-1))
+        .when(self.rewinding(), |b| b.tab_index(-1))
         .on_click(cx.listener(|view, _, _, cx| view.toggle_playback(cx)))
     }
 
@@ -354,22 +354,23 @@ impl Desktop {
                             .when(!stacked, |sidebar| {
                                 sidebar.w(px(side_width)).flex_shrink_0()
                             })
-                            .when(self.is_gba(), |s| s.child(self.gba_controller_card(cx)))
-                            .when(!self.is_gba(), |s| {
-                                s.child(self.quick_slot_card())
+                            .child(self.quick_slot_card())
+                            .child(
+                                card(p)
+                                    .p_4()
+                                    .gap_3()
                                     .child(
-                                        card(p)
-                                            .p_4()
-                                            .gap_3()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font(self.fonts.semibold())
-                                                    .child(self.tr(Text::Rewind)),
-                                            )
-                                            .child(self.rewind_controls(cx)),
+                                        div()
+                                            .text_sm()
+                                            .font(self.fonts.semibold())
+                                            .child(self.tr(Text::Rewind)),
                                     )
-                                    .child(self.memory_card(cx))
+                                    .child(self.rewind_controls(cx)),
+                            )
+                            .when(!self.is_gba(), |s| s.child(self.memory_card(cx)))
+                            .when(self.is_gba(), |s| {
+                                s.child(self.gba_battery_card(cx))
+                                    .child(self.gba_controller_card(cx))
                             }),
                     ),
             )
@@ -389,10 +390,8 @@ impl Desktop {
                     .items_center()
                     .gap_2()
                     .child(self.play_button(cx))
-                    .when(!self.is_gba(), |s| {
-                        s.child(self.quick_state_controls(cx))
-                            .child(self.snapshot_menu_button(cx))
-                    }),
+                    .child(self.quick_state_controls(cx))
+                    .child(self.snapshot_menu_button(cx)),
             )
             .child(
                 div()

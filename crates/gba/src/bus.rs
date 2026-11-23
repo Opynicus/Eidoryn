@@ -1,3 +1,4 @@
+use crate::backup::Backup;
 use crate::cpu::Bus;
 use crate::video::{Video, half};
 use crate::{BIOS_LEN, HEIGHT};
@@ -10,37 +11,41 @@ pub(super) const LINES: u16 = 228;
 const DMA_BASE: usize = 0xb0;
 const TIMER_BASE: usize = 0x100;
 const TIMER_DIVISORS: [u32; 4] = [1, 64, 256, 1024];
-const SRAM_MASK: usize = 0x7fff;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 struct Timer {
     count: u16,
     fraction: u32,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 struct Dma {
     src: u32,
     dst: u32,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct InstructionFetch {
     in_bios: bool,
     bios_latch: [u8; 4],
     cartridge_started: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct Memory {
+    #[serde(skip)]
     rom: Vec<u8>,
+    #[serde(skip)]
     bios: Option<Box<[u8]>>,
     fetch: InstructionFetch,
+    #[serde(with = "serde_bytes")]
     ewram: Box<[u8]>,
+    #[serde(with = "serde_bytes")]
     iwram: Box<[u8]>,
     pub video: Video,
+    #[serde(with = "serde_bytes")]
     io: [u8; 1024],
-    pub sram: Box<[u8]>,
-    pub sram_dirty: bool,
+    pub(super) backup: Backup,
     pub line: u16,
     pub cycle: u32,
     pub halted: bool,
@@ -51,6 +56,33 @@ pub(super) struct Memory {
 }
 
 impl Memory {
+    pub(super) fn valid_snapshot_for(&self, live: &Self) -> bool {
+        self.ewram.len() == live.ewram.len()
+            && self.iwram.len() == live.iwram.len()
+            && self.video.vram.len() == live.video.vram.len()
+            && self.video.palette.len() == live.video.palette.len()
+            && self.video.oam.len() == live.video.oam.len()
+            && self.line < LINES
+            && self.cycle < SCANLINE
+            && !self.dma_busy
+            && self.timers.iter().enumerate().all(|(i, timer)| {
+                let control = self.io[TIMER_BASE + 4 * i + 2];
+                timer.fraction < TIMER_DIVISORS[usize::from(control & 3)]
+                    && (self.enabled_timers & (1 << i) != 0) == (control & 0x80 != 0)
+            })
+            && self.backup.valid_for(&live.backup)
+    }
+
+    /// Attach the live cartridge, firmware and presentation backend after validation.
+    pub(super) fn attach_session(&mut self, live: &mut Self) {
+        self.rom = std::mem::take(&mut live.rom);
+        self.bios = live.bios.take();
+        self.backup.reconcile_dirty(&live.backup);
+        #[cfg(feature = "gpu")]
+        self.video.retain_renderer(&mut live.video);
+        self.video.graphics_error = live.video.graphics_error.take();
+    }
+
     pub fn new(rom: Vec<u8>) -> Self {
         let mut io = [0; 1024];
         io[0] = 0x80;
@@ -60,6 +92,7 @@ impl Memory {
         }
         io[0x130..0x132].copy_from_slice(&0x3ff_u16.to_le_bytes());
         io[0x300] = 1; // Direct cartridge entry occurs after POST.
+        let backup = Backup::detect(&rom);
         Self {
             rom,
             bios: None,
@@ -68,8 +101,7 @@ impl Memory {
             iwram: vec![0; 32 * 1024].into_boxed_slice(),
             video: Video::new(),
             io,
-            sram: vec![0xff; SRAM_MASK + 1].into_boxed_slice(),
-            sram_dirty: false,
+            backup,
             line: 0,
             cycle: 0,
             halted: false,
@@ -117,8 +149,8 @@ impl Memory {
         if let Some(bios) = self.bios.take() {
             fresh.install_bios(bios);
         }
-        std::mem::swap(&mut self.sram, &mut fresh.sram);
-        fresh.sram_dirty = self.sram_dirty;
+        self.backup.reset_protocol();
+        std::mem::swap(&mut self.backup, &mut fresh.backup);
         #[cfg(feature = "gpu")]
         fresh.video.retain_renderer(&mut self.video);
         *self = fresh;
@@ -172,6 +204,7 @@ impl Memory {
     }
 
     pub fn tick(&mut self, cycles: u32) {
+        self.backup.tick(cycles);
         if self.enabled_timers != 0 {
             self.tick_timers(cycles);
         }
@@ -287,14 +320,34 @@ impl Memory {
         let dst_mode = (control >> 5) & 3;
         let dst_step = step(dst_mode);
         let mut latch = self.dma[channel];
-        for _ in 0..if count == 0 { mask + 1 } else { count } {
-            if width == 4 {
-                self.write32(latch.dst, self.read32(latch.src));
-            } else {
-                self.write16(latch.dst, self.read16(latch.src));
+        if channel == 3
+            && width == 2
+            && self.eeprom_port(latch.dst)
+            && matches!(count, 9 | 17 | 73 | 81)
+        {
+            let mut bits = [0; 81];
+            for bit in &mut bits[..count as usize] {
+                *bit = (self.read16(latch.src) & 1) as u8;
+                latch.src = latch.src.wrapping_add(src_step);
+                latch.dst = latch.dst.wrapping_add(dst_step);
             }
-            latch.dst = latch.dst.wrapping_add(dst_step);
-            latch.src = latch.src.wrapping_add(src_step);
+            self.backup.eeprom_command(&bits[..count as usize]);
+        } else {
+            let eeprom_read = channel == 3 && width == 2 && self.eeprom_port(latch.src);
+            for _ in 0..if count == 0 { mask + 1 } else { count } {
+                if width == 4 {
+                    self.write32(latch.dst, self.read32(latch.src));
+                } else {
+                    let value = if eeprom_read {
+                        self.backup.read_eeprom_bit()
+                    } else {
+                        self.read16(latch.src)
+                    };
+                    self.write16(latch.dst, value);
+                }
+                latch.dst = latch.dst.wrapping_add(dst_step);
+                latch.src = latch.src.wrapping_add(src_step);
+            }
         }
         if dst_mode == 3 {
             latch.dst = self.dma[channel].dst;
@@ -423,6 +476,12 @@ impl Memory {
         self.io[0] = 0x80;
     }
 
+    fn eeprom_port(&self, addr: u32) -> bool {
+        addr >> 24 == 13
+            && (self.rom.len() <= 0x100_0000 || addr >= 0x0dff_ff00)
+            && self.backup.is_eeprom()
+    }
+
     fn store(&mut self, address: u32, value: u8) {
         let addr = address as usize;
         match addr >> 24 {
@@ -432,11 +491,7 @@ impl Memory {
             5 => self.video.palette[addr & 1023] = value,
             6 => self.video.vram[vram_offset(addr)] = value,
             7 => self.video.oam[addr & 1023] = value,
-            14 | 15 => {
-                let cell = &mut self.sram[addr & SRAM_MASK];
-                self.sram_dirty |= *cell != value;
-                *cell = value;
-            }
+            14 | 15 => self.backup.write_parallel(address as u16, value),
             _ => {}
         }
     }
@@ -491,12 +546,15 @@ impl Bus for Memory {
             5 => self.video.palette[addr & 1023],
             6 => self.video.vram[vram_offset(addr)],
             7 => self.video.oam[addr & 1023],
+            13 if self.eeprom_port(address) => {
+                (self.backup.peek_eeprom_bit() >> ((addr & 1) * 8)) as u8
+            }
             8..=13 => self
                 .rom
                 .get(addr & 0x01ff_ffff)
                 .copied()
                 .unwrap_or_else(|| ((addr >> 1) as u16).to_le_bytes()[addr & 1]),
-            14 | 15 => self.sram[addr & SRAM_MASK],
+            14 | 15 => self.backup.read_parallel(address as u16),
             _ => 0,
         }
     }

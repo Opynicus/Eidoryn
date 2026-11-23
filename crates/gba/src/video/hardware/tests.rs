@@ -105,3 +105,37 @@ fn local_cartridge_lcd_matches_software_across_live_switches() {
     }
     assert!(displayed, "expected a visible game scene during the test");
 }
+
+#[test]
+#[ignore = "requires a compute adapter (software adapters are sufficient)"]
+fn mid_field_snapshot_preserves_deferred_rows_and_the_active_renderer() {
+    let machine = || crate::Machine::from_rom(vec![0; crate::HEADER_LEN]).unwrap();
+    let mut reference = machine();
+    let mut accelerated = machine();
+    let adapter = adapters().into_iter().next().expect("compute adapter");
+    let compositor = Compositor::from_adapter(&adapter).unwrap();
+    let device = compositor.name.clone();
+    accelerated.memory.video.accelerator = Some(compositor);
+
+    for console in [&mut reference, &mut accelerated] {
+        console.memory.halted = true;
+        console.step().unwrap(); // first HBlank; scanline zero has been drawn
+    }
+    assert_ne!(&accelerated.pixels()[..3], &reference.pixels()[..3]);
+    let state = accelerated.save_state().unwrap();
+    assert_eq!(state, reference.save_state().unwrap());
+    accelerated.run_frame().unwrap();
+    accelerated.load_state(&state).unwrap();
+    assert_eq!(accelerated.graphics_device(), Some(device.as_str()));
+    assert_eq!(accelerated.pixels(), reference.pixels());
+
+    for _ in 0..2 {
+        accelerated.run_frame().unwrap();
+        reference.run_frame().unwrap();
+        assert_eq!(
+            accelerated.save_state().unwrap(),
+            reference.save_state().unwrap()
+        );
+        assert!(accelerated.take_graphics_error().is_none());
+    }
+}

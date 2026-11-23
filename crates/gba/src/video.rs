@@ -6,13 +6,20 @@ mod tests;
 use crate::{HEIGHT, WIDTH};
 use compositor::{Effects, OBJ, Pixel, Stack, window_masks};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct Video {
+    #[serde(with = "serde_bytes")]
     pub palette: Box<[u8]>,
+    #[serde(with = "serde_bytes")]
     pub vram: Box<[u8]>,
+    #[serde(with = "serde_bytes")]
     pub oam: Box<[u8]>,
+    #[serde(skip)]
     pub pixels: Box<[u8]>,
     #[cfg(feature = "gpu")]
+    #[serde(skip)]
     accelerator: Option<hardware::Compositor>,
+    #[serde(skip)]
     pub graphics_error: Option<String>,
     affine_origin: [[i32; 2]; 2],
 }
@@ -70,6 +77,17 @@ fn background_line(
 }
 
 impl Video {
+    /// Materialize scanlines still held by the GPU when saving mid-field in the debugger.
+    pub(super) fn append_snapshot_pixels(&self, bytes: &mut Vec<u8>) {
+        #[cfg(feature = "gpu")]
+        let start = bytes.len();
+        bytes.extend_from_slice(&self.pixels);
+        #[cfg(feature = "gpu")]
+        if let Some(accelerator) = &self.accelerator {
+            accelerator.finish_in_software(&mut bytes[start..]);
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             palette: vec![0; 1024].into_boxed_slice(),
@@ -100,6 +118,10 @@ impl Video {
         Ok(())
     }
 
+    #[cfg_attr(
+        not(feature = "gpu"),
+        expect(clippy::unused_self, reason = "the compositor is compiled out")
+    )]
     pub fn graphics_device(&self) -> Option<&str> {
         #[cfg(feature = "gpu")]
         return self.accelerator.as_ref().map(|a| a.name.as_str());

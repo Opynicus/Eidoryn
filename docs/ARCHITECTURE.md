@@ -8,7 +8,7 @@ Eidoryn (CLI / GPUI)
 │   ├── eidoryn-ps1              CPU / Bus / GPU / SPU / CD-ROM / SIO 等硬件
 │   │   └── eidoryn-jit-runtime  可选原生执行边界
 │   └── eidoryn-host::audio      有界 PCM 传输
-├── systems::gba ── eidoryn-gba  卡带、运行线程与 SRAM 文件 / ARM7TDMI、总线与显示
+├── systems::gba ── eidoryn-gba  卡带、运行线程与 SAV 文件 / ARM7TDMI、总线与显示
 └── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
@@ -17,7 +17,7 @@ Eidoryn (CLI / GPUI)
 | 位置 | 职责 |
 | --- | --- |
 | `crates/gba/` | 独立 GBA 硬件核心，按扫描线采集图层与窗口状态，可用 GPU 合成 RGB 帧；按需读取 ARM7TDMI、栈和 LCD 调试快照 |
-| `src/systems/gba.rs`、`src/library/playtime.rs` | GBA 的运行与 SRAM 持久化，以及两种平台共用的游玩时长记录 |
+| `src/systems/gba.rs`、`src/library/playtime.rs` | GBA 运行、卡带存档、快照和倒带，以及两种平台共用的游玩时长记录 |
 | `crates/ps1/src/{cpu,bus,machine}.rs` | MIPS CPU、总线、机器状态与执行；DMA 位于 `bus/dma.rs` |
 | `crates/ps1/src/cpu_engine.rs`、`cpu/jit.rs` | 解释器/JIT 选择、缓存及逐指令异常/中断/代码失效检查 |
 | `crates/ps1/src/gpu/` | 自主软件光栅器、多线程绘图、共享 wgpu 计算管线与 WGSL；GP0/GP1 和显示时序位于 `gpu.rs` |

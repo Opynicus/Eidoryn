@@ -3,6 +3,7 @@ use super::{
     components::{button, ghost_button, label, pair, shortcut},
     graphics::switch,
 };
+use eidoryn_psx::systems::gba::Command as GbaCommand;
 use eidoryn_psx::{
     i18n::Text,
     shortcuts::ShortcutAction,
@@ -15,9 +16,44 @@ pub(super) enum RewindSource {
     Mouse = 2,
 }
 
+struct RewindStatus {
+    enabled: bool,
+    states: usize,
+    seconds: f64,
+    max_seconds: u16,
+}
+
 impl Desktop {
+    pub(super) fn rewinding(&self) -> bool {
+        if self.is_gba() {
+            self.gba.snapshot.rewinding
+        } else {
+            self.snapshot.rewinding
+        }
+    }
+
+    fn rewind_status(&self) -> RewindStatus {
+        if self.is_gba() {
+            let state = &self.gba.snapshot;
+            RewindStatus {
+                enabled: state.rewind_enabled,
+                states: state.rewind_states,
+                seconds: state.rewind_seconds,
+                max_seconds: state.rewind_max_seconds,
+            }
+        } else {
+            let state = &self.snapshot;
+            RewindStatus {
+                enabled: state.rewind_enabled,
+                states: state.rewind_states,
+                seconds: state.rewind_seconds,
+                max_seconds: state.rewind_max_seconds,
+            }
+        }
+    }
+
     pub(super) fn hold_rewind(&mut self, source: RewindSource, held: bool, cx: &mut Context<Self>) {
-        if held && !self.snapshot.rewind_enabled {
+        if held && !self.rewind_status().enabled {
             return;
         }
         let was_held = self.rewind_sources != 0;
@@ -33,7 +69,7 @@ impl Desktop {
     }
 
     pub(super) fn stop_rewind(&mut self, cx: &mut Context<Self>) {
-        if self.rewind_sources != 0 || self.snapshot.rewinding {
+        if self.rewind_sources != 0 || self.rewinding() {
             self.rewind_sources = 0;
             self.command(Command::SetRewinding(false), cx);
         }
@@ -41,23 +77,23 @@ impl Desktop {
 
     pub(super) fn rewind_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let enabled = self.snapshot.rewind_enabled;
-        let available = enabled && (self.snapshot.rewind_states > 0 || self.snapshot.rewinding);
-        let status = if self.snapshot.rewinding {
+        let history = self.rewind_status();
+        let enabled = history.enabled;
+        let available = enabled && (history.states > 0 || self.rewinding());
+        let status = if self.rewinding() {
             self.tr(Text::Rewinding).to_owned()
         } else if !enabled {
             self.tr(Text::RewindDisabled).to_owned()
-        } else if self.snapshot.rewind_states == 0 {
+        } else if history.states == 0 {
             self.tr(Text::RewindBuffering).to_owned()
         } else {
             format!(
                 "{} {:.1} s",
                 self.tr(Text::RewindAvailable),
-                self.snapshot.rewind_seconds
+                history.seconds
             )
         };
-        let fraction =
-            self.snapshot.rewind_seconds / f64::from(self.snapshot.rewind_max_seconds.max(1));
+        let fraction = history.seconds / f64::from(history.max_seconds.max(1));
         div()
             .flex()
             .flex_col()
@@ -84,7 +120,7 @@ impl Desktop {
                     "rewind-hold",
                     self.shortcut_label(self.tr(Text::RewindHold), ShortcutAction::Rewind, None)
                         .hint(),
-                    self.snapshot.rewinding,
+                    self.rewinding(),
                 )
                 .debug_selector(|| "rewind-hold".into())
                 .tab_index(-1)
@@ -229,6 +265,7 @@ impl Desktop {
             Ok(()) => {
                 self.preferences.rewind_enabled = enabled;
                 self.notice = None;
+                self.gba_command(GbaCommand::SetRewindEnabled(enabled), cx);
                 self.save_preferences();
             }
             Err(error) => self.notice = Some(error),
@@ -246,7 +283,7 @@ impl Desktop {
             .child(pair(
                 p,
                 self.tr(Text::RewindAvailable),
-                format!("{:.1} s", self.snapshot.rewind_seconds),
+                format!("{:.1} s", self.rewind_status().seconds),
             ))
             .child(label(p, self.tr(Text::RewindDurationHint)))
             .child(
@@ -281,6 +318,10 @@ impl Desktop {
                                             Ok(()) => {
                                                 view.preferences.rewind_seconds = next;
                                                 view.notice = None;
+                                                view.gba_command(
+                                                    GbaCommand::SetRewindSeconds(next),
+                                                    cx,
+                                                );
                                                 view.save_preferences();
                                             }
                                             Err(error) => view.notice = Some(error),

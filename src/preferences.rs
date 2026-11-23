@@ -234,11 +234,17 @@ impl Preferences {
         self.keybindings.validate()?;
         self.gba_keybindings.validate()?;
         self.shortcuts.validate(&self.keybindings)?;
-        // Old profiles allowed shortcuts to shadow the fixed GBA layout.
+        // Older profiles allowed the fixed GBA layout to overlap any shortcut, and
+        // custom layouts to reuse keys that only controlled PS1 checkpoints.
         if self.gba_keybindings != GbaKeyBindings::default()
-            && self
-                .shortcuts
-                .gba_controller_conflict(&self.gba_keybindings)
+            && crate::shortcuts::ShortcutAction::ALL
+                .into_iter()
+                .any(|action| {
+                    !action.is_checkpoint()
+                        && self.shortcuts.binding(action).is_some_and(|chord| {
+                            chord.pad_conflict(&self.gba_keybindings).is_some()
+                        })
+                })
         {
             return Err("GBA controller key conflicts with an application shortcut".into());
         }

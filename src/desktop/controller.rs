@@ -187,7 +187,6 @@ impl Desktop {
     ) -> Vec<(B, String)> {
         let occupied: Vec<_> = ShortcutAction::ALL
             .into_iter()
-            .filter(|&action| self.supports_shortcut(action))
             .filter_map(|action| {
                 let chord = self.preferences.shortcuts.binding(action)?;
                 Some((chord.pad_conflict(bindings)?, self.tr(action_title(action))))

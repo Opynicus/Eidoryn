@@ -1,5 +1,6 @@
 //! A Game Boy Advance core with built-in BIOS services. The host supplies cartridge
-//! bytes, pressed keys and frame pacing, and owns persistence of the cartridge SRAM.
+//! bytes, pressed keys and frame pacing, and owns persistence of the cartridge save chip.
+mod backup;
 mod bios_affine;
 mod bios_math;
 mod bus;
@@ -7,18 +8,22 @@ mod compression;
 mod cpu;
 pub mod debug;
 mod hle;
+mod state;
 mod video;
 
 use std::fmt;
 
 use bus::{LINES, Memory, SCANLINE};
 use cpu::{Bus, Cpu, Step};
+use sha2::{Digest, Sha256};
+pub use state::{MAX_STATE_BYTES, StateError};
 
 /// Whether this build includes a GPU compositor. Adapter availability is checked at activation.
 pub const GPU_COMPILED: bool = cfg!(feature = "gpu");
 pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 160;
 pub const HEADER_LEN: usize = 0xc0;
+pub const MAX_BATTERY_LEN: usize = backup::MAX_SIZE;
 pub const MAX_ROM_LEN: usize = 32 * 1024 * 1024;
 /// Size in bytes of the GBA boot ROM mapped at address zero.
 pub const BIOS_LEN: usize = 16 * 1024;
@@ -37,6 +42,10 @@ pub enum Error {
     BlankBios,
     InvalidRomSize(usize),
     InvalidSramSize(usize),
+    InvalidBatterySize {
+        size: usize,
+        expected: &'static str,
+    },
     Cpu(String),
     InvalidCompressedData(&'static str),
     UnsupportedBiosCall {
@@ -61,6 +70,10 @@ impl fmt::Display for Error {
             Self::InvalidSramSize(size) => write!(
                 formatter,
                 "Invalid GBA SRAM length ({size} bytes, expected 32 KiB)"
+            ),
+            Self::InvalidBatterySize { size, expected } => write!(
+                formatter,
+                "Invalid GBA battery save length ({size} bytes, expected {expected})"
             ),
             Self::InvalidCompressedData(reason) => {
                 write!(formatter, "Invalid compressed GBA data ({reason})")
@@ -99,6 +112,8 @@ pub fn validate_bios(bios: &[u8]) -> Result<(), Error> {
 
 /// One cartridge session, including CPU, memory, LCD state, keypad and save RAM.
 pub struct Machine {
+    rom_digest: [u8; 32],
+    bios_digest: Option<[u8; 32]>,
     cpu: Cpu,
     memory: Memory,
     bios_wait: Option<u16>,
@@ -109,6 +124,7 @@ impl Machine {
     pub fn with_bios(rom: Vec<u8>, bios: Vec<u8>) -> Result<Self, Error> {
         validate_bios(&bios)?;
         let mut machine = Self::from_rom(rom)?;
+        machine.bios_digest = Some(Sha256::digest(&bios).into());
         machine.memory.install_bios(bios.into_boxed_slice());
         machine.cpu = Cpu::power_on();
         Ok(machine)
@@ -120,13 +136,15 @@ impl Machine {
             return Err(Error::InvalidRomSize(rom.len()));
         }
         Ok(Self {
+            rom_digest: Sha256::digest(&rom).into(),
+            bios_digest: None,
             cpu: Cpu::default(),
             memory: Memory::new(rom),
             bios_wait: None,
         })
     }
 
-    /// Reboots through the same firmware or direct-entry mode and retains battery-backed SRAM.
+    /// Reboots through the same firmware or direct-entry mode and retains battery save data.
     pub fn reset(&mut self) {
         self.cpu = if self.memory.has_bios() {
             Cpu::power_on()
@@ -157,6 +175,11 @@ impl Machine {
         &self.memory.video.pixels
     }
 
+    /// SHA-256 of the loaded cartridge, shared by snapshot checks and host storage paths.
+    pub fn rom_digest(&self) -> &[u8; 32] {
+        &self.rom_digest
+    }
+
     /// Whether the CPU has fetched a Game Pak ROM instruction since the last reset.
     pub fn cartridge_started(&self) -> bool {
         self.memory.cartridge_started()
@@ -167,24 +190,39 @@ impl Machine {
         self.memory.set_buttons(pressed);
     }
 
-    /// Raw 32 KiB SRAM image suitable for an on-disk battery save.
-    pub fn sram(&self) -> &[u8] {
-        &self.memory.sram
+    /// Raw, headerless battery image in the currently loaded cartridge's format.
+    pub fn battery_save(&self) -> &[u8] {
+        self.memory.backup.bytes()
     }
 
-    /// Loads a complete battery save. A length mismatch preserves the previous image.
-    pub fn restore_sram(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        if bytes.len() != self.memory.sram.len() {
-            return Err(Error::InvalidSramSize(bytes.len()));
-        }
-        self.memory.sram.copy_from_slice(bytes);
-        self.memory.sram_dirty = false;
-        Ok(())
+    /// Checks the file size against the cartridge chip; EEPROM supports two capacities.
+    pub fn validate_battery_size(&self, size: usize) -> Result<(), Error> {
+        self.memory.backup.validate_size(size)
+    }
+
+    /// Installs a complete battery image and resets the chip's command interface.
+    pub fn restore_battery_save(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.memory.backup.restore(bytes)
     }
 
     /// Reports writes since the previous poll or successful restore.
+    pub fn take_battery_dirty(&mut self) -> bool {
+        self.memory.backup.take_dirty()
+    }
+
+    /// Compatibility accessor for hosts using the original SRAM-only interface.
+    pub fn sram(&self) -> &[u8] {
+        self.battery_save()
+    }
+
+    /// Compatibility loader for hosts using the original SRAM-only interface.
+    pub fn restore_sram(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.restore_battery_save(bytes)
+    }
+
+    /// Compatibility notification for hosts using the original SRAM-only interface.
     pub fn take_sram_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.memory.sram_dirty)
+        self.take_battery_dirty()
     }
 
     /// Advances 228 scanlines. CPU instruction timing is approximate.

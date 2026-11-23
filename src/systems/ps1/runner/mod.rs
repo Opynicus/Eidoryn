@@ -34,9 +34,9 @@ impl QuickSlot {
     }
 }
 
-pub const MIN_REWIND_SECONDS: u16 = 5;
-pub const MAX_REWIND_SECONDS: u16 = 120;
-pub const DEFAULT_REWIND_SECONDS: u16 = 30;
+pub use crate::systems::checkpoints::{
+    DEFAULT_REWIND_SECONDS, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS,
+};
 
 pub enum Command {
     /// Enable persistent statistics only for an interactive desktop session.

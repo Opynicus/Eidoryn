@@ -84,8 +84,7 @@ fn unsupported_bios_call_reports_the_guest_instruction_in_both_encodings() {
     }
 }
 
-#[test]
-fn vblank_wait_dispatches_the_cartridge_handler_once_per_frame() {
+fn vblank_counter_rom() -> Vec<u8> {
     // The cartridge installs a handler, enables the LCD interrupt and waits
     // with SWI 05. Its handler acknowledges IF and sets the BIOS work-RAM flag.
     let mut rom = vec![0; HEADER_LEN];
@@ -117,9 +116,34 @@ fn vblank_wait_dispatches_the_cartridge_handler_once_per_frame() {
     ] {
         rom.extend(word.to_le_bytes());
     }
-    let mut machine = Machine::from_rom(rom).unwrap();
+    rom
+}
+
+#[test]
+fn vblank_wait_dispatches_the_cartridge_handler_once_per_frame() {
+    let mut machine = Machine::from_rom(vblank_counter_rom()).unwrap();
     for frame in 1..=3 {
         machine.run_frame().unwrap();
         assert_eq!(machine.sram()[0], frame);
     }
+}
+
+#[test]
+fn debugger_snapshot_inside_hle_irq_restores_wait_and_banked_return_state() {
+    let mut live = Machine::from_rom(vblank_counter_rom()).unwrap();
+    // SWI 05 sleeps until VBlank, then the HLE dispatcher enters the cartridge's IRQ handler.
+    for _ in 0..400 {
+        live.step().unwrap();
+        if live.debug_snapshot().cpsr & 0x1f == 0x12 {
+            break;
+        }
+    }
+    assert_eq!(live.debug_snapshot().cpsr & 0x1f, 0x12);
+    let mut restored = Machine::from_rom(vblank_counter_rom()).unwrap();
+    restored.load_state(&live.save_state().unwrap()).unwrap();
+    for machine in [&mut live, &mut restored] {
+        machine.run_frame().unwrap();
+        assert_eq!(machine.battery_save()[0], 1);
+    }
+    assert_eq!(live.save_state().unwrap(), restored.save_state().unwrap());
 }

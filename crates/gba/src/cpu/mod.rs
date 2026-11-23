@@ -53,6 +53,7 @@ pub(crate) enum Step {
     Swi(u8),
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Cpu {
     pub(crate) regs: [u32; 16],
     cpsr: u32,

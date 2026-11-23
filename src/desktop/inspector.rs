@@ -248,7 +248,7 @@ impl Desktop {
                     p,
                     "debug-run",
                     self.shortcut_label(
-                        self.tr(if !self.is_gba() && self.snapshot.rewinding {
+                        self.tr(if self.rewinding() {
                             Text::EndRewind
                         } else if self.running() {
                             Text::Pause
@@ -258,13 +258,11 @@ impl Desktop {
                         ShortcutAction::Toggle,
                         None,
                     ),
-                    Some(
-                        if self.running() || !self.is_gba() && self.snapshot.rewinding {
-                            "pause"
-                        } else {
-                            "play"
-                        },
-                    ),
+                    Some(if self.running() || self.rewinding() {
+                        "pause"
+                    } else {
+                        "play"
+                    }),
                     false,
                 )
                 .on_click(cx.listener(|view, _, _, cx| view.toggle_playback(cx))),

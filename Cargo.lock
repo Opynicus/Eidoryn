@@ -1548,9 +1548,14 @@ dependencies = [
 name = "eidoryn-gba"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "bytemuck",
+ "crc32fast",
  "eidoryn-host",
+ "memchr",
  "pollster 1.0.1",
+ "serde",
+ "serde_bytes",
  "sha2",
  "unarm",
  "wgpu 30.0.2",

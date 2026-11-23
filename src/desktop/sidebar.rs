@@ -280,19 +280,14 @@ impl Desktop {
                         .pb_2(),
                 )
             })
-            .children(
-                DESTINATIONS
-                    .into_iter()
-                    .filter(|(_, _, _, page)| !self.is_gba() || *page != WorkspacePage::SaveStates)
-                    .map(|(id, symbol, title, page)| {
-                        let selected = page == self.page;
-                        nav_item(p, id, symbol, self.tr(title), compact, selected).on_click(
-                            cx.listener(move |view, _, window, cx| {
-                                view.show_page(page, window, cx);
-                            }),
-                        )
-                    }),
-            )
+            .children(DESTINATIONS.into_iter().map(|(id, symbol, title, page)| {
+                let selected = page == self.page;
+                nav_item(p, id, symbol, self.tr(title), compact, selected).on_click(cx.listener(
+                    move |view, _, window, cx| {
+                        view.show_page(page, window, cx);
+                    },
+                ))
+            }))
             .child(div().flex_1())
             .when(!compact, |rail| {
                 rail.child(

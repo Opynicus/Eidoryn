@@ -122,7 +122,6 @@ impl Desktop {
             .children(
                 ShortcutAction::ALL
                     .into_iter()
-                    .filter(|&action| self.supports_shortcut(action))
                     .map(|action| self.shortcut_row(action, bindings, cx)),
             )
     }
@@ -154,12 +153,9 @@ impl Desktop {
                 if let Some(button) = chord.pad_conflict(&self.preferences.keybindings) {
                     return Some(format!("PS1 · {}", button.name()));
                 }
-                if action.available_on_gba() {
-                    return chord
-                        .pad_conflict(&self.preferences.gba_keybindings)
-                        .map(|button| format!("GBA · {}", button.name()));
-                }
-                None
+                chord
+                    .pad_conflict(&self.preferences.gba_keybindings)
+                    .map(|button| format!("GBA · {}", button.name()))
             });
         div()
             .flex()
