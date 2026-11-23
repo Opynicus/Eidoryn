@@ -514,12 +514,10 @@ impl Gpu {
 
     /// Capture the current presentation image, including the hardware render scale.
     pub fn live_frame(&self) -> DisplayFrame {
-        let display = self.display_settings(DisplaySource::Presentation);
-        DisplayFrame {
-            native_dimensions: display.dimensions,
-            dimensions: display.output_dimensions(),
-            rgb: self.renderer.display(display).into(),
-        }
+        self.renderer
+            .capture(self.display_settings(DisplaySource::Presentation))
+            .get()
+            .clone()
     }
 
     fn display_settings(&self, source: DisplaySource) -> DisplaySettings {

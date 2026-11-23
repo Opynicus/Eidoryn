@@ -39,10 +39,14 @@ impl CrtState {
 pub(super) fn frame_image(snapshot: &Snapshot) -> Arc<RenderImage> {
     let (width, height) = snapshot.dimensions;
     // RenderImage expects BGRA bytes, even though image::Frame uses an RGBA container.
-    let mut pixels = Vec::with_capacity(width * height * 4);
-    for rgb in snapshot.rgb.as_chunks::<3>().0 {
-        pixels.extend_from_slice(&[rgb[2], rgb[1], rgb[0], 255]);
-    }
+    let pixels = snapshot
+        .rgb
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|&[r, g, b]| [b, g, r, 255])
+        .collect::<Vec<_>>()
+        .into_flattened();
     let buffer = image::RgbaImage::from_raw(width as u32, height as u32, pixels)
         .expect("Snapshot RGB dimensions match its framebuffer");
     Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]))

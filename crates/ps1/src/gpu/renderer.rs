@@ -22,7 +22,7 @@ pub(super) struct FrameReadback {
     native_dimensions: (usize, usize),
     dimensions: (usize, usize),
     ready: OnceLock<DisplayFrame>,
-    pending: RefCell<Option<mpsc::Receiver<Vec<u8>>>>,
+    pending: RefCell<Option<mpsc::Receiver<Arc<[u8]>>>>,
 }
 
 impl FrameReadback {
@@ -36,8 +36,7 @@ impl FrameReadback {
                 .take()
                 .expect("Unresolved scanout has a reply channel")
                 .recv()
-                .expect("GPU worker failed while capturing scanout")
-                .into(),
+                .expect("GPU worker failed while capturing scanout"),
         })
     }
 }
@@ -289,7 +288,7 @@ impl Renderer {
                 dimensions: display.output_dimensions(),
                 ready: OnceLock::new(),
                 pending: RefCell::new(Some(
-                    worker.request_async(|reply| Message::Display(display, reply)),
+                    worker.request_async(|reply| Message::Capture(display, reply)),
                 )),
             },
         }
@@ -333,6 +332,7 @@ enum Message {
     Batch(Vec<RasterCommand>),
     Read([Option<usize>; 2], mpsc::SyncSender<[u32; 2]>),
     Display(DisplaySettings, mpsc::SyncSender<Vec<u8>>),
+    Capture(DisplaySettings, mpsc::SyncSender<Arc<[u8]>>),
     Snapshot(mpsc::SyncSender<Rasterizer>),
     Fence(mpsc::SyncSender<()>),
     Shutdown,
@@ -394,9 +394,15 @@ impl Worker {
                             let _ = reply.send(resolve(engine.read(indices), &status, || [0; 2]));
                         }
                         Message::Display(display, reply) => {
-                            let rgb = resolve(engine.display(display), &status, || {
+                            let _ = reply.send(resolve(engine.display(display), &status, || {
                                 let (width, height) = display.output_dimensions();
                                 vec![0; width * height * 3]
+                            }));
+                        }
+                        Message::Capture(display, reply) => {
+                            let rgb = resolve(engine.capture(display), &status, || {
+                                let (width, height) = display.output_dimensions();
+                                std::iter::repeat_n(0, width * height * 3).collect()
                             });
                             if let Some(message) = engine.take_presentation_warning() {
                                 let _ = warning.try_send(message);
@@ -515,6 +521,21 @@ impl Drop for Worker {
 mod tests {
     use super::*;
     use crate::{EmuError, machine::Machine};
+
+    #[test]
+    fn completed_field_keeps_the_render_workers_pixel_allocation() {
+        let pixels: Arc<[u8]> = Arc::from([255, 0, 0, 0, 0, 127]);
+        let (send, receive) = mpsc::sync_channel(1);
+        let field = FrameReadback {
+            native_dimensions: (2, 1),
+            dimensions: (2, 1),
+            ready: OnceLock::new(),
+            pending: RefCell::new(Some(receive)),
+        };
+        send.send(Arc::clone(&pixels)).unwrap();
+        assert!(Arc::ptr_eq(&field.get().rgb, &pixels));
+        assert!(Arc::ptr_eq(&field.clone().get().rgb, &pixels));
+    }
 
     #[test]
     fn asynchronous_failure_halts_execution_survives_clone_and_drains_replies() {

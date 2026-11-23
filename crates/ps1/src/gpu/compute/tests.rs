@@ -166,10 +166,10 @@ fn transfers_and_feedback_keep_native_words_and_enhanced_coverage_in_sync() {
             dimensions: (2, 1),
             ..display
         };
-        assert_eq!(
-            gpu.display(rgb24).unwrap(),
-            [0x34, 0x12, 0x78, 0x56, 0x1f, 0x80]
-        );
+        let native = gpu.display(rgb24).unwrap();
+        assert_eq!(native, [0x34, 0x12, 0x78, 0x56, 0x1f, 0x80]);
+        assert_eq!(gpu.capture(rgb24).unwrap().as_ref(), native);
+        assert_eq!(gpu.capture(display).unwrap().as_ref(), rgb);
     }
 }
 
