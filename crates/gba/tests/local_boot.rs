@@ -2,11 +2,10 @@
 #[path = "support/local_roms.rs"]
 mod local_roms;
 
-use eidoryn_gba::Machine;
 use std::env;
 
 #[test]
-#[ignore = "requires local GBA cartridges"]
+#[ignore = "requires local GBA cartridges and a GBA BIOS"]
 fn boots_each_local_cartridge() {
     let frames = env::var_os("EIDORYN_GBA_BOOT_FRAMES").map_or(1800, |value| {
         value
@@ -18,8 +17,8 @@ fn boots_each_local_cartridge() {
     local_roms::check(
         env::var_os("EIDORYN_GBA_TEST_ROMS"),
         |_| true,
-        |bytes| {
-            let mut machine = Machine::from_rom(bytes).map_err(|e| e.to_string())?;
+        |bytes, bios| {
+            let mut machine = local_roms::boot(bytes, bios)?;
             for frame in 1..=frames {
                 machine
                     .run_frame()

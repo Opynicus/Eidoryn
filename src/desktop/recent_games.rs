@@ -12,7 +12,12 @@ use std::path::PathBuf;
 impl Desktop {
     pub(super) fn bios_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let current = self.bios.as_deref();
+        let current = if self.is_gba() {
+            &self.gba.bios
+        } else {
+            &self.bios
+        }
+        .as_deref();
         let name = current.map_or_else(
             || self.tr(Text::NotSelected).into(),
             |path| {
@@ -63,11 +68,22 @@ impl Desktop {
                         )
                         .debug_selector(|| "open-bios".into())
                         .on_click(cx.listener(|view, _, _, cx| {
-                            view.pick_image(super::actions::ImagePicker::Bios, cx);
+                            if view.is_gba() {
+                                view.pick_gba_bios(None, cx);
+                            } else {
+                                view.pick_image(super::actions::ImagePicker::Bios, cx);
+                            }
                         })),
                     ),
             )
-            .child(label(p, self.tr(Text::BiosPurpose)))
+            .child(label(
+                p,
+                self.tr(if self.is_gba() {
+                    Text::GbaBiosPurpose
+                } else {
+                    Text::BiosPurpose
+                }),
+            ))
             .child(
                 div()
                     .id("bios-details")
@@ -95,8 +111,14 @@ impl Desktop {
 
     fn bios_details(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let current = self.bios.as_deref();
-        let default = self.preferences.bios_path.as_deref();
+        let (current, default) = if self.is_gba() {
+            (
+                self.gba.bios.as_deref(),
+                self.preferences.gba_bios_path.as_deref(),
+            )
+        } else {
+            (self.bios.as_deref(), self.preferences.bios_path.as_deref())
+        };
         div()
             .flex()
             .flex_col()
@@ -148,7 +170,9 @@ impl Desktop {
                             )
                             .debug_selector(|| "set-default-bios".into())
                             .on_click(cx.listener(|view, _, _, cx| {
-                                if view.validate_current_bios(cx) {
+                                if view.is_gba() {
+                                    view.remember_gba_bios(cx);
+                                } else if view.validate_current_bios(cx) {
                                     view.preferences.bios_path.clone_from(&view.bios);
                                     view.save_preferences();
                                     cx.notify();
@@ -167,7 +191,11 @@ impl Desktop {
                             )
                             .debug_selector(|| "clear-default-bios".into())
                             .on_click(cx.listener(|view, _, _, cx| {
-                                view.preferences.bios_path = None;
+                                if view.is_gba() {
+                                    view.preferences.gba_bios_path = None;
+                                } else {
+                                    view.preferences.bios_path = None;
+                                }
                                 view.save_preferences();
                                 cx.notify();
                             })),

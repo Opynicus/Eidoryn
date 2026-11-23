@@ -1,6 +1,6 @@
 //! Desktop host for a GBA cartridge. All machine execution and file I/O run off the UI thread.
 use crate::library::{Library, playtime::Playtime};
-use eidoryn_gba::Machine;
+use eidoryn_gba::{BIOS_LEN, Machine};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
@@ -15,13 +15,44 @@ use std::{
 mod tests;
 
 pub enum Command {
-    Load(PathBuf, String),
+    Load {
+        path: PathBuf,
+        title: String,
+        bios: PathBuf,
+    },
     Buttons(u16),
     Toggle,
     Pause,
     Reset,
     PrepareClose(mpsc::Sender<Result<(), String>>),
     ClearStatistics(i64, mpsc::Sender<Result<(), String>>),
+}
+
+/// Reads a GBA firmware image for a selection or a cartridge launch.
+pub fn read_bios(path: &Path) -> Result<Vec<u8>, String> {
+    let describe = |e: std::io::Error| format!("{}: {e}", path.display());
+    let metadata = fs::metadata(path).map_err(describe)?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "Select a regular GBA BIOS file: {}",
+            path.display()
+        ));
+    }
+    if metadata.len() != BIOS_LEN as u64 {
+        return Err(format!(
+            "GBA BIOS must be exactly 16 KiB ({BIOS_LEN} bytes): {} is {} bytes",
+            path.display(),
+            metadata.len()
+        ));
+    }
+    let mut bytes = Vec::with_capacity(BIOS_LEN);
+    File::open(path)
+        .map_err(describe)?
+        .take(BIOS_LEN as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(describe)?;
+    eidoryn_gba::validate_bios(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(bytes)
 }
 
 #[derive(Clone, Default)]
@@ -90,7 +121,12 @@ struct Cartridge {
 }
 
 impl Cartridge {
-    fn load(path: &Path, saves: &Path, current: Option<&Self>) -> Result<(Self, String), String> {
+    fn load(
+        path: &Path,
+        bios: Vec<u8>,
+        saves: &Path,
+        current: Option<&Self>,
+    ) -> Result<(Self, String), String> {
         if !path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gba"))
@@ -107,7 +143,7 @@ impl Cartridge {
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
         let identity = format!("{:x}", Sha256::digest(&bytes));
-        let mut machine = Machine::from_rom(bytes).map_err(|e| e.to_string())?;
+        let mut machine = Machine::with_bios(bytes, bios).map_err(|e| e.to_string())?;
         fs::create_dir_all(saves).map_err(|e| format!("{}: {e}", saves.display()))?;
         let save = saves.join(format!("{identity}.sav"));
         let lock = if let Some(loaded) = current.filter(|c| c.save == save) {
@@ -209,11 +245,18 @@ impl Worker {
 
     fn apply(&mut self, command: Command) -> Result<bool, String> {
         match command {
-            Command::Load(path, title) => {
+            Command::Load { path, title, bios } => {
+                let bios = match read_bios(&bios) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.snapshot.error = Some(error);
+                        return Ok(true);
+                    }
+                };
                 self.pause();
                 self.flush()?;
                 let (cart, identity) =
-                    Cartridge::load(&path, &self.saves, self.cartridge.as_ref())?;
+                    Cartridge::load(&path, bios, &self.saves, self.cartridge.as_ref())?;
                 if let Some(clock) = &mut self.tracker {
                     clock.select(path.clone(), identity, false);
                 }

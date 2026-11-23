@@ -198,8 +198,8 @@ impl Desktop {
         });
         match kind {
             // A newer selection cancels the pending picker or validation before it can update the UI.
-            ImagePicker::Bios => self.bios_selection = Some(task),
-            ImagePicker::Exe | ImagePicker::Gba => task.detach(),
+            ImagePicker::Bios | ImagePicker::Gba => self.bios_selection = Some(task),
+            ImagePicker::Exe => task.detach(),
         }
     }
 
@@ -435,6 +435,9 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_gba() && self.page != page {
+            self.bios_selection.take();
+        }
         self.snapshot_confirmation = None;
         self.dismiss_library_context_menu();
         self.stop_rewind(cx);
@@ -470,7 +473,7 @@ impl Desktop {
         self.shortcut_editor = Default::default();
         self.graphics.open = true;
         self.settings_tab = if self.is_gba() {
-            SettingsTab::Appearance
+            SettingsTab::Firmware
         } else {
             SettingsTab::Graphics
         };

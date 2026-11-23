@@ -44,13 +44,13 @@ Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面
 - Rust **1.95 或更新版本**及 Cargo；建议使用 release 构建运行游戏。
 - 桌面版需要 GPUI 所需的系统图形、字体与音频开发库，以及可用图形驱动。Linux 构建依赖见[发布工作流](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml)。
 - 硬件绘图需要支持计算着色器的物理显卡和驱动。Windows 支持 DirectX 12、Vulkan 和 OpenGL 4.3+；没有兼容硬件后端的老旧设备仍可使用软件绘图。
-- 请自行准备游戏镜像。常规启动 PS1 光盘还需 PlayStation BIOS。
+- 请自行准备游戏镜像。常规启动 PS1 光盘使用 512 KiB 的 PlayStation BIOS，启动 GBA 卡带使用 16 KiB 的 Game Boy Advance BIOS。
 
 此 UI 改版分支提供 Linux x86-64 Wayland、Linux x86-64 X11 和 Windows x86-64 临时测试发行包，均附 SHA-256 校验文件。这些预发布版本从测试分支构建，不替换最新发行版。Linux 请按桌面会话选择对应压缩包，需要 Ubuntu 24.04 或兼容的更新系统；Windows 请完整解压 ZIP，再从解压目录运行 `eidoryn.exe`。Windows 桌面显示、输入及声音仍需人工实机验证，原生 CI 覆盖编译、测试和无窗口演示。可用测试包见 [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases)。
 
 ### 桌面游戏库
 
-从侧栏打开**游戏库**，点击**添加游戏**选择镜像或扫描文件夹，也可以把镜像直接拖入游戏库。多轨游戏请选择 CUE 文件。选中游戏后点击**开始游戏**、双击卡片或按 Enter，镜像载入成功后便会进入游戏画面。启动 PS1 光盘时如缺少 BIOS，可以在游戏库中选择 BIOS 并继续。
+从侧栏打开**游戏库**，点击**添加游戏**选择镜像或扫描文件夹，也可以把镜像直接拖入游戏库。多轨游戏请选择 CUE 文件。选中游戏后点击**开始游戏**、双击卡片或按 Enter，镜像载入成功后便会进入游戏画面。如果所选平台需要 BIOS，游戏库会提示选择对应的固件，然后继续启动。
 
 把卡片拖到另一张卡片的左半边或右半边，即可插到它的前面或后面。列表视图中可拖到目标行的上半行或下半行。拖动后游戏库会切换到**手动排序**，下次打开时保留顺序。右键点击游戏可刮削该游戏的元数据、查看详情或移出游戏库。勾选卡片右上角或列表行首的复选框即可进入批量选择，可以继续逐个勾选，也可以全选当前搜索结果，确认后一起移除。取消最后一个勾选即可返回浏览。镜像、记忆卡、即时存档和游玩时长都会保留。
 
@@ -64,13 +64,13 @@ Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面
 
 ### 运行 GBA 卡带
 
-在顶栏选择 **GBA**，打开**游戏库**，添加本地 `.gba` 文件或扫描所在文件夹，即可启动卡带。GBA 核心可直接从 ROM 启动，无需 BIOS 文件。在游戏视图中，方向键对应十字键，**X / Z** 对应 A / B，**Q / E** 对应 L / R，**Enter** 对应 Start，**Backspace** 对应 Select。
+在顶栏选择 **GBA**，打开**游戏库**，添加本地 `.gba` 文件或扫描所在文件夹，即可启动卡带。首次启动时选择自己的 16 KiB GBA BIOS。CPU 从 BIOS 的复位向量执行，由固件启动卡带。可以在 GBA 控制台或「设置 → GBA BIOS」更换固件或将其设为 GBA 的默认 BIOS。在游戏视图中，方向键对应十字键，**X / Z** 对应 A / B，**Q / E** 对应 L / R，**Enter** 对应 Start，**Backspace** 对应 Select。
 
 采用 32 KiB SRAM 的游戏可以在游戏内正常存档。模拟器把存档写入用户数据目录下的 `saves/gba/<ROM SHA-256>.sav`。移动或重命名同一份 ROM 后，仍可读取原存档。
 
-首版以 240 × 160 绘制画面，支持图块背景、位图模式 3–5、精灵、马赛克效果、显示窗口、颜色混合、垂直消隐中断和部分 BIOS 服务。CPU 与 DMA 采用近似时序。音频、联机、Flash/EEPROM 存档、倒带和即时存档尚待实现。兼容性测试使用原创自制卡带，其中一个切换 ARM/Thumb 模式并通过按键改变画面颜色，另一个用中断逐帧计数。运行 `cargo test --locked -p eidoryn-gba` 可以复现。
+首版以 240 × 160 绘制画面，支持图块背景、位图模式 3–5、精灵、马赛克效果、显示窗口、颜色混合和垂直消隐中断。游戏的 BIOS 调用由所选固件处理。CPU 与 DMA 采用近似时序。音频、联机、Flash/EEPROM 存档、倒带和即时存档尚待实现。兼容性测试使用原创自制卡带，其中一个切换 ARM/Thumb 模式并通过按键改变画面颜色，另一个用中断逐帧计数。运行 `cargo test --locked -p eidoryn-gba` 可以复现。
 
-将 `EIDORYN_GBA_TEST_ROMS` 指向一个本地 ROM 或含有 `.gba` 文件的目录，默认使用仓库的 `tests/`。运行 `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture`，会对每个文件无按键执行 1800 帧。可用 `EIDORYN_GBA_BOOT_FRAMES` 调整帧数。失败时会报告文件名、产品码、修订号和出错帧，遇到未实现的 BIOS 调用还会显示指令地址和指令集。
+运行本地卡带测试时，将 `EIDORYN_GBA_BIOS` 指向自己的 GBA BIOS，`EIDORYN_GBA_TEST_ROMS` 指向一个本地 ROM 或含有 `.gba` 文件的目录，默认使用仓库的 `tests/`。运行 `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture`，会先运行固件，待它把控制权交给卡带后，对每个文件无按键执行 1800 帧。可用 `EIDORYN_GBA_BOOT_FRAMES` 调整帧数。启动失败时会报告卡带信息，以及错误发生在固件阶段还是卡带接管之后。
 
 《恶魔城：晓月圆舞曲》的地区版本还有专门的测试。对同一目录运行 `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored --nocapture`，也可通过 `EIDORYN_ARIA_ROM` 指定一份镜像。对已核实的美版实体卡镜像，测试会比对标题、选档和城堡走廊画面。对其他版本，测试会检查启动后是否出现画面，并将按键操作与同一镜像的无按键运行对照，验证游戏响应。每次运行都使用独立的内存存档。
 
@@ -239,7 +239,7 @@ CLI / GPUI
 - 提升 PS1 设备时序、音频精度和游戏兼容性，扩大回归测试范围。
 - 继续测量帧时间、音频延迟和 Vulkan 读回开销，按证据优化性能。
 - 验证并完善 Windows、macOS 的构建、运行及发布流程。
-- 扩展 GBA 兼容性，支持更多卡带存储类型、BIOS 服务和音频。
+- 扩展 GBA 兼容性，支持更多卡带存储类型、更精确的硬件时序和音频。
 
 ## 许可证与致谢
 

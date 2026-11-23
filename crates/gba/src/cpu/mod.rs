@@ -10,9 +10,11 @@ const Z: u32 = 1 << 30;
 const C: u32 = 1 << 29;
 const V: u32 = 1 << 28;
 const I: u32 = 1 << 7;
+const F: u32 = 1 << 6;
 const T: u32 = 1 << 5;
 const MODE: u32 = 0x1f;
 const IRQ: u32 = 0x12;
+const SVC: u32 = 0x13;
 const SP: usize = 13;
 const LR: usize = 14;
 const PC: usize = 15;
@@ -20,6 +22,8 @@ const PC: usize = 15;
 const IRQ_RETURN: u32 = 0x0000_0138;
 
 pub(crate) trait Bus {
+    /// Set the code region used by BIOS access protection, including its two-stage prefetch.
+    fn begin_instruction(&mut self, _pc: u32, _width: u32) {}
     fn read8(&self, addr: u32) -> u8;
     fn write8(&mut self, addr: u32, value: u8);
     fn read16(&self, addr: u32) -> u16 {
@@ -61,24 +65,27 @@ pub(crate) struct Cpu {
 
 impl Default for Cpu {
     fn default() -> Self {
-        let mut regs = [0; 16];
-        regs[SP] = 0x0300_7f00;
-        regs[PC] = 0x0800_0000;
-        let mut bank_sp_lr = [[0; 2]; 6];
-        bank_sp_lr[2][0] = 0x0300_7fa0;
-        bank_sp_lr[3][0] = 0x0300_7fe0;
+        let mut cpu = Self::power_on();
+        cpu.regs[SP] = 0x0300_7f00;
+        cpu.regs[PC] = 0x0800_0000;
+        cpu.bank_sp_lr[2][0] = 0x0300_7fa0;
+        cpu.bank_sp_lr[3][0] = 0x0300_7fe0;
+        cpu.cpsr = MODE;
+        cpu
+    }
+}
+
+impl Cpu {
+    pub(crate) fn power_on() -> Self {
         Self {
-            regs,
-            cpsr: MODE,
-            bank_sp_lr,
+            regs: [0; 16],
+            cpsr: SVC | I | F,
+            bank_sp_lr: [[0; 2]; 6],
             other_fiq_regs: [0; 5],
             spsr: [0; 6],
             irq_depth: 0,
         }
     }
-}
-
-impl Cpu {
     /// A decoded SWI leaves R15 just past its encoding and preserves the caller's T bit.
     pub(crate) fn swi_location(&self) -> (u32, crate::InstructionSet) {
         let next = self.regs[PC];
@@ -105,11 +112,32 @@ impl Cpu {
             return Ok(Step::Run);
         }
         if self.cpsr & T == 0 {
+            bus.begin_instruction(pc, 4);
             self.regs[PC] = pc.wrapping_add(4);
             self.arm(bus, pc, bus.read32(pc))
         } else {
+            bus.begin_instruction(pc, 2);
             self.regs[PC] = pc.wrapping_add(2);
             self.thumb(bus, pc, u32::from(bus.read16(pc)))
+        }
+    }
+
+    fn enter_exception(&mut self, mode: u32, vector: u32, resume: u32) {
+        let previous = self.cpsr;
+        self.set_status((previous & !(MODE | T)) | mode | I);
+        self.spsr[Self::bank(mode)] = previous;
+        self.regs[LR] = resume;
+        self.regs[PC] = vector;
+    }
+
+    pub(crate) fn software_interrupt(&mut self) {
+        // SWI is synchronous. PC already denotes the instruction following the SWI.
+        self.enter_exception(SVC, 0x08, self.regs[PC]);
+    }
+
+    pub(crate) fn hardware_irq(&mut self) {
+        if self.cpsr & I == 0 {
+            self.enter_exception(IRQ, 0x18, self.regs[PC].wrapping_add(4));
         }
     }
 
@@ -122,11 +150,7 @@ impl Cpu {
         if handler == 0 {
             return;
         }
-        let status = self.cpsr;
-        let resume = self.regs[PC].wrapping_add(4);
-        self.set_status((status & !(MODE | T)) | IRQ | I);
-        self.spsr[2] = status;
-        self.regs[LR] = resume;
+        self.hardware_irq();
         self.regs[SP] = self.regs[SP].wrapping_sub(24);
         let mut addr = self.regs[SP];
         for reg in [0, 1, 2, 3, 12, LR] {

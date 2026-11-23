@@ -212,6 +212,10 @@ pub(super) struct Workspace {
 }
 
 impl Workspace {
+    pub(super) fn launch_target(&self) -> (u64, Option<i64>, Option<i64>) {
+        (self.launch_generation, self.selected, self.location)
+    }
+
     pub(super) fn new(mut store: Option<Library>) -> Self {
         Self {
             platform: GamePlatform::Ps1,

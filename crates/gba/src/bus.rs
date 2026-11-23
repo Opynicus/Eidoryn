@@ -1,6 +1,6 @@
-use crate::HEIGHT;
 use crate::cpu::Bus;
 use crate::video::{Video, half};
+use crate::{BIOS_LEN, HEIGHT};
 
 pub(super) const SCANLINE: u32 = 1232;
 const DRAW_END: u32 = 960;
@@ -24,8 +24,17 @@ struct Dma {
     dst: u32,
 }
 
+#[derive(Default)]
+struct InstructionFetch {
+    in_bios: bool,
+    bios_latch: [u8; 4],
+    cartridge_started: bool,
+}
+
 pub(super) struct Memory {
     rom: Vec<u8>,
+    bios: Option<Box<[u8]>>,
+    fetch: InstructionFetch,
     ewram: Box<[u8]>,
     iwram: Box<[u8]>,
     pub video: Video,
@@ -53,6 +62,8 @@ impl Memory {
         io[0x300] = 1; // Direct cartridge entry occurs after POST.
         Self {
             rom,
+            bios: None,
+            fetch: InstructionFetch::default(),
             ewram: vec![0; 256 * 1024].into_boxed_slice(),
             iwram: vec![0; 32 * 1024].into_boxed_slice(),
             video: Video::new(),
@@ -69,8 +80,24 @@ impl Memory {
         }
     }
 
+    pub fn install_bios(&mut self, image: Box<[u8]>) {
+        self.bios = Some(image);
+        self.io[0x300] = 0; // The firmware sets POSTFLG after a cold boot.
+    }
+
+    pub fn has_bios(&self) -> bool {
+        self.bios.is_some()
+    }
+
+    pub fn cartridge_started(&self) -> bool {
+        self.fetch.cartridge_started
+    }
+
     pub fn reset(&mut self) {
         let mut fresh = Self::new(std::mem::take(&mut self.rom));
+        if let Some(bios) = self.bios.take() {
+            fresh.install_bios(bios);
+        }
         std::mem::swap(&mut self.sram, &mut fresh.sram);
         fresh.sram_dirty = self.sram_dirty;
         *self = fresh;
@@ -274,6 +301,8 @@ impl Memory {
                 self.video.reload_reference(&self.io, offset);
             }
             0x202 | 0x203 => self.io[offset] &= !value,
+            0x300 | 0x301 if self.has_bios() && (!self.fetch.in_bios || self.dma_busy) => {}
+            0x300 => self.io[0x300] = value & 1,
             0x301 => self.halted = true,
             0xba..=0xdf if (offset - DMA_BASE) % 12 == 11 => {
                 let old = self.io[offset];
@@ -402,9 +431,32 @@ fn vram_offset(addr: usize) -> usize {
 }
 
 impl Bus for Memory {
+    fn begin_instruction(&mut self, pc: u32, width: u32) {
+        self.fetch.cartridge_started |= matches!(pc >> 24, 8..=13);
+        self.fetch.in_bios = pc < BIOS_LEN as u32 && self.bios.is_some();
+        if self.fetch.in_bios
+            && let Some(bios) = &self.bios
+        {
+            // The ARM7 pipeline has already fetched two instructions ahead, even on a branch.
+            let fetch = ((pc + 2 * width) as usize) & !3;
+            if let Some(word) = bios.get(fetch..fetch + 4) {
+                self.fetch.bios_latch.copy_from_slice(word);
+            }
+        }
+    }
+
     fn read8(&self, address: u32) -> u8 {
         let addr = address as usize;
         match addr >> 24 {
+            0 if addr < BIOS_LEN && !self.dma_busy => {
+                if self.fetch.in_bios
+                    && let Some(bios) = &self.bios
+                {
+                    bios[addr]
+                } else {
+                    self.fetch.bios_latch[addr & 3]
+                }
+            }
             2 => self.ewram[addr & 0x3ffff],
             3 => self.iwram[addr & 0x7fff],
             4 if addr & 0xff_ffff < self.io.len() => {
@@ -455,7 +507,13 @@ impl Bus for Memory {
     }
 
     fn write16(&mut self, addr: u32, value: u16) {
-        if matches!(addr >> 24, 14 | 15) {
+        if addr & !1 == 0x0400_0300 && self.has_bios() {
+            // A wide write setting POSTFLG on cold boot does not also enter HALT.
+            if self.fetch.in_bios && !self.dma_busy {
+                self.halted |= self.io[0x300] != 0;
+                self.io[0x300] = value as u8 & 1;
+            }
+        } else if matches!(addr >> 24, 14 | 15) {
             self.store(addr, value.to_le_bytes()[addr as usize & 1]);
         } else {
             let addr = addr & !1;
@@ -479,6 +537,73 @@ impl Bus for Memory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bios_reads_outside_firmware_return_the_last_prefetched_word_by_byte_lane() {
+        let mut firmware = vec![0; BIOS_LEN];
+        firmware[8..12].copy_from_slice(&0x1122_3344u32.to_le_bytes());
+        firmware[12..16].copy_from_slice(&0x5566_7788u32.to_le_bytes());
+        let mut bus = Memory::new(vec![0; 192]);
+        bus.install_bios(firmware.into_boxed_slice());
+
+        bus.begin_instruction(4, 4);
+        assert_eq!(bus.read32(8), 0x1122_3344);
+        bus.write32(8, 0);
+        assert_eq!(bus.read32(8), 0x1122_3344);
+        // Even a firmware-initiated DMA cannot copy the protected image.
+        bus.write32(0x0400_00d4, 8);
+        bus.write32(0x0400_00d8, 0x0200_0000);
+        bus.write32(0x0400_00dc, 0x8400_0001);
+        assert_eq!(bus.read32(0x0200_0000), 0);
+        bus.begin_instruction(0x0300_0000, 4);
+        assert_eq!(bus.read32(8), 0x5566_7788);
+        assert_eq!(bus.read16(2), 0x5566);
+        assert_eq!(bus.read8(1), 0x77);
+        assert!(!bus.cartridge_started());
+
+        bus.begin_instruction(6, 2);
+        bus.begin_instruction(0x0a00_0000, 2);
+        assert_eq!(bus.read32(12), 0x1122_3344);
+        assert!(bus.cartridge_started());
+        bus.reset();
+        assert_eq!(bus.read32(8), 0);
+        assert!(!bus.cartridge_started());
+    }
+
+    #[test]
+    fn only_firmware_can_set_post_and_halt_after_power_on() {
+        let mut bus = Memory::new(vec![]);
+        bus.install_bios(vec![1; BIOS_LEN].into_boxed_slice());
+        bus.begin_instruction(0, 4);
+        assert_eq!(bus.read8(0x0400_0300), 0);
+        bus.write32(0x0400_0300, 1);
+        assert_eq!(bus.read8(0x0400_0300), 1);
+        assert!(!bus.halted);
+        bus.begin_instruction(0x0800_0000, 4);
+        bus.write8(0x0400_0300, 0);
+        bus.write8(0x0400_0301, 0);
+        assert_eq!(bus.read8(0x0400_0300), 1);
+        assert!(!bus.halted);
+        bus.begin_instruction(8, 4);
+        bus.write8(0x0400_0301, 0);
+        assert!(bus.halted);
+    }
+
+    #[test]
+    fn firmware_cartridge_data_reads_do_not_mark_the_game_started() {
+        let mut bios = vec![0; BIOS_LEN];
+        for (chunk, word) in bios.as_chunks_mut::<4>().0.iter_mut().zip([
+            0xe3a0_0302_u32, // mov r0, #0x08000000
+            0xe590_1000,     // ldr r1, [r0]
+            0xeaff_fffe,     // b .
+        ]) {
+            *chunk = word.to_le_bytes();
+        }
+        let mut machine = crate::Machine::with_bios(vec![0x42; crate::HEADER_LEN], bios).unwrap();
+        machine.run_frame().unwrap();
+        assert_eq!(machine.cpu.regs[1], 0x4242_4242);
+        assert!(!machine.cartridge_started());
+    }
 
     #[test]
     fn palette_vram_and_oam_observe_bus_width_and_mirrors() {

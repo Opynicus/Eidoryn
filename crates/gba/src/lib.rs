@@ -1,4 +1,4 @@
-//! A BIOS-less Game Boy Advance core. The host supplies cartridge bytes, pressed
+//! A Game Boy Advance core. The host supplies firmware, cartridge bytes, pressed
 //! keys and frame pacing, and owns persistence of the cartridge SRAM.
 mod bios_affine;
 mod bios_math;
@@ -16,6 +16,8 @@ pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 160;
 pub const HEADER_LEN: usize = 0xc0;
 pub const MAX_ROM_LEN: usize = 32 * 1024 * 1024;
+/// Size in bytes of the GBA boot ROM mapped at address zero.
+pub const BIOS_LEN: usize = 16 * 1024;
 pub const FRAME_RATE: f64 = 16_777_216.0 / (SCANLINE as f64 * LINES as f64);
 
 /// Guest instruction encoding at the point of a CPU fault.
@@ -27,6 +29,8 @@ pub enum InstructionSet {
 
 #[derive(Debug)]
 pub enum Error {
+    InvalidBiosSize(usize),
+    BlankBios,
     InvalidRomSize(usize),
     InvalidSramSize(usize),
     Cpu(String),
@@ -41,6 +45,11 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidBiosSize(size) => write!(
+                formatter,
+                "Invalid GBA BIOS length ({size} bytes, expected {BIOS_LEN} bytes)"
+            ),
+            Self::BlankBios => formatter.write_str("The GBA BIOS image is blank"),
             Self::InvalidRomSize(size) => write!(
                 formatter,
                 "Invalid GBA ROM length ({size} bytes, expected 192 bytes through 32 MiB)"
@@ -73,6 +82,17 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Checks the image size and rejects erased firmware without requiring a particular vendor dump.
+pub fn validate_bios(bios: &[u8]) -> Result<(), Error> {
+    if bios.len() != BIOS_LEN {
+        return Err(Error::InvalidBiosSize(bios.len()));
+    }
+    if matches!(bios[0], 0 | 0xff) && bios.iter().all(|&byte| byte == bios[0]) {
+        return Err(Error::BlankBios);
+    }
+    Ok(())
+}
+
 /// One cartridge session, including CPU, memory, LCD state, keypad and save RAM.
 pub struct Machine {
     cpu: Cpu,
@@ -81,7 +101,16 @@ pub struct Machine {
 }
 
 impl Machine {
-    /// Boots at the cartridge entry point. Homebrew cartridges can omit the boot logo.
+    /// Starts at the ARM reset vector with the supplied 16 KiB BIOS mapped at address zero.
+    pub fn with_bios(rom: Vec<u8>, bios: Vec<u8>) -> Result<Self, Error> {
+        validate_bios(&bios)?;
+        let mut machine = Self::from_rom(rom)?;
+        machine.memory.install_bios(bios.into_boxed_slice());
+        machine.cpu = Cpu::power_on();
+        Ok(machine)
+    }
+
+    /// Boots at the cartridge entry point with emulated BIOS services for firmware-free tests.
     pub fn from_rom(rom: Vec<u8>) -> Result<Self, Error> {
         if !(HEADER_LEN..=MAX_ROM_LEN).contains(&rom.len()) {
             return Err(Error::InvalidRomSize(rom.len()));
@@ -93,9 +122,13 @@ impl Machine {
         })
     }
 
-    /// Reboots the cartridge, retaining its battery-backed save.
+    /// Reboots through the same firmware or direct-entry mode and retains battery-backed SRAM.
     pub fn reset(&mut self) {
-        self.cpu = Cpu::default();
+        self.cpu = if self.memory.has_bios() {
+            Cpu::power_on()
+        } else {
+            Cpu::default()
+        };
         self.memory.reset();
         self.bios_wait = None;
     }
@@ -103,6 +136,11 @@ impl Machine {
     /// Packed RGB888 rows in display order, updated by each completed scanline.
     pub fn pixels(&self) -> &[u8] {
         &self.memory.video.pixels
+    }
+
+    /// Whether the CPU has fetched a Game Pak ROM instruction since the last reset.
+    pub fn cartridge_started(&self) -> bool {
+        self.memory.cartridge_started()
     }
 
     /// Pressed bits from low to high: A, B, Select, Start, Right, Left, Up, Down, R, L.
@@ -135,13 +173,21 @@ impl Machine {
         let mut remaining = SCANLINE * u32::from(LINES);
         while remaining > 0 {
             if self.memory.irq_pending() {
-                self.cpu.service_irq(&mut self.memory);
+                if self.memory.has_bios() {
+                    self.cpu.hardware_irq();
+                } else {
+                    self.cpu.service_irq(&mut self.memory);
+                }
             }
             let step = if self.waiting() {
                 self.memory.cycles_to_event()
             } else {
                 if let Step::Swi(code) = self.cpu.step(&mut self.memory).map_err(Error::Cpu)? {
-                    self.bios_call(code)?;
+                    if self.memory.has_bios() {
+                        self.cpu.software_interrupt();
+                    } else {
+                        self.bios_call(code)?;
+                    }
                 }
                 // Typical cartridge instruction fetch without sequential/wait-state accounting.
                 4

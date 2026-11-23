@@ -8,6 +8,8 @@ use eidoryn_psx::{
 use gpui::{Context, div, prelude::*};
 use std::{path::PathBuf, sync::Arc};
 
+mod firmware;
+
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
 
@@ -16,7 +18,17 @@ pub(super) struct Session {
     pub runner: Option<Runner>,
     pub snapshot: Snapshot,
     pub focus_game: bool,
+    pub bios: Option<PathBuf>,
     close: CloseState,
+}
+
+impl Session {
+    pub(super) fn with_bios(bios: Option<PathBuf>) -> Self {
+        Self {
+            bios,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -97,6 +109,7 @@ impl Desktop {
         if self.gba.close != CloseState::Open || self.library.platform == core {
             return;
         }
+        self.bios_selection.take();
         self.stop_input(cx);
         if self.is_gba() {
             self.gba_command(Command::Pause, cx);
@@ -124,11 +137,7 @@ impl Desktop {
         cx.notify();
     }
 
-    pub(super) fn open_gba(&mut self, path: PathBuf, title: String, cx: &mut Context<Self>) {
-        self.switch_core(GamePlatform::Gba, cx);
-        if !self.is_gba() {
-            return;
-        }
+    fn start_gba(&mut self, path: PathBuf, title: String, bios: PathBuf, cx: &mut Context<Self>) {
         if self.gba.runner.is_none() {
             let store = self.library.store.clone();
             let base = store.as_ref().map(|s| s.base_dir().to_owned()).or_else(|| {
@@ -148,7 +157,7 @@ impl Desktop {
         }
         self.release_buttons(cx);
         self.notice = None;
-        self.gba_command(Command::Load(path, title), cx);
+        self.gba_command(Command::Load { path, title, bios }, cx);
     }
 
     pub(super) fn receive_gba(&mut self, cx: &mut Context<Self>) {

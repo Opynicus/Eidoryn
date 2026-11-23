@@ -5,6 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "../../../tests/support/gba_firmware.rs"]
+mod firmware_fixture;
 #[path = "../../../tests/support/gba.rs"]
 mod fixture;
 
@@ -43,12 +45,18 @@ fn cartridge_worker_displays_input_pauses_and_restores_battery_save() {
     let temp = tempfile::tempdir().unwrap();
     let rom = temp.path().join("runner-probe.gba");
     let saves = temp.path().join("saves");
+    let bios = temp.path().join("test-firmware.bin");
     let library = Library::open(&temp.path().join("games.sqlite")).unwrap();
     fixture::write_cartridge(&rom);
+    std::fs::write(&bios, firmware_fixture::firmware()).unwrap();
 
     let blue = [0, 0, 255];
     let red = [255, 0, 0];
-    let load = || Command::Load(rom.clone(), "Runner Probe".into());
+    let load = || Command::Load {
+        path: rom.clone(),
+        title: "Runner Probe".into(),
+        bios: bios.clone(),
+    };
     {
         let runner = Runner::start(Some(library.clone()), saves.clone()).unwrap();
         runner.send(load()).unwrap();
@@ -84,9 +92,17 @@ fn cartridge_worker_displays_input_pauses_and_restores_battery_save() {
 fn closing_retries_a_failed_battery_save_with_the_same_cartridge() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("probe.gba");
+    let bios = dir.path().join("test-firmware.bin");
+    std::fs::write(&bios, firmware_fixture::firmware()).unwrap();
     fixture::write_cartridge(&path);
     let mut worker = super::Worker::new(dir.path().join("saves"), None);
-    worker.apply(Command::Load(path, "Probe".into())).unwrap();
+    worker
+        .apply(Command::Load {
+            path,
+            title: "Probe".into(),
+            bios,
+        })
+        .unwrap();
     worker
         .cartridge
         .as_mut()
@@ -110,4 +126,48 @@ fn closing_retries_a_failed_battery_save_with_the_same_cartridge() {
         std::fs::read(save).unwrap(),
         worker.cartridge.unwrap().machine.sram()
     );
+}
+
+#[test]
+fn launch_revalidates_firmware_and_keeps_the_running_cartridge_on_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("probe.gba");
+    fixture::write_cartridge(&path);
+    let bios = dir.path().join("firmware.bin");
+    let saves = dir.path().join("saves");
+    let mut worker = super::Worker::new(saves.clone(), None);
+    let load = || Command::Load {
+        path: path.clone(),
+        title: "Probe".into(),
+        bios: bios.clone(),
+    };
+
+    for bad_file in [
+        None,
+        Some(vec![0xbb; 512 * 1024]),
+        Some(vec![0xff; eidoryn_gba::BIOS_LEN]),
+    ] {
+        if let Some(bytes) = bad_file {
+            std::fs::write(&bios, bytes).unwrap();
+        }
+        worker.apply(load()).unwrap();
+        assert!(worker.snapshot.error.is_some());
+        assert!(worker.cartridge.is_none());
+        assert!(!saves.exists());
+    }
+
+    std::fs::write(&bios, firmware_fixture::firmware()).unwrap();
+    worker.apply(load()).unwrap();
+    worker.frame().unwrap();
+    assert_eq!(worker.cartridge.as_ref().unwrap().machine.sram()[0x80], 0);
+    let revision = worker.snapshot.media_revision;
+    std::fs::write(&bios, [0u8; 16]).unwrap();
+    worker.apply(load()).unwrap();
+    assert!(worker.snapshot.error.as_deref().unwrap().contains("16 KiB"));
+    assert!(worker.snapshot.running);
+    assert_eq!(worker.snapshot.media_revision, revision);
+
+    worker.apply(Command::Reset).unwrap();
+    worker.frame().unwrap();
+    assert_eq!(worker.cartridge.as_ref().unwrap().machine.sram()[0x80], 1);
 }
