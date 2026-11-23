@@ -1,3 +1,5 @@
+mod gba;
+
 use super::*;
 use crate::desktop::tests::{click_control, desktop, press_keys};
 use gpui::{

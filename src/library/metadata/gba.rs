@@ -1,10 +1,15 @@
 //! Regional GBA releases from Libretro's No-Intro DAT. The cartridge code comes
 //! from the ROM header; local filenames are never sent to the provider.
 use super::{Provenance, ProviderError, Release, SourceResponse, transport};
-use crate::library::http_retry::RequestLimit;
+use crate::library::{Library, http_retry::RequestLimit, key_path};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    fs::File,
+    io::Read,
+    path::Path,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -16,6 +21,7 @@ const DAT: &str = "https://raw.githubusercontent.com/libretro/libretro-database/
 pub(in crate::library) const COVER_BASE: &str = "https://raw.githubusercontent.com/libretro-thumbnails/Nintendo_-_Game_Boy_Advance/master/Named_Boxarts/";
 const PREFIX: &str = "libretro-gba/";
 const PROVIDER: &str = "Libretro No-Intro (GBA)";
+pub(super) const PAYLOAD_VERSION: u32 = 2;
 static DOWNLOAD: RequestLimit = RequestLimit::new(1, Duration::ZERO);
 struct Cache {
     generation: u64,
@@ -50,12 +56,42 @@ pub(super) fn clear_cache() {
     state.fetched = None;
 }
 
-struct Catalog(BTreeMap<String, Vec<(String, String)>>);
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct Rom {
+    size: u64,
+    crc: u32,
+}
+
+impl Rom {
+    fn from_dat(line: &str) -> Option<Self> {
+        // Skip the quoted filename; names can contain spaces and field-like text.
+        let fields = line
+            .strip_prefix("rom ( name \"")?
+            .rsplit_once("\" size ")?
+            .1;
+        let mut fields = fields.split_ascii_whitespace();
+        let size = fields.next()?.parse().ok()?;
+        let crc = fields.skip_while(|&field| field != "crc").nth(1)?;
+        Some(Self {
+            size,
+            crc: u32::from_str_radix(crc, 16).ok()?,
+        })
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Edition {
+    name: String,
+    region: String,
+    roms: Vec<Rom>,
+}
+
+struct Catalog(BTreeMap<String, Vec<Edition>>);
 
 impl Catalog {
     fn parse(bytes: &[u8], cancel: &AtomicBool) -> Result<Self, ProviderError> {
         let dat = std::str::from_utf8(bytes).map_err(|e| ProviderError::Invalid(e.to_string()))?;
-        let mut records = BTreeMap::<String, Vec<(String, String)>>::new();
+        let mut records = BTreeMap::<String, Vec<Edition>>::new();
         let mut game = None;
         for line in dat.lines().map(str::trim) {
             if line == "game (" {
@@ -65,22 +101,26 @@ impl Catalog {
                 if game.is_some() {
                     return Err(ProviderError::Invalid("Incomplete GBA DAT record".into()));
                 }
-                game = Some(("", "", ""));
-            } else if let Some((name, region, serial)) = &mut game {
+                game = Some(("", Edition::default()));
+            } else if let Some((serial, edition)) = &mut game {
                 if line == ")" {
-                    if !name.is_empty() && is_code(serial) {
+                    let edition = std::mem::take(edition);
+                    if !edition.name.is_empty() && is_code(serial) {
                         let rows = records.entry((*serial).to_owned()).or_default();
-                        let row = ((*name).to_owned(), region.replace(" / ", ", "));
-                        if !rows.contains(&row) {
-                            rows.push(row);
+                        if let Some(prior) = rows.iter_mut().find(|row| row.name == edition.name) {
+                            prior.roms.extend(edition.roms);
+                        } else {
+                            rows.push(edition);
                         }
                     }
                     game = None;
+                } else if let Some(rom) = Rom::from_dat(line) {
+                    edition.roms.push(rom);
                 } else if let Some(line) = line.strip_suffix('"') {
                     if let Some(value) = line.strip_prefix("name \"") {
-                        *name = value;
+                        value.clone_into(&mut edition.name);
                     } else if let Some(value) = line.strip_prefix("region \"") {
-                        *region = value;
+                        edition.region = value.replace(" / ", ", ");
                     } else if let Some(value) = line.strip_prefix("serial \"") {
                         *serial = value;
                     }
@@ -99,11 +139,11 @@ impl Catalog {
         let rows = self.0.get(code).map_or(&[][..], Vec::as_slice);
         let releases = rows
             .iter()
-            .map(|(name, region)| Release {
-                id: edition_id(code, name),
+            .map(|edition| Release {
+                id: edition_id(code, &edition.name),
                 serial: code.into(),
-                title: name.clone(),
-                region: region.clone(),
+                title: edition.name.clone(),
+                region: edition.region.clone(),
                 date: String::new(),
                 work_date: String::new(),
                 aliases: String::new(),
@@ -112,16 +152,25 @@ impl Catalog {
         Ok(SourceResponse {
             source: Provenance {
                 provider: PROVIDER,
-                payload_version: 1,
+                payload_version: PAYLOAD_VERSION,
             },
             releases,
-            raw: serde_json::to_vec(&(code, rows))
-                .map_err(|e| ProviderError::Invalid(e.to_string()))?,
+            raw: serde_json::to_vec(rows).map_err(|e| ProviderError::Invalid(e.to_string()))?,
         })
     }
 }
 
-pub(super) fn lookup(code: &str, cancel: &AtomicBool) -> Result<SourceResponse, ProviderError> {
+pub(super) fn lookup(
+    lib: &Library,
+    code: &str,
+    cancel: &AtomicBool,
+) -> Result<SourceResponse, ProviderError> {
+    #[cfg(feature = "ui-tests")]
+    if let Some(responses) = &lib.scrape_responses {
+        return recorded_response(&responses.metadata, code, cancel);
+    }
+    #[cfg(not(feature = "ui-tests"))]
+    let _ = lib;
     let _permit = DOWNLOAD.acquire_typed(cancel)?;
     let generation = {
         let state = cache();
@@ -156,8 +205,97 @@ pub(super) fn lookup(code: &str, cancel: &AtomicBool) -> Result<SourceResponse, 
     result.as_ref().map_err(Clone::clone)?.response(code)
 }
 
-/// Only a unique catalog entry in the cartridge's region can supply automatic artwork.
+/// Edition evidence persisted with a fetched serial. Older responses only stored titles.
+pub(super) fn cached_editions(conn: &Connection, code: &str) -> rusqlite::Result<Option<Vec<u8>>> {
+    conn.query_row(
+        "SELECT payload FROM metadata_responses WHERE serial=? AND provider=? AND payload_version=?",
+        params![code, PROVIDER, PAYLOAD_VERSION],
+        |row| row.get(0),
+    ).optional()
+}
+
+// Check only ambiguous cartridge codes, outside the scanner and writer transaction.
+fn file_signature(
+    path: &Path,
+    editions: &[Edition],
+    cancel: &AtomicBool,
+) -> std::io::Result<Option<Rom>> {
+    let meta = std::fs::metadata(path)?;
+    let size = meta.len();
+    if !meta.is_file()
+        || size > eidoryn_gba::MAX_ROM_LEN as u64
+        || !editions
+            .iter()
+            .any(|e| e.roms.iter().any(|r| r.size == size))
+    {
+        return Ok(None);
+    }
+    let mut file = File::open(path)?.take(size + 1);
+    let mut hash = crc32fast::Hasher::new();
+    let mut bytes = [0u8; 8192];
+    let mut read = 0;
+    while !cancel.load(Ordering::Relaxed) {
+        let count = file.read(&mut bytes)?;
+        if count == 0 {
+            return Ok((read == size).then(|| Rom {
+                size,
+                crc: hash.finalize(),
+            }));
+        }
+        read += count as u64;
+        hash.update(&bytes[..count]);
+    }
+    Ok(None)
+}
+
+pub(super) fn matching_title(
+    conn: &Connection,
+    id: i64,
+    code: &str,
+    region: Option<&str>,
+    raw: &[u8],
+    cancel: &AtomicBool,
+) -> Result<Option<String>, ProviderError> {
+    let editions: Vec<Edition> =
+        serde_json::from_slice(raw).map_err(|e| ProviderError::Invalid(e.to_string()))?;
+    let mut regional = editions
+        .iter()
+        .filter(|e| region.is_none_or(|r| super::matching::region_matches(r, &e.region)));
+    if let Some(only) = regional.next()
+        && regional.next().is_none()
+    {
+        return Ok(Some(only.name.clone()));
+    }
+    if editions.iter().all(|e| e.roms.is_empty()) {
+        return Ok(None);
+    }
+    let mut stmt = conn.prepare_cached(
+        "SELECT l.path FROM locations l JOIN discs d ON l.disc_id=d.id
+         WHERE d.game_id=? AND d.serial=? AND l.current AND l.available ORDER BY l.id",
+    )?;
+    let paths = stmt
+        .query_map(params![id, code], |r| Ok(key_path(r.get(0)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for path in paths {
+        let rom = file_signature(&path, &editions, cancel);
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ProviderError::Cancelled);
+        }
+        if let Ok(Some(rom)) = rom {
+            let mut exact = editions.iter().filter(|e| e.roms.contains(&rom));
+            return Ok(exact
+                .next()
+                .filter(|_| exact.next().is_none())
+                .map(|e| e.name.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// Resolve artwork using the same regional and file evidence as the metadata job.
 pub(in crate::library) fn boxart_name(
+    lib: &Library,
+    id: i64,
     code: &str,
     region: &str,
     cancel: &AtomicBool,
@@ -165,17 +303,24 @@ pub(in crate::library) fn boxart_name(
     if !is_code(code) {
         return Ok(None);
     }
-    let response = lookup(code, cancel).map_err(|err| err.to_string())?;
-    Ok(super::matching_serial(
-        &response.releases,
-        Some(code),
+    let conn = lib.worker_connection()?;
+    let raw = match cached_editions(&conn, code).map_err(|e| e.to_string())? {
+        Some(raw) => raw,
+        None => lookup(lib, code, cancel).map_err(|e| e.to_string())?.raw,
+    };
+    matching_title(
+        &conn,
+        id,
+        code,
         (!region.is_empty()).then_some(region),
+        &raw,
+        cancel,
     )
-    .map(|release| release.title.clone()))
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "ui-tests")]
-pub(super) fn recorded_response(
+fn recorded_response(
     response: &http::Response<Vec<u8>>,
     code: &str,
     cancel: &AtomicBool,
@@ -221,6 +366,88 @@ mod tests {
         assert_ne!(jpn.releases[0].id, jpn.releases[1].id);
         assert!(
             super::super::matching_serial(&jpn.releases, Some("AXXJ"), Some("Japan")).is_none()
+        );
+    }
+
+    #[test]
+    fn same_code_roms_match_their_own_revision_after_refreshing_a_legacy_cache() {
+        use crate::library::{Library, metadata, scrape::Mode};
+        use metadata::RefreshOutcome::{Candidates, Updated};
+        let temp = tempfile::tempdir().unwrap();
+        let lib = Library::open(&temp.path().join("library.db")).unwrap();
+        let cancel = AtomicBool::default();
+        let mut dat = String::new();
+        let mut ids = Vec::new();
+        for index in 0..3_u8 {
+            let mut bytes = [index; 512];
+            bytes[0xac..0xb0].copy_from_slice(b"AXXJ");
+            let path = temp.path().join(format!("private-{index}.gba"));
+            std::fs::write(&path, bytes).unwrap();
+            lib.scan_files(&[path], &cancel, |_| {}).unwrap();
+            ids.push(lib.visible_game_ids().unwrap().into_iter().max().unwrap());
+            if index < 2 {
+                use std::fmt::Write;
+                writeln!(dat, "game (\n name \"Release {index}\"\n region \"Japan\"\n serial \"AXXJ\"\n rom ( name \"a.gba\" size 512 crc {:08X} )\n)", crc32fast::hash(&bytes)).unwrap();
+            }
+        }
+        let catalog = Catalog::parse(dat.as_bytes(), &cancel).unwrap();
+        let fetch = |code: &str| catalog.response(code).map_err(|e| e.to_string());
+        let legacy = metadata::refresh::refresh_with(&lib, ids[0], |key| {
+            let mut reply = fetch(key)?;
+            reply.source.payload_version = 1;
+            reply.raw = br#"["AXXJ",[["Release 0","Japan"],["Release 1","Japan"]]]"#.to_vec();
+            Ok(reply)
+        })
+        .unwrap();
+        assert_eq!(legacy, Candidates);
+
+        let batch = metadata::Batch::default();
+        metadata::set_override(&lib, ids[0], metadata::Field::Title, Some("My cartridge")).unwrap();
+        assert_eq!(
+            batch
+                .refresh_with(&lib, ids[0], Mode::Incremental, &cancel, fetch)
+                .unwrap(),
+            Updated
+        );
+        assert_eq!(
+            batch
+                .refresh_with(&lib, ids[1], Mode::Incremental, &cancel, |_| panic!(
+                    "shared catalog downloaded twice"
+                ))
+                .unwrap(),
+            Updated
+        );
+        let other_batch = metadata::Batch::default();
+        assert_eq!(
+            other_batch
+                .refresh_with(&lib, ids[2], Mode::Incremental, &cancel, |_| panic!(
+                    "should use the offline DAT response"
+                ))
+                .unwrap(),
+            Candidates
+        );
+        let cards = metadata::list_by_id(&lib, &ids).unwrap();
+        assert_eq!(cards[&ids[0]].title.as_deref(), Some("My cartridge"));
+        assert_eq!(
+            cards[&ids[0]].release_id.as_deref(),
+            Some(edition_id("AXXJ", "Release 0").as_str())
+        );
+        assert_eq!(
+            cards[&ids[1]].release_id.as_deref(),
+            Some(edition_id("AXXJ", "Release 1").as_str())
+        );
+        assert!(cards[&ids[2]].release_id.is_none());
+        let manual = edition_id("AXXJ", "Release 1");
+        metadata::select(&lib, ids[0], &manual).unwrap();
+        assert_eq!(
+            metadata::refresh::refresh_with(&lib, ids[0], fetch).unwrap(),
+            Updated
+        );
+        assert_eq!(
+            metadata::list_by_id(&lib, &ids).unwrap()[&ids[0]]
+                .release_id
+                .as_deref(),
+            Some(manual.as_str())
         );
     }
 
@@ -300,7 +527,7 @@ mod tests {
     }
     #[test]
     #[ignore = "requires the locally supplied Japanese Aria of Sorrow cartridge and live Libretro"]
-    fn japanese_castlevania_matches_catalog_and_downloads_selected_art() {
+    fn japanese_castlevania_matches_retail_rom_and_downloads_art() {
         use crate::library::{Library, covers, metadata};
         let rom = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/Castlevania - Akatsuki no Minuet (Japan).gba");
@@ -312,20 +539,19 @@ mod tests {
         assert_eq!(game.serial.as_deref(), Some("A2CJ"));
         assert_eq!(
             metadata::refresh_online(&lib, game.id).unwrap(),
-            metadata::RefreshOutcome::Candidates
+            metadata::RefreshOutcome::Updated
         );
-        let editions = metadata::candidates(&lib, game.id, "").unwrap();
-        let retail = editions
-            .iter()
-            .find(|edition| edition.title == "Castlevania - Akatsuki no Minuet (Japan)")
-            .unwrap();
-        metadata::select(&lib, game.id, &retail.id).unwrap();
-        covers::fetch_release(
+        assert_eq!(
+            metadata::list_by_id(&lib, &[game.id]).unwrap()[&game.id]
+                .title
+                .as_deref(),
+            Some("Castlevania - Akatsuki no Minuet (Japan)")
+        );
+        covers::fetch(
             &lib,
             game.id,
             covers::Provider::Libretro,
             "",
-            retail,
             &AtomicBool::default(),
         )
         .unwrap();

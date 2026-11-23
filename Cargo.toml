@@ -19,6 +19,7 @@ default = ["desktop", "wayland", "x11", "hardware", "jit"]
 desktop = [
     "dep:eidoryn-gba",
     "dep:chrono",
+    "dep:crc32fast",
     "dep:gpui",
     "dep:gpui_platform",
     "dep:httpdate",
@@ -48,6 +49,7 @@ jit = ["eidoryn-ps1/jit"]
 ui-tests = ["desktop", "gpui/test-support"]
 
 [dependencies]
+crc32fast = { version = "1.5", optional = true }
 eidoryn-gba = { path = "crates/gba", optional = true }
 eidoryn-ps1 = { path = "crates/ps1", default-features = false }
 eidoryn-host = { path = "crates/host", default-features = false }

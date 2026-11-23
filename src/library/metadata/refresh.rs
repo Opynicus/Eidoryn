@@ -6,6 +6,7 @@ use super::{
 use crate::library::scrape::Mode;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
+    borrow::Cow,
     collections::HashMap,
     sync::{
         Arc, Mutex, Weak,
@@ -99,6 +100,7 @@ enum Hit {
 pub(in crate::library) struct Prepared {
     cache_generation: i64,
     serial: Option<String>,
+    gba_edition: Option<String>,
     hit: Hit,
 }
 
@@ -115,18 +117,14 @@ impl Batch {
             id,
         )?;
         self.prepare_with(lib, id, mode, cancel, |serial| {
+            if gba {
+                return super::gba::lookup(lib, serial, cancel);
+            }
             #[cfg(feature = "ui-tests")]
             if let Some(responses) = &lib.scrape_responses {
-                if gba {
-                    return super::gba::recorded_response(&responses.metadata, serial, cancel);
-                }
                 return super::wikidata::recorded_response(responses.metadata.clone(), serial);
             }
-            if gba {
-                super::gba::lookup(serial, cancel)
-            } else {
-                super::lookup_release(serial, cancel)
-            }
+            super::lookup_release(serial, cancel)
         })
     }
 
@@ -164,6 +162,7 @@ impl Batch {
             return Ok(Prepared {
                 cache_generation: evidence.cache_generation,
                 serial: None,
+                gba_edition: None,
                 hit: Hit::Missing,
             });
         };
@@ -227,9 +226,32 @@ impl Batch {
                 }
             }
         };
+        drop(current);
+        // Only the provider response is shared by serial. Two ROMs with the same
+        // header code can be different revisions and must be matched separately.
+        let gba_edition = if evidence.gba && evidence.selected.is_none() {
+            let raw = match &hit {
+                Hit::Fetched(fetched)
+                    if fetched.download.source.payload_version == super::gba::PAYLOAD_VERSION =>
+                {
+                    Some(Cow::Borrowed(fetched.download.raw.as_slice()))
+                }
+                Hit::Cached => super::gba::cached_editions(&conn, key)?.map(Cow::Owned),
+                _ => None,
+            };
+            raw.map(|raw| {
+                super::gba::matching_title(&conn, id, key, evidence.region.as_deref(), &raw, cancel)
+            })
+            .transpose()?
+            .flatten()
+            .map(|name| super::gba::edition_id(key, &name))
+        } else {
+            None
+        };
         Ok(Prepared {
             cache_generation: evidence.cache_generation,
             serial: evidence.serial,
+            gba_edition,
             hit,
         })
     }
@@ -242,6 +264,12 @@ fn complete_cached_edition(
     serial: &str,
     evidence: &Evidence,
 ) -> rusqlite::Result<bool> {
+    if evidence.gba
+        && evidence.selected.is_none()
+        && super::gba::cached_editions(conn, serial)?.is_some()
+    {
+        return Ok(true);
+    }
     let releases = cached_for(conn, serial, evidence.gba)?;
     let edition = if let Some(id) = &evidence.selected {
         releases.iter().find(|r| &r.id == id)
@@ -361,7 +389,7 @@ impl Prepared {
             }
         }
         let releases = cached_for(tx, &serial, ev.gba).map_err(|e| e.to_string())?;
-        let release = if let Some(key) = &ev.selected {
+        let release = if let Some(key) = ev.selected.as_ref().or(self.gba_edition.as_ref()) {
             releases.iter().find(|r| &r.id == key)
         } else {
             matching_serial(&releases, Some(&serial), ev.region.as_deref())

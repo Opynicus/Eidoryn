@@ -309,7 +309,6 @@ impl Desktop {
             .collect();
         if !added.is_empty() {
             // Import persists eligible jobs in the same transaction as the game.
-            // Waking the scheduler also lets GBA cards appear without queuing a scraper.
             state.next_recovery = Instant::now();
         }
         if self
@@ -344,6 +343,10 @@ impl Desktop {
         let Some(store) = self.library.store.clone() else {
             return;
         };
+        // A new batch replaces the result shown by an earlier manual lookup.
+        self.library.metadata_lookups.retain(|id, lookup| {
+            !ids.contains(id) || matches!(lookup, super::MetadataLookup::Fetching(_))
+        });
         for entry in &mut self.library.entries {
             if ids.contains(&entry.game.id) {
                 entry.scrape_active = true;
@@ -462,6 +465,8 @@ impl Desktop {
             ),
         ];
         for (key, count) in [
+            (Text::LibraryPending, report.needs_choice),
+            (Text::LibraryNoReleaseMatch, report.not_found),
             (Text::LibrarySkipped, report.skipped),
             (Text::LibraryFailed, report.failed),
             (Text::LibraryRetryWait, report.retry_waiting),
@@ -638,8 +643,13 @@ impl Desktop {
         let status = match row.status {
             JobStatus::Pending => Text::LibraryScrapePending,
             JobStatus::Running => Text::LibraryProcessing,
-            JobStatus::Succeeded if row.skipped => Text::LibrarySkipped,
-            JobStatus::Succeeded => Text::LibraryScrapeFinished,
+            JobStatus::Succeeded => match row.outcome {
+                Some(scrape::JobOutcome::NeedsChoice) => Text::LibraryPending,
+                Some(scrape::JobOutcome::NotFound) if row.cover => Text::LibraryNotFound,
+                Some(scrape::JobOutcome::NotFound) => Text::LibraryNoReleaseMatch,
+                Some(scrape::JobOutcome::Skipped) => Text::LibrarySkipped,
+                None => Text::LibraryScrapeFinished,
+            },
             JobStatus::RetryWait => Text::LibraryRetryWait,
             JobStatus::Failed => Text::LibraryFailed,
             JobStatus::Cancelled => Text::LibraryScrapeCancelled,

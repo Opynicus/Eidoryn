@@ -364,6 +364,7 @@ impl Desktop {
             .gap_2();
         let selected = selected.map(|index| &self.library.entries[index]);
         if let Some(entry) = selected {
+            let id = entry.game.id;
             bar.child(
                 div()
                     .min_w_0()
@@ -387,6 +388,22 @@ impl Desktop {
                     .flex_wrap()
                     .items_center()
                     .gap_2()
+                    .when(entry.pending, |row| {
+                        row.child(self.library_button(
+                            "lib-choose-edition",
+                            Text::LibraryChooseEdition,
+                            false,
+                            cx,
+                            move |v, window, cx| {
+                                v.edit_library(
+                                    super::detail::editor::Edit::Match(id),
+                                    String::new(),
+                                    window,
+                                    cx,
+                                );
+                            },
+                        ))
+                    })
                     .child(self.library_button(
                         "lib-details",
                         Text::LibraryDetails,

@@ -359,7 +359,7 @@ fn search_with(
         if !cached {
             download_serial(&mut conn, id, &serial, cancel, |s| {
                 if gba {
-                    gba::lookup(s, cancel).map_err(|err| err.to_string())
+                    gba::lookup(lib, s, cancel).map_err(|err| err.to_string())
                 } else {
                     fetch(s)
                 }

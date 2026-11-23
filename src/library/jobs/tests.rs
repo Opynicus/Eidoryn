@@ -18,6 +18,7 @@ fn library() -> (tempfile::TempDir, Library) {
 fn queued_job_kinds_keep_their_persisted_stage_and_provider() {
     for (stage, provider, kind) in [
         (Stage::Metadata, "wikidata", JobKind::Metadata),
+        (Stage::Metadata, "libretro-gba", JobKind::GbaMetadata),
         (Stage::Cover, "libretro", JobKind::Cover(Provider::Libretro)),
         (
             Stage::Cover,
@@ -68,8 +69,97 @@ fn task_history_survives_reopen_and_keeps_only_recent_visible_stages() {
     assert_eq!((rows[0].updated_at, rows[19].updated_at), (21, 2));
     assert!(rows.iter().all(|row| row.title == "My disc"
         && row.cover
-        && row.skipped
+        && row.outcome == Some(JobOutcome::Skipped)
         && row.status == JobStatus::Succeeded));
+}
+
+#[cfg(feature = "ui-tests")]
+#[test]
+fn gba_import_and_manual_refresh_report_the_reason_for_a_skipped_cover_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("library.db");
+    let mut lib = Library::open(&path).unwrap();
+    lib.configure_import_scraping(Some(Provider::Custom));
+    let mut rom = [0u8; 192];
+    for code in ["AXXJ", "BXXE"] {
+        rom[0xac..0xb0].copy_from_slice(code.as_bytes());
+        let image = dir.path().join(format!("{code}.gba"));
+        std::fs::write(&image, rom).unwrap();
+        lib.scan_files(&[image], &AtomicBool::default(), |_| {})
+            .unwrap();
+    }
+    assert_eq!(
+        due_games(&lib).unwrap(),
+        [(1, Mode::Incremental), (2, Mode::Incremental)]
+    );
+    drop(lib);
+
+    let dat = br#"game (
+        name "Game (Japan)"
+        region "Japan"
+        serial "AXXJ"
+    )
+    game (
+        name "Game (Japan) (Rev 1)"
+        region "Japan"
+        serial "AXXJ"
+    )"#;
+    let lib = Library::open(&path).unwrap().with_scrape_responses(
+        http::Response::new(dat.to_vec()),
+        http::Response::new(Vec::new()),
+    );
+    for mode in [Mode::Incremental, Mode::Full] {
+        if mode == Mode::Full {
+            enqueue_games(&lib, &[1, 2], mode, Provider::Custom).unwrap();
+        }
+        let report = scrape::resume_events(
+            &lib,
+            &[1, 2],
+            scrape::Options {
+                mode,
+                provider: Provider::Custom,
+                template: "",
+                workers: 2.into(),
+                cover_workers: 2.into(),
+            },
+            &AtomicBool::default(),
+            |_| {},
+        );
+        assert_eq!(
+            (report.finished, report.failed),
+            (2, 0),
+            "{:?}",
+            report.errors
+        );
+        assert_eq!(
+            (report.needs_choice, report.not_found, report.skipped),
+            (1, 1, 0)
+        );
+        let records = recent_jobs(&lib).unwrap();
+        let latest = &records[..4];
+        assert_eq!(
+            latest
+                .iter()
+                .filter(|j| j.outcome == Some(JobOutcome::NeedsChoice))
+                .count(),
+            1
+        );
+        assert_eq!(
+            latest
+                .iter()
+                .filter(|j| j.outcome == Some(JobOutcome::NotFound))
+                .count(),
+            1
+        );
+        assert_eq!(
+            latest
+                .iter()
+                .filter(|j| j.cover && j.outcome == Some(JobOutcome::Skipped))
+                .count(),
+            2
+        );
+        assert_eq!(due_games(&lib).unwrap(), []);
+    }
 }
 
 #[test]

@@ -12,8 +12,8 @@ use std::{
 };
 
 pub use super::jobs::{
-    CoverClaim, JobRecord, JobStatus, cancel_games, due_games, enqueue_games, failed_games,
-    recent_failures, recent_jobs,
+    CoverClaim, JobOutcome, JobRecord, JobStatus, cancel_games, due_games, enqueue_games,
+    failed_games, recent_failures, recent_jobs,
 };
 use super::{
     Library, covers,
@@ -34,6 +34,8 @@ pub struct Report {
     pub finished: usize,
     pub total: usize,
     pub skipped: usize,
+    pub needs_choice: usize,
+    pub not_found: usize,
     pub failed: usize,
     pub errors: Vec<String>,
     pub retry_waiting: usize,
@@ -412,12 +414,17 @@ fn record(report: &mut Report, state: jobs::State) {
         jobs::GameState::RetryWaiting => report.retry_waiting += 1,
         jobs::GameState::Pending => report.pending += 1,
         jobs::GameState::Cancelled => report.cancelled += 1,
-        jobs::GameState::Done | jobs::GameState::Skipped => {
+        completed => {
             report.finished += 1;
             if state.error.is_some() {
                 report.failed += 1;
-            } else if state.outcome == jobs::GameState::Skipped {
-                report.skipped += 1;
+            } else {
+                match completed {
+                    jobs::GameState::NeedsChoice => report.needs_choice += 1,
+                    jobs::GameState::NotFound => report.not_found += 1,
+                    jobs::GameState::Skipped => report.skipped += 1,
+                    _ => {}
+                }
             }
         }
     }
@@ -450,14 +457,16 @@ fn commit_result(
                 if claim.mode == Mode::Full && claim.kind == JobKind::Metadata {
                     jobs::release_serial_covers(tx, claim.id).map_err(|e| e.to_string())?;
                 }
-                // The completion trigger skips the providers still waiting for an edition.
-                "skip_cover"
+                jobs::skip_dependent_covers(tx, claim.id).map_err(|e| e.to_string())?;
+                "needs_choice"
             }
             Some(metadata::RefreshOutcome::NoSerial) | None => "skip_cover",
-            Some(metadata::RefreshOutcome::NotFound) if claim.kind == JobKind::GbaMetadata => {
-                "skip_cover"
+            Some(metadata::RefreshOutcome::NotFound) => {
+                if claim.kind == JobKind::GbaMetadata {
+                    jobs::skip_dependent_covers(tx, claim.id).map_err(|e| e.to_string())?;
+                }
+                "not_found"
             }
-            Some(metadata::RefreshOutcome::NotFound) => "not_found",
         },
         Work::Cover(ref outcome) => outcome,
         Work::Failed(failure) => return jobs::fail(tx, claim, &failure).map_err(|e| e.to_string()),

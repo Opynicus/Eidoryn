@@ -34,6 +34,7 @@ impl ReleaseRequest {
         store: &Library,
         id: i64,
         provider: covers::Provider,
+        cartridge: bool,
         template: &str,
         cancel: &AtomicBool,
     ) -> ScrapeResult {
@@ -51,6 +52,7 @@ impl ReleaseRequest {
         };
         // Serial-based sources can still identify the cover when the release lookup misses.
         let cover = match (&release, provider) {
+            _ if cartridge && !matches!(release, Ok(RefreshOutcome::Updated)) => None,
             (Ok(RefreshOutcome::NoSerial), _)
             | (Ok(RefreshOutcome::Candidates), covers::Provider::Igdb) => None,
             _ if cancel.load(Ordering::Relaxed) => None,
@@ -122,6 +124,7 @@ impl Desktop {
         let match_cancel = Arc::clone(&self.library.match_cancel);
         let request = Arc::new(AtomicBool::new(false));
         let provider = self.preferences.library.cover_provider;
+        let cartridge = self.library.entry(id).is_some_and(Entry::is_cartridge);
         let template = self.preferences.library.cover_template.clone();
         self.library
             .metadata_lookups
@@ -130,7 +133,7 @@ impl Desktop {
             let cancel = Arc::clone(&request);
             let ScrapeResult { release, cover } = cx
                 .background_executor()
-                .spawn(async move { action.run(&store, id, provider, &template, &cancel) })
+                .spawn(async move { action.run(&store, id, provider, cartridge, &template, &cancel) })
                 .await;
             let _ = this.update_in(cx, |v, window, cx| {
                 if !matches!(v.library.metadata_lookups.get(&id), Some(MetadataLookup::Fetching(current)) if Arc::ptr_eq(current, &request)) {
@@ -189,10 +192,8 @@ impl Desktop {
     }
 
     pub(in crate::desktop) fn close_detail_dialog(&mut self) -> bool {
-        if !self.library.details
-            || self.library.settings
-            || (self.library.editor.is_none() && self.library.clear_playtime_confirmation.is_none())
-        {
+        let confirming = self.library.details && self.library.clear_playtime_confirmation.is_some();
+        if self.library.settings || (self.library.editor.is_none() && !confirming) {
             return false;
         }
         self.library.close_editor();
@@ -200,13 +201,16 @@ impl Desktop {
     }
 
     pub(in crate::desktop) fn detail_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if !self.library.details || self.library.settings {
+        if self.library.settings {
             return None;
         }
         if let Some(editor) = &self.library.editor {
             return Some(self.library_modal(self.tr(editor.title()), self.library_editor(cx), cx));
         }
-        let id = self.library.clear_playtime_confirmation?;
+        let id = self
+            .library
+            .clear_playtime_confirmation
+            .filter(|_| self.library.details)?;
         let title = Text::LibraryClearTime;
         let entry = self
             .library

@@ -1523,6 +1523,7 @@ name = "eidoryn"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "crc32fast",
  "eidoryn-gba",
  "eidoryn-host",
  "eidoryn-ps1",
