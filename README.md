@@ -64,7 +64,11 @@ The user data directory contains `library.sqlite3` with the library index, cache
 
 ### Play a GBA cartridge
 
-Choose **GBA** in the top bar. Open **Game library**, add a local `.gba` cartridge or scan its folder, then start the game. Place your 16 KiB GBA BIOS at `firmware/gba_bios.bin` under the user data directory. Every GBA cartridge boots from that file, regardless of region. If the file is absent, Eidoryn can also use a GBA BIOS path saved by an earlier version. In Game view, use the arrow keys for the D-pad, **X / Z** for A / B, **Q / E** for L / R, **Enter** for Start and **Backspace** for Select.
+Choose **GBA** in the top bar, open **Game library**, then add a local `.gba` cartridge or scan its folder. The first time you start a game, Eidoryn asks you to import a 16 KiB BIOS dumped from your own GBA. It creates the firmware directory, copies the file to `firmware/gba_bios.bin` under the user data directory and continues starting the selected game. All regions share that copy, so you can move the original file afterwards. A valid BIOS configured in an earlier version also works.
+
+You can also import `bios.bin` from the open-source replacement firmware used in the Japanese cartridge tests. [Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
+
+In Game view, use the arrow keys for the D-pad, **X / Z** for A / B, **Q / E** for L / R, **Enter** for Start and **Backspace** for Select.
 
 Games that use 32 KiB SRAM can save through their own menus. Eidoryn keeps these saves in `saves/gba/<ROM SHA-256>.sav` under the user data directory. Moving or renaming the ROM preserves its save.
 

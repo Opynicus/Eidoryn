@@ -144,6 +144,10 @@ impl Desktop {
         }
     }
     pub(super) fn pick_image(&mut self, kind: ImagePicker, cx: &mut Context<Self>) {
+        if matches!(kind, ImagePicker::Gba) {
+            self.cancel_gba_setup();
+            cx.notify();
+        }
         let prompt = self.tr(match kind {
             ImagePicker::Bios => Text::BiosPicker,
             ImagePicker::Exe => Text::ExePicker,
@@ -436,7 +440,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         if self.is_gba() && self.page != page {
-            self.bios_selection.take();
+            self.cancel_gba_setup();
         }
         self.snapshot_confirmation = None;
         self.dismiss_library_context_menu();

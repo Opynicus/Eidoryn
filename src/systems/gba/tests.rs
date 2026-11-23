@@ -1,4 +1,4 @@
-use super::{Command, Runner, Snapshot};
+use super::{Command, Runner, Snapshot, firmware, import_firmware, needs_firmware_import};
 use crate::library::{GamePlatform, Library};
 use std::{
     thread,
@@ -182,12 +182,69 @@ fn canonical_firmware_takes_precedence_over_an_old_saved_path() {
     let canonical = firmware_path(dir.path());
     let old = firmware_fixture::firmware();
     std::fs::write(&prior, &old).unwrap();
-    let worker = super::Worker::new(dir.path(), Some(prior), None);
-    assert_eq!(worker.firmware().unwrap(), old);
+    let legacy = Some(prior.as_path());
+    assert!(!needs_firmware_import(dir.path(), legacy).unwrap());
+    assert_eq!(firmware::load(&canonical, legacy).unwrap(), old);
     let mut replacement = old;
     replacement[0x200] = 0x42;
     std::fs::write(&canonical, &replacement).unwrap();
-    assert_eq!(worker.firmware().unwrap(), replacement);
+    assert_eq!(firmware::load(&canonical, legacy).unwrap(), replacement);
     std::fs::write(&canonical, [0u8; 16]).unwrap();
-    assert!(worker.firmware().unwrap_err().contains("16 KiB"));
+    assert!(needs_firmware_import(dir.path(), legacy).unwrap());
+    assert_eq!(
+        firmware::load(&canonical, legacy).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn first_import_installs_one_validated_copy_independent_of_the_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("fresh-profile");
+    let installed = firmware::installed_path(&data);
+    let source = dir.path().join("console.bin");
+    assert!(needs_firmware_import(&data, Some(&source)).unwrap());
+    std::fs::write(&source, vec![0xff; eidoryn_gba::BIOS_LEN]).unwrap();
+    assert_eq!(
+        import_firmware(&data, &source).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    assert!(!data.exists());
+
+    let original = firmware_fixture::firmware();
+    std::fs::write(&source, &original).unwrap();
+    import_firmware(&data, &source).unwrap();
+    let mut different = original.clone();
+    different[0x200] ^= 0xff;
+    std::fs::write(&source, &different).unwrap();
+    import_firmware(&data, &source).unwrap();
+    std::fs::remove_file(source).unwrap();
+    assert_eq!(std::fs::read(installed).unwrap(), original);
+    assert!(!needs_firmware_import(&data, None).unwrap());
+}
+
+#[test]
+fn concurrent_imports_repair_a_corrupt_firmware_with_one_complete_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    let installed = firmware_path(data);
+    std::fs::write(&installed, [0; 12]).unwrap();
+    let first = firmware_fixture::firmware();
+    let mut second = first.clone();
+    second[0x200] ^= 0xff;
+    let paths = [data.join("first.bin"), data.join("second.bin")];
+    std::fs::write(&paths[0], &first).unwrap();
+    std::fs::write(&paths[1], &second).unwrap();
+    let start = std::sync::Barrier::new(paths.len());
+    thread::scope(|scope| {
+        for path in &paths {
+            scope.spawn(|| {
+                start.wait();
+                import_firmware(data, path).unwrap();
+            });
+        }
+    });
+    let bytes = std::fs::read(installed).unwrap();
+    assert!(bytes == first || bytes == second);
+    assert!(!needs_firmware_import(data, None).unwrap());
 }

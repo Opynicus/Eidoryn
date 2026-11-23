@@ -1,6 +1,6 @@
 //! Desktop host for a GBA cartridge. All machine execution and file I/O run off the UI thread.
 use crate::library::{Library, playtime::Playtime};
-use eidoryn_gba::{BIOS_LEN, Machine};
+use eidoryn_gba::Machine;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
@@ -14,6 +14,9 @@ use std::{
 #[cfg(test)]
 mod tests;
 
+mod firmware;
+pub use firmware::{import_firmware, needs_firmware_import};
+
 pub enum Command {
     Load { path: PathBuf, title: String },
     Buttons(u16),
@@ -22,33 +25,6 @@ pub enum Command {
     Reset,
     PrepareClose(mpsc::Sender<Result<(), String>>),
     ClearStatistics(i64, mpsc::Sender<Result<(), String>>),
-}
-
-/// Reads the shared GBA firmware, accepting dumps and replacement firmware.
-fn read_bios(path: &Path) -> std::io::Result<Vec<u8>> {
-    use std::io::{Error, ErrorKind};
-    let metadata = fs::metadata(path)?;
-    if !metadata.is_file() {
-        return Err(Error::new(
-            ErrorKind::InvalidData,
-            "expected a regular GBA BIOS file",
-        ));
-    }
-    if metadata.len() != BIOS_LEN as u64 {
-        return Err(Error::new(
-            ErrorKind::InvalidData,
-            format!(
-                "GBA BIOS must be exactly 16 KiB ({BIOS_LEN} bytes), found {} bytes",
-                metadata.len()
-            ),
-        ));
-    }
-    let mut bytes = Vec::with_capacity(BIOS_LEN);
-    File::open(path)?
-        .take(BIOS_LEN as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    eidoryn_gba::validate_bios(&bytes).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
-    Ok(bytes)
 }
 
 #[derive(Clone, Default)]
@@ -219,7 +195,7 @@ struct Worker {
 impl Worker {
     fn new(data_dir: &Path, legacy_bios: Option<PathBuf>, tracker: Option<Playtime>) -> Self {
         Self {
-            bios: data_dir.join("firmware/gba_bios.bin"),
+            bios: firmware::installed_path(data_dir),
             legacy_bios,
             saves: data_dir.join("saves/gba"),
             tracker,
@@ -227,27 +203,6 @@ impl Worker {
             snapshot: Snapshot::default(),
             last_save: Instant::now(),
         }
-    }
-
-    fn firmware(&self) -> Result<Vec<u8>, String> {
-        // A fixed installation wins over settings saved by releases with a BIOS picker.
-        for path in std::iter::once(self.bios.as_path()).chain(self.legacy_bios.as_deref()) {
-            match read_bios(path) {
-                Ok(bytes) => return Ok(bytes),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(format!(
-                        "{}: {e}. Expected a 16 KiB GBA BIOS at {}",
-                        path.display(),
-                        self.bios.display()
-                    ));
-                }
-            }
-        }
-        Err(format!(
-            "Put your 16 KiB GBA BIOS at {} and start the game again.",
-            self.bios.display()
-        ))
     }
 
     fn flush(&mut self) -> Result<(), String> {
@@ -271,10 +226,10 @@ impl Worker {
     fn apply(&mut self, command: Command) -> Result<bool, String> {
         match command {
             Command::Load { path, title } => {
-                let bios = match self.firmware() {
+                let bios = match firmware::load(&self.bios, self.legacy_bios.as_deref()) {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        self.snapshot.error = Some(error);
+                        self.snapshot.error = Some(error.to_string());
                         return Ok(true);
                     }
                 };

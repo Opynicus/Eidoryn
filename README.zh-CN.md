@@ -64,7 +64,11 @@ Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面
 
 ### 运行 GBA 卡带
 
-在顶栏选择 **GBA**，打开**游戏库**，添加本地 `.gba` 文件或扫描所在文件夹，即可启动卡带。将自己的 16 KiB GBA BIOS 放在用户数据目录的 `firmware/gba_bios.bin`。各地区卡带都自动使用这份固件。如果这个文件不存在，也可沿用旧版本已经保存的 GBA BIOS 路径。在游戏视图中，方向键对应十字键，**X / Z** 对应 A / B，**Q / E** 对应 L / R，**Enter** 对应 Start，**Backspace** 对应 Select。
+在顶栏选择 **GBA**，打开**游戏库**，添加本地 `.gba` 卡带或扫描所在文件夹。首次启动游戏时，按提示导入从自己的 GBA 主机导出的 16 KiB BIOS。Eidoryn 会自动创建目录，将固件复制到用户数据目录的 `firmware/gba_bios.bin`，然后继续启动刚选的游戏。以后各地区的卡带都共用这份副本，移动原文件也不影响启动。旧版本已配置有效 BIOS 的用户可以直接启动游戏。
+
+也可以导入开源替代固件项目提供的 `bios.bin`。日版《晓月圆舞曲》的实测使用了这份固件。[Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
+
+在游戏视图中，方向键对应十字键，**X / Z** 对应 A / B，**Q / E** 对应 L / R，**Enter** 对应 Start，**Backspace** 对应 Select。
 
 采用 32 KiB SRAM 的游戏可以在游戏内正常存档。模拟器把存档写入用户数据目录下的 `saves/gba/<ROM SHA-256>.sav`。移动或重命名同一份 ROM 后，仍可读取原存档。
 
