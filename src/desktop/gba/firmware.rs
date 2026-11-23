@@ -152,15 +152,15 @@ impl Desktop {
                             ghost_button(
                                 &self.fonts,
                                 p,
-                                "gba-firmware-project",
-                                self.tr(Text::GbaBiosProject),
+                                "download-mgba",
+                                self.tr(Text::DownloadMgba),
                                 None,
                             )
                             .role(gpui::Role::Link)
-                            .aria_label(self.tr(Text::GbaBiosProject))
-                            .debug_selector(|| "gba-firmware-project".into())
+                            .aria_label(self.tr(Text::DownloadMgba))
+                            .debug_selector(|| "download-mgba".into())
                             .on_click(|_, _, cx| {
-                                cx.open_url("https://github.com/Cult-of-GBA/BIOS");
+                                cx.open_url("https://mgba.io/downloads.html");
                             }),
                         ),
                 ),

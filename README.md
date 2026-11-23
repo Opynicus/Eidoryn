@@ -66,7 +66,7 @@ The user data directory contains `library.sqlite3` with the library index, cache
 
 Choose **GBA** in the top bar, open **Game library**, then add a local `.gba` cartridge or scan its folder. The first time you start a game, Eidoryn asks you to import a 16 KiB BIOS dumped from your own GBA. It creates the firmware directory, copies the file to `firmware/gba_bios.bin` under the user data directory and continues starting the selected game. All regions share that copy, so you can move the original file afterwards. A valid BIOS configured in an earlier version also works.
 
-You can also import `bios.bin` from the open-source replacement firmware used in the Japanese cartridge tests. [Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
+**Download mGBA** opens the emulator’s official download page. mGBA’s built-in BIOS runs inside mGBA. If you already set an external GBA BIOS file in mGBA’s BIOS settings, select **Import GBA BIOS** in Eidoryn and choose that same file. [Download mGBA](https://mgba.io/downloads.html)
 
 In Game view, use the arrow keys for the D-pad, **X / Z** for A / B, **Q / E** for L / R, **Enter** for Start and **Backspace** for Select.
 

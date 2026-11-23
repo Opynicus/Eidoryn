@@ -83,10 +83,10 @@ fn first_gba_launch_imports_firmware_and_resumes_the_cartridge(cx: &mut TestAppC
     click_control(cx, "open-gba");
     cx.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
     wait_for_gba(&view, cx, |v| v.gba.firmware_setup.is_some());
-    click_control(cx, "gba-firmware-project");
+    click_control(cx, "download-mgba");
     assert_eq!(
         cx.opened_url().as_deref(),
-        Some("https://github.com/Cult-of-GBA/BIOS")
+        Some("https://mgba.io/downloads.html")
     );
     click_control(cx, "import-gba-firmware");
     cx.simulate_path_prompt_response(|_| None);

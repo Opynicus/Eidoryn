@@ -66,7 +66,7 @@ Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面
 
 在顶栏选择 **GBA**，打开**游戏库**，添加本地 `.gba` 卡带或扫描所在文件夹。首次启动游戏时，按提示导入从自己的 GBA 主机导出的 16 KiB BIOS。Eidoryn 会自动创建目录，将固件复制到用户数据目录的 `firmware/gba_bios.bin`，然后继续启动刚选的游戏。以后各地区的卡带都共用这份副本，移动原文件也不影响启动。旧版本已配置有效 BIOS 的用户可以直接启动游戏。
 
-也可以导入开源替代固件项目提供的 `bios.bin`。日版《晓月圆舞曲》的实测使用了这份固件。[Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
+首次启动引导中的**下载 mGBA**会打开模拟器官方下载页。mGBA 自带的 BIOS 实现在其模拟器内部运行。如果你在 mGBA 的 BIOS 设置中指定过外部 GBA BIOS，点击 Eidoryn 的**导入 GBA BIOS**，选择同一个文件即可。[mGBA 官方下载](https://mgba.io/downloads.html)
 
 在游戏视图中，方向键对应十字键，**X / Z** 对应 A / B，**Q / E** 对应 L / R，**Enter** 对应 Start，**Backspace** 对应 Select。
 
