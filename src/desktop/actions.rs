@@ -473,7 +473,7 @@ impl Desktop {
         self.shortcut_editor = Default::default();
         self.graphics.open = true;
         self.settings_tab = if self.is_gba() {
-            SettingsTab::Firmware
+            SettingsTab::Appearance
         } else {
             SettingsTab::Graphics
         };

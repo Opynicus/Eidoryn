@@ -76,7 +76,6 @@ impl Desktop {
                 div()
                     .id(match self.settings_tab {
                         SettingsTab::Graphics => "graphics-content",
-                        SettingsTab::Firmware => "firmware-content",
                         SettingsTab::Appearance => "appearance-content",
                         SettingsTab::Controller => "controller-content",
                         SettingsTab::Rewind => "rewind-content",
@@ -95,7 +94,6 @@ impl Desktop {
                             .children(self.notice_banner())
                             .child(match self.settings_tab {
                                 SettingsTab::Graphics => self.graphics_panel(cx),
-                                SettingsTab::Firmware => self.bios_controls(cx),
                                 SettingsTab::Appearance => self.appearance(cx),
                                 SettingsTab::Controller => self.controller_panel(cx),
                                 SettingsTab::Rewind => self.rewind_settings(cx),
@@ -130,7 +128,6 @@ impl Desktop {
             .children(
                 [
                     ("tab-graphics", Text::Graphics, SettingsTab::Graphics),
-                    ("tab-firmware", Text::GbaBios, SettingsTab::Firmware),
                     ("tab-appearance", Text::Appearance, SettingsTab::Appearance),
                     ("tab-controller", Text::Controller, SettingsTab::Controller),
                     ("tab-rewind", Text::Rewind, SettingsTab::Rewind),
@@ -138,16 +135,8 @@ impl Desktop {
                 ]
                 .into_iter()
                 .filter(|(_, _, tab)| {
-                    if self.is_gba() {
-                        matches!(
-                            tab,
-                            SettingsTab::Firmware
-                                | SettingsTab::Appearance
-                                | SettingsTab::Shortcuts
-                        )
-                    } else {
-                        *tab != SettingsTab::Firmware
-                    }
+                    !self.is_gba()
+                        || matches!(tab, SettingsTab::Appearance | SettingsTab::Shortcuts)
                 })
                 .map(|(id, title, tab)| {
                     let active = self.settings_tab == tab;

@@ -15,11 +15,7 @@ use std::{
 mod tests;
 
 pub enum Command {
-    Load {
-        path: PathBuf,
-        title: String,
-        bios: PathBuf,
-    },
+    Load { path: PathBuf, title: String },
     Buttons(u16),
     Toggle,
     Pause,
@@ -28,30 +24,30 @@ pub enum Command {
     ClearStatistics(i64, mpsc::Sender<Result<(), String>>),
 }
 
-/// Reads a GBA firmware image for a selection or a cartridge launch.
-pub fn read_bios(path: &Path) -> Result<Vec<u8>, String> {
-    let describe = |e: std::io::Error| format!("{}: {e}", path.display());
-    let metadata = fs::metadata(path).map_err(describe)?;
+/// Reads the shared GBA firmware, accepting dumps and replacement firmware.
+fn read_bios(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind};
+    let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
-        return Err(format!(
-            "Select a regular GBA BIOS file: {}",
-            path.display()
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "expected a regular GBA BIOS file",
         ));
     }
     if metadata.len() != BIOS_LEN as u64 {
-        return Err(format!(
-            "GBA BIOS must be exactly 16 KiB ({BIOS_LEN} bytes): {} is {} bytes",
-            path.display(),
-            metadata.len()
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "GBA BIOS must be exactly 16 KiB ({BIOS_LEN} bytes), found {} bytes",
+                metadata.len()
+            ),
         ));
     }
     let mut bytes = Vec::with_capacity(BIOS_LEN);
-    File::open(path)
-        .map_err(describe)?
+    File::open(path)?
         .take(BIOS_LEN as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(describe)?;
-    eidoryn_gba::validate_bios(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        .read_to_end(&mut bytes)?;
+    eidoryn_gba::validate_bios(&bytes).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
     Ok(bytes)
 }
 
@@ -72,7 +68,11 @@ pub struct Runner {
 }
 
 impl Runner {
-    pub fn start(store: Option<Library>, saves: PathBuf) -> Result<Self, String> {
+    pub fn start(
+        store: Option<Library>,
+        data_dir: PathBuf,
+        legacy_bios: Option<PathBuf>,
+    ) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel();
         let latest = Arc::new(Mutex::new(None));
         let output = Arc::clone(&latest);
@@ -82,7 +82,7 @@ impl Runner {
             .map_err(|e| e.to_string())?;
         let worker = thread::Builder::new()
             .name("eidoryn-gba".into())
-            .spawn(move || Worker::new(saves, tracker).run(&rx, &output))
+            .spawn(move || Worker::new(&data_dir, legacy_bios, tracker).run(&rx, &output))
             .map_err(|e| e.to_string())?;
         Ok(Self {
             tx: Some(tx),
@@ -207,6 +207,8 @@ impl Cartridge {
 }
 
 struct Worker {
+    bios: PathBuf,
+    legacy_bios: Option<PathBuf>,
     saves: PathBuf,
     tracker: Option<Playtime>,
     cartridge: Option<Cartridge>,
@@ -215,14 +217,37 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(saves: PathBuf, tracker: Option<Playtime>) -> Self {
+    fn new(data_dir: &Path, legacy_bios: Option<PathBuf>, tracker: Option<Playtime>) -> Self {
         Self {
-            saves,
+            bios: data_dir.join("firmware/gba_bios.bin"),
+            legacy_bios,
+            saves: data_dir.join("saves/gba"),
             tracker,
             cartridge: None,
             snapshot: Snapshot::default(),
             last_save: Instant::now(),
         }
+    }
+
+    fn firmware(&self) -> Result<Vec<u8>, String> {
+        // A fixed installation wins over settings saved by releases with a BIOS picker.
+        for path in std::iter::once(self.bios.as_path()).chain(self.legacy_bios.as_deref()) {
+            match read_bios(path) {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!(
+                        "{}: {e}. Expected a 16 KiB GBA BIOS at {}",
+                        path.display(),
+                        self.bios.display()
+                    ));
+                }
+            }
+        }
+        Err(format!(
+            "Put your 16 KiB GBA BIOS at {} and start the game again.",
+            self.bios.display()
+        ))
     }
 
     fn flush(&mut self) -> Result<(), String> {
@@ -245,8 +270,8 @@ impl Worker {
 
     fn apply(&mut self, command: Command) -> Result<bool, String> {
         match command {
-            Command::Load { path, title, bios } => {
-                let bios = match read_bios(&bios) {
+            Command::Load { path, title } => {
+                let bios = match self.firmware() {
                     Ok(bytes) => bytes,
                     Err(error) => {
                         self.snapshot.error = Some(error);

@@ -8,8 +8,6 @@ use eidoryn_psx::{
 use gpui::{Context, div, prelude::*};
 use std::{path::PathBuf, sync::Arc};
 
-mod firmware;
-
 #[cfg(all(test, feature = "ui-tests"))]
 mod tests;
 
@@ -18,17 +16,7 @@ pub(super) struct Session {
     pub runner: Option<Runner>,
     pub snapshot: Snapshot,
     pub focus_game: bool,
-    pub bios: Option<PathBuf>,
     close: CloseState,
-}
-
-impl Session {
-    pub(super) fn with_bios(bios: Option<PathBuf>) -> Self {
-        Self {
-            bios,
-            ..Self::default()
-        }
-    }
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -137,15 +125,19 @@ impl Desktop {
         cx.notify();
     }
 
-    fn start_gba(&mut self, path: PathBuf, title: String, bios: PathBuf, cx: &mut Context<Self>) {
+    pub(super) fn open_gba(&mut self, path: PathBuf, title: String, cx: &mut Context<Self>) {
+        self.switch_core(GamePlatform::Gba, cx);
+        if !self.is_gba() || self.closing() {
+            return;
+        }
         if self.gba.runner.is_none() {
             let store = self.library.store.clone();
             let base = store.as_ref().map(|s| s.base_dir().to_owned()).or_else(|| {
                 Library::default_path().and_then(|p| p.parent().map(ToOwned::to_owned))
             });
             let result = base
-                .ok_or_else(|| "Cannot locate the GBA save directory".to_owned())
-                .and_then(|dir| Runner::start(store, dir.join("saves/gba")));
+                .ok_or_else(|| "Cannot locate the GBA data directory".to_owned())
+                .and_then(|dir| Runner::start(store, dir, self.preferences.gba_bios_path.clone()));
             match result {
                 Ok(runner) => self.gba.runner = Some(runner),
                 Err(error) => {
@@ -157,7 +149,7 @@ impl Desktop {
         }
         self.release_buttons(cx);
         self.notice = None;
-        self.gba_command(Command::Load { path, title, bios }, cx);
+        self.gba_command(Command::Load { path, title }, cx);
     }
 
     pub(super) fn receive_gba(&mut self, cx: &mut Context<Self>) {

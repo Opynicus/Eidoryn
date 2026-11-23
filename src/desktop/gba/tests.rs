@@ -9,7 +9,7 @@ use super::super::{
     tests::{click_control, desktop, press_keys, wait_for_snapshot},
     video::fit_video,
 };
-use eidoryn_psx::{library::Library, preferences::Preferences};
+use eidoryn_psx::library::Library;
 use gpui::{Context, TestAppContext, VisualTestContext, px, size};
 use std::{
     path::Path,
@@ -36,6 +36,7 @@ fn wait_for_gba(
     cx: &mut VisualTestContext,
     ready: impl Fn(&Desktop) -> bool,
 ) {
+    cx.run_until_parked();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         view.update(cx, Desktop::receive_snapshot);
@@ -51,11 +52,15 @@ fn wait_for_gba(
     }
 }
 
+fn install_firmware(dir: &Path) {
+    let folder = dir.join("firmware");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("gba_bios.bin"), firmware::firmware()).unwrap();
+}
+
 #[gpui::test]
-fn a_missing_gba_bios_is_cleared_and_a_stale_picker_cannot_launch(cx: &mut TestAppContext) {
+fn direct_open_retries_after_the_shared_firmware_is_installed(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap();
-    let bios = temp.path().join("gba.bin");
-    let config = temp.path().join("settings.json");
     let rom = temp.path().join("game.gba");
     fixture::write_cartridge(&rom);
     let library = Library::open(&temp.path().join("library.db")).unwrap();
@@ -64,50 +69,44 @@ fn a_missing_gba_bios_is_cleared_and_a_stale_picker_cannot_launch(cx: &mut TestA
     cx.run_until_parked();
     view.update(cx, |v, _| v.library = Workspace::new(Some(library)));
     click_control(cx, "core-gba");
-    view.update(cx, |v, cx| {
-        v.preferences_path = Some(config.clone());
-        v.preferences.gba_bios_path = Some(bios.clone());
-        v.gba.bios = Some(bios.clone());
-        v.save_preferences();
-        v.open_gba(rom.clone(), "Game".into(), cx);
-    });
-    cx.run_until_parked();
-    assert!(view.read_with(cx, |v, _| v.gba.bios.is_none() && v.gba.runner.is_none()));
-    assert!(Preferences::load(&config).unwrap().gba_bios_path.is_none());
+    assert!(cx.debug_bounds("open-bios").is_none());
+    click_control(cx, "open-gba");
     click_control(cx, "core-ps1");
     click_control(cx, "core-gba");
-    std::fs::write(&bios, firmware::firmware()).unwrap();
-    cx.simulate_path_prompt_response(|_| Some(vec![bios.clone()]));
-    cx.run_until_parked();
-    assert!(view.read_with(cx, |v, _| v.gba.bios.is_none() && v.gba.runner.is_none()));
-
-    click_control(cx, "open-gba");
     cx.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
     cx.run_until_parked();
     assert!(view.read_with(cx, |v, _| v.gba.runner.is_none()));
-    cx.simulate_path_prompt_response(|_| Some(vec![bios]));
-    cx.run_until_parked();
+
+    click_control(cx, "open-gba");
+    cx.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
+    wait_for_gba(&view, cx, |v| {
+        v.gba
+            .snapshot
+            .error
+            .as_ref()
+            .is_some_and(|e| e.contains("gba_bios.bin"))
+    });
+    assert!(cx.debug_bounds("error-notice").is_some());
+    install_firmware(temp.path());
+    click_control(cx, "open-gba");
+    cx.simulate_path_prompt_response(|_| Some(vec![rom.clone()]));
     wait_for_gba(&view, cx, |v| {
         v.gba.snapshot.path.as_ref() == Some(&rom) && v.running()
     });
 }
 
 #[gpui::test]
-fn library_launch_prompts_for_gba_firmware_and_remembers_the_selected_default(
-    cx: &mut TestAppContext,
-) {
+fn library_launch_uses_shared_gba_firmware_and_keeps_the_ps1_selection(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap();
-    let bios = temp.path().join("gba.bin");
-    std::fs::write(&bios, firmware::firmware()).unwrap();
+    install_firmware(temp.path());
     let ps1_bios = temp.path().join("ps1.bin");
     std::fs::write(&ps1_bios, vec![0; eidoryn_psx::bus::BIOS_SIZE]).unwrap();
-    let config = temp.path().join("settings.json");
     let library = prepare_library(temp.path());
     let cartridge = temp.path().join("GBA Cart.gba").canonicalize().unwrap();
     let (view, cx) = cx.add_window_view(desktop);
     view.update(cx, |v, _: &mut Context<Desktop>| {
         v.library = Workspace::new(Some(library));
-        v.preferences_path = Some(config.clone());
+        v.preferences_path = Some(temp.path().join("settings.json"));
         v.bios = Some(ps1_bios.clone());
         v.preferences.bios_path = Some(ps1_bios.clone());
         v.save_preferences();
@@ -123,15 +122,6 @@ fn library_launch_prompts_for_gba_firmware_and_remembers_the_selected_default(
     assert!(cx.debug_bounds("nav-debug").is_none());
     click_control(cx, "library-entry-2");
     click_control(cx, "lib-start");
-    assert!(view.read_with(cx, |v, _| v.gba.runner.is_none()));
-    cx.simulate_path_prompt_response(|_| Some(vec![ps1_bios.clone()]));
-    cx.run_until_parked();
-    assert!(
-        view.read_with(cx, |v, _| v.notice.as_deref().unwrap().contains("16 KiB")
-            && v.gba.runner.is_none())
-    );
-    click_control(cx, "lib-start");
-    cx.simulate_path_prompt_response(|_| Some(vec![bios.clone()]));
     cx.run_until_parked();
     wait_for_gba(&view, cx, |v| {
         v.gba.snapshot.running && !v.gba.snapshot.rgb.is_empty()
@@ -145,14 +135,13 @@ fn library_launch_prompts_for_gba_firmware_and_remembers_the_selected_default(
             size(240.into(), 160.into())
         );
     });
-    assert!(Preferences::load(&config).unwrap().gba_bios_path.is_none());
     press_keys(cx, "f8");
     cx.run_until_parked();
-    click_control(cx, "bios-details");
-    click_control(cx, "set-default-bios");
-    let saved = Preferences::load(&config).unwrap();
-    assert_eq!(saved.gba_bios_path, Some(bios.canonicalize().unwrap()));
-    assert_eq!(saved.bios_path, Some(ps1_bios));
+    assert!(cx.debug_bounds("tab-appearance").is_some());
+    assert!(cx.debug_bounds("tab-firmware").is_none());
+    assert!(cx.debug_bounds("open-bios").is_none());
+    assert!(view.read_with(cx, |v, _| v.preferences.bios_path.as_ref()
+        == Some(&ps1_bios)));
     press_keys(cx, "escape");
     cx.run_until_parked();
     cx.simulate_keystrokes("x");

@@ -57,7 +57,6 @@ impl Desktop {
                 self.tr(Text::LaunchGame),
                 "Game Boy Advance",
             ))
-            .child(self.bios_controls(cx))
             .child(
                 div()
                     .flex()

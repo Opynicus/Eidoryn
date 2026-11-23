@@ -10,6 +10,12 @@ mod firmware_fixture;
 #[path = "../../../tests/support/gba.rs"]
 mod fixture;
 
+fn firmware_path(dir: &std::path::Path) -> std::path::PathBuf {
+    let folder = dir.join("firmware");
+    std::fs::create_dir_all(&folder).unwrap();
+    folder.join("gba_bios.bin")
+}
+
 fn wait_for(runner: &Runner, matches: impl Fn(&Snapshot) -> bool) -> Snapshot {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -44,8 +50,7 @@ fn expect_pixels(runner: &Runner, first: [u8; 3], boot_red: u8) -> Snapshot {
 fn cartridge_worker_displays_input_pauses_and_restores_battery_save() {
     let temp = tempfile::tempdir().unwrap();
     let rom = temp.path().join("runner-probe.gba");
-    let saves = temp.path().join("saves");
-    let bios = temp.path().join("test-firmware.bin");
+    let bios = firmware_path(temp.path());
     let library = Library::open(&temp.path().join("games.sqlite")).unwrap();
     fixture::write_cartridge(&rom);
     std::fs::write(&bios, firmware_fixture::firmware()).unwrap();
@@ -55,10 +60,9 @@ fn cartridge_worker_displays_input_pauses_and_restores_battery_save() {
     let load = || Command::Load {
         path: rom.clone(),
         title: "Runner Probe".into(),
-        bios: bios.clone(),
     };
     {
-        let runner = Runner::start(Some(library.clone()), saves.clone()).unwrap();
+        let runner = Runner::start(Some(library.clone()), temp.path().to_owned(), None).unwrap();
         runner.send(load()).unwrap();
         let first = expect_pixels(&runner, blue, 0);
         assert_eq!(first.path.as_deref(), Some(rom.as_path()));
@@ -78,7 +82,7 @@ fn cartridge_worker_displays_input_pauses_and_restores_battery_save() {
     }
 
     // Opening a fresh worker also exercises lock release and file-backed SRAM restore.
-    let runner = Runner::start(Some(library.clone()), saves).unwrap();
+    let runner = Runner::start(Some(library.clone()), temp.path().to_owned(), None).unwrap();
     runner.send(load()).unwrap();
     expect_pixels(&runner, blue, 16);
     drop(runner);
@@ -92,15 +96,14 @@ fn cartridge_worker_displays_input_pauses_and_restores_battery_save() {
 fn closing_retries_a_failed_battery_save_with_the_same_cartridge() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("probe.gba");
-    let bios = dir.path().join("test-firmware.bin");
+    let bios = firmware_path(dir.path());
     std::fs::write(&bios, firmware_fixture::firmware()).unwrap();
     fixture::write_cartridge(&path);
-    let mut worker = super::Worker::new(dir.path().join("saves"), None);
+    let mut worker = super::Worker::new(dir.path(), None, None);
     worker
         .apply(Command::Load {
             path,
             title: "Probe".into(),
-            bios,
         })
         .unwrap();
     worker
@@ -133,13 +136,12 @@ fn launch_revalidates_firmware_and_keeps_the_running_cartridge_on_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("probe.gba");
     fixture::write_cartridge(&path);
-    let bios = dir.path().join("firmware.bin");
-    let saves = dir.path().join("saves");
-    let mut worker = super::Worker::new(saves.clone(), None);
+    let bios = firmware_path(dir.path());
+    let saves = dir.path().join("saves/gba");
+    let mut worker = super::Worker::new(dir.path(), None, None);
     let load = || Command::Load {
         path: path.clone(),
         title: "Probe".into(),
-        bios: bios.clone(),
     };
 
     for bad_file in [
@@ -151,7 +153,8 @@ fn launch_revalidates_firmware_and_keeps_the_running_cartridge_on_error() {
             std::fs::write(&bios, bytes).unwrap();
         }
         worker.apply(load()).unwrap();
-        assert!(worker.snapshot.error.is_some());
+        let error = worker.snapshot.error.as_ref().unwrap();
+        assert!(error.contains(bios.to_str().unwrap()), "{error}");
         assert!(worker.cartridge.is_none());
         assert!(!saves.exists());
     }
@@ -170,4 +173,21 @@ fn launch_revalidates_firmware_and_keeps_the_running_cartridge_on_error() {
     worker.apply(Command::Reset).unwrap();
     worker.frame().unwrap();
     assert_eq!(worker.cartridge.as_ref().unwrap().machine.sram()[0x80], 1);
+}
+
+#[test]
+fn canonical_firmware_takes_precedence_over_an_old_saved_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let prior = dir.path().join("original.bin");
+    let canonical = firmware_path(dir.path());
+    let old = firmware_fixture::firmware();
+    std::fs::write(&prior, &old).unwrap();
+    let worker = super::Worker::new(dir.path(), Some(prior), None);
+    assert_eq!(worker.firmware().unwrap(), old);
+    let mut replacement = old;
+    replacement[0x200] = 0x42;
+    std::fs::write(&canonical, &replacement).unwrap();
+    assert_eq!(worker.firmware().unwrap(), replacement);
+    std::fs::write(&canonical, [0u8; 16]).unwrap();
+    assert!(worker.firmware().unwrap_err().contains("16 KiB"));
 }

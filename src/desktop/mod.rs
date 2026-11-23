@@ -228,7 +228,7 @@ fn open_window(
                             );
                         }
                         Desktop {
-                            gba: gba::Session::with_bios(startup.gba_bios),
+                            gba: gba::Session::default(),
                             library,
                             sidebar: None,
                             navigation: sidebar::Navigation::default(),
@@ -357,7 +357,6 @@ impl Drop for Desktop {
 enum SettingsTab {
     #[default]
     Graphics,
-    Firmware,
     Appearance,
     Controller,
     Rewind,

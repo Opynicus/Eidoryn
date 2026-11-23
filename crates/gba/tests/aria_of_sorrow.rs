@@ -20,37 +20,66 @@ struct Reference {
     gameplay: &'static [Checkpoint],
 }
 
-// Verified against the same input on a BIOS-less mGBA run of the US retail cartridge.
-const REFERENCES: &[Reference] = &[Reference {
-    sha256: "910f88d3701e6c9f99c0d63660c14c61d8b79b0c17bfd7b35a15185be36430a5",
-    title: Checkpoint {
-        scene: "title logo",
-        frames: 1350..=1600,
-        rect: [60, 77, 100, 12],
-        signature: 0x9e7f_48f0,
+const HEALTH_DISPLAY: Checkpoint = Checkpoint {
+    scene: "health display",
+    frames: 2850..=3100,
+    rect: [0, 0, 96, 16],
+    signature: 0x5807_3e02,
+};
+
+// RGB crops from independent mGBA runs with the same inputs, relative to cartridge entry.
+const REFERENCES: &[Reference] = &[
+    Reference {
+        sha256: "910f88d3701e6c9f99c0d63660c14c61d8b79b0c17bfd7b35a15185be36430a5",
+        title: Checkpoint {
+            scene: "title logo",
+            frames: 1350..=1600,
+            rect: [60, 77, 100, 12],
+            signature: 0x9e7f_48f0,
+        },
+        input: buttons,
+        gameplay: &[
+            Checkpoint {
+                scene: "save slots",
+                frames: 340..=450,
+                rect: [16, 5, 76, 10],
+                signature: 0x4e0e_1f06,
+            },
+            HEALTH_DISPLAY,
+            Checkpoint {
+                scene: "Castle Corridor",
+                frames: 3200..=3550,
+                rect: [104, 0, 72, 12],
+                signature: 0x6b8f_a17d,
+            },
+        ],
     },
-    input: buttons,
-    gameplay: &[
-        Checkpoint {
-            scene: "save slots",
-            frames: 340..=450,
-            rect: [16, 5, 76, 10],
-            signature: 0x4e0e_1f06,
+    Reference {
+        sha256: "c36899e05a29b481d3fb38c2edc9569437f0811e67fa50a067bf587a6419f891",
+        title: Checkpoint {
+            scene: "Japanese title (暁月の円舞曲)",
+            frames: 1350..=1600,
+            rect: [108, 97, 80, 17],
+            signature: 0xe93a_f074,
         },
-        Checkpoint {
-            scene: "health display",
-            frames: 2850..=3100,
-            rect: [0, 0, 96, 16],
-            signature: 0x5807_3e02,
-        },
-        Checkpoint {
-            scene: "Castle Corridor",
-            frames: 3200..=3550,
-            rect: [104, 0, 72, 12],
-            signature: 0x6b8f_a17d,
-        },
-    ],
-}];
+        input: buttons,
+        gameplay: &[
+            Checkpoint {
+                scene: "Japanese save-slot prompt",
+                frames: 310..=390,
+                rect: [12, 124, 75, 10],
+                signature: 0x07ed_65d2,
+            },
+            HEALTH_DISPLAY,
+            Checkpoint {
+                scene: "Japanese Castle Corridor banner (荒城回廊)",
+                frames: 3200..=3500,
+                rect: [98, 77, 29, 11],
+                signature: 0xf25e_f779,
+            },
+        ],
+    },
+];
 
 fn buttons(frame: u32) -> u16 {
     const A: u16 = 1;

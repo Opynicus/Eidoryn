@@ -20,7 +20,6 @@ pub(super) struct Startup {
     pub crt: CrtFilter,
     pub clean_fullscreen: bool,
     pub bios: Option<PathBuf>,
-    pub gba_bios: Option<PathBuf>,
 }
 
 pub(super) fn load(machine: &mut Machine, options: &Options) -> Result<Startup, String> {
@@ -40,13 +39,6 @@ fn load_at(
         })
     });
     let previous_bios = preferences.bios_path.clone();
-    let previous_gba = preferences.gba_bios_path.clone();
-    let gba_bios =
-        eidoryn_psx::preferences::validate_gba_bios_choice(&mut preferences.gba_bios_path)
-            .unwrap_or_else(|error| {
-                errors.push(error);
-                None
-            });
     let saved_bios = match preferences.validate_saved_bios() {
         Ok(bios) => bios,
         Err(error) => {
@@ -54,11 +46,8 @@ fn load_at(
             None
         }
     };
-    let changed = |a: &Option<PathBuf>, b: &Option<PathBuf>| {
-        a.as_ref().map(|p| p.as_os_str()) != b.as_ref().map(|p| p.as_os_str())
-    };
-    if (changed(&preferences.bios_path, &previous_bios)
-        || changed(&preferences.gba_bios_path, &previous_gba))
+    if preferences.bios_path.as_ref().map(|path| path.as_os_str())
+        != previous_bios.as_ref().map(|path| path.as_os_str())
         && let Some(path) = &path
         && let Err(error) = preferences.save(path)
     {
@@ -111,7 +100,6 @@ fn load_at(
     machine.bus.gpu.set_anti_aliasing(preferences.anti_aliasing);
     Ok(Startup {
         bios,
-        gba_bios,
         language: options.language.unwrap_or_else(|| preferences.language()),
         volume: options.volume.unwrap_or(preferences.volume).min(100),
         muted: options.muted.unwrap_or(preferences.muted),
@@ -162,42 +150,6 @@ impl Desktop {
 mod tests {
     use super::*;
     use eidoryn_psx::systems::ps1::gpu::{AntiAliasing, ColorDepth, RenderScale};
-
-    #[test]
-    fn startup_validates_the_gba_default_independently_of_ps1() {
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("settings.json");
-        let gba = root.path().join("gba.bin");
-        let ps1 = root.path().join("ps1.bin");
-        let mut firmware = vec![0; eidoryn_gba::BIOS_LEN];
-        firmware[..4].copy_from_slice(&0xeaff_fffe_u32.to_le_bytes()); // reset: B .
-        std::fs::write(&gba, firmware).unwrap();
-        std::fs::write(&ps1, vec![0; eidoryn_psx::bus::BIOS_SIZE]).unwrap();
-        let preferences = Preferences {
-            bios_path: Some(ps1.clone()),
-            gba_bios_path: Some(gba.clone()),
-            ..Preferences::default()
-        };
-        preferences.save(&config).unwrap();
-        let mut machine = Machine::demo();
-        let mut restart =
-            || load_at(&mut machine, &Options::default(), Some(config.clone())).unwrap();
-        assert_eq!(restart().gba_bios, Some(gba.canonicalize().unwrap()));
-        std::fs::write(&gba, [0; 16]).unwrap();
-        let invalid = restart();
-        assert!(invalid.notice.as_deref().unwrap().contains("16 KiB"));
-        assert_eq!(invalid.bios, Some(ps1.canonicalize().unwrap()));
-        assert!(invalid.gba_bios.is_none());
-        assert_eq!(
-            Preferences::load(&config).unwrap().gba_bios_path,
-            Some(gba.clone())
-        );
-        std::fs::remove_file(&gba).unwrap();
-        assert!(restart().gba_bios.is_none());
-        let persisted = Preferences::load(&config).unwrap();
-        assert!(persisted.gba_bios_path.is_none());
-        assert_eq!(persisted.bios_path, Some(ps1.canonicalize().unwrap()));
-    }
 
     #[test]
     fn saved_bios_is_selected_and_missing_defaults_are_removed_on_restart() {

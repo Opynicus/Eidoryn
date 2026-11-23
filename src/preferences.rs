@@ -130,6 +130,8 @@ pub struct Preferences {
     pub keybindings: KeyBindings,
     pub shortcuts: ShortcutBindings,
     pub bios_path: Option<PathBuf>,
+    /// Compatibility with GBA firmware paths saved before the fixed data-directory location.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gba_bios_path: Option<PathBuf>,
     pub recent_discs: Vec<RecentDisc>,
     pub library: LibraryPreferences,
@@ -287,40 +289,6 @@ pub fn config_path() -> Option<PathBuf> {
 
 /// Read and validate a firmware choice. Missing files clear the supplied choice.
 pub fn validate_bios_choice(choice: &mut Option<PathBuf>) -> Result<Option<PathBuf>, String> {
-    validate_firmware_choice(choice, |path, metadata| {
-        if metadata.len() != BIOS_SIZE as u64 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "BIOS must be exactly 512 KiB",
-            ));
-        }
-        let mut bytes = Vec::new();
-        std::fs::File::open(path)?
-            .take(BIOS_SIZE as u64 + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() != BIOS_SIZE {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "BIOS must be exactly 512 KiB",
-            ));
-        }
-        Ok(())
-    })
-}
-
-/// Apply the GBA host's firmware validation to a selected or saved file.
-pub fn validate_gba_bios_choice(choice: &mut Option<PathBuf>) -> Result<Option<PathBuf>, String> {
-    validate_firmware_choice(choice, |path, _| {
-        crate::systems::gba::read_bios(path)
-            .map(drop)
-            .map_err(std::io::Error::other)
-    })
-}
-
-fn validate_firmware_choice(
-    choice: &mut Option<PathBuf>,
-    validate: impl FnOnce(&Path, &std::fs::Metadata) -> std::io::Result<()>,
-) -> Result<Option<PathBuf>, String> {
     let Some(path) = choice.clone() else {
         return Ok(None);
     };
@@ -332,7 +300,22 @@ fn validate_firmware_choice(
                 "not a regular file",
             ));
         }
-        validate(&path, &metadata)?;
+        if metadata.len() != BIOS_SIZE as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "BIOS must be exactly 512 KiB",
+            ));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)?
+            .take(BIOS_SIZE as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() != BIOS_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "BIOS must be exactly 512 KiB",
+            ));
+        }
         path.canonicalize()
     };
     match check() {
