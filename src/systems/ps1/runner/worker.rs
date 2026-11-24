@@ -622,6 +622,16 @@ impl Worker {
         }
         // Checkpoints remain available even when a memory-card file cannot be flushed.
         match command {
+            Command::Pause => {
+                self.running = false;
+                self.release_input();
+                if let Some(audio) = &self.audio {
+                    audio.clear();
+                }
+                self.machine.bus.spu.drain_audio().for_each(drop);
+                self.reset_pacing();
+                return false;
+            }
             Command::SaveState | Command::QuickSave => {
                 self.save_state(matches!(command, Command::QuickSave));
                 return false;
@@ -762,6 +772,7 @@ impl Worker {
             }
             Command::FlushCards => self.message = None,
             Command::SaveState
+            | Command::Pause
             | Command::SetButtons(_)
             | Command::SetAntiAliasing(_)
             | Command::SetRewinding(_)
@@ -1209,7 +1220,7 @@ mod tests {
         let input = worker.input.save_state();
         let old_revision = worker.quick_slot_revision;
         worker.apply(Command::QuickSave);
-        assert!(worker.save_states.is_empty());
+        assert_eq!(worker.save_states, []);
         worker.machine.run_slice().unwrap();
         // An earlier confirmation must fail even on a filesystem with coarse timestamps.
         worker.apply(Command::QuickSaveIfUnchanged {
@@ -1599,7 +1610,7 @@ mod tests {
             None,
             SnapshotMode::Display,
         );
-        assert!(worker.save_states.is_empty());
+        assert_eq!(worker.save_states, []);
         worker.apply(Command::SaveState);
         let saved_a = worker.save_states[0].path.clone();
         worker.apply(Command::QuickSave);
@@ -1610,7 +1621,7 @@ mod tests {
             path: game_b.clone(),
             bios: false,
         });
-        assert!(worker.save_states.is_empty());
+        assert_eq!(worker.save_states, []);
         assert!(worker.success_message.is_none());
         worker.apply(Command::SaveState);
         let saved_b = worker.save_states[0].path.clone();

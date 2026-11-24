@@ -1,3 +1,6 @@
-//! System-specific application adapters. Only PlayStation is implemented today.
-//! Future systems get their own core and adapter, not PS1 register or save assumptions.
+//! System-specific application adapters. Machine state lives in each core crate.
+pub mod checkpoints;
+#[cfg(feature = "desktop")]
+pub mod gba;
+mod persistence;
 pub mod ps1;

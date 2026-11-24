@@ -24,6 +24,7 @@ impl Library {
         tx.commit().map_err(|e| e.to_string())?;
         if scope == CacheScope::All {
             gamedb::clear_cache();
+            super::gba::clear_cache();
         }
         covers::collect_released(self, &mut db, &originals);
         Ok(())

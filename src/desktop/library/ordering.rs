@@ -71,7 +71,7 @@ impl Workspace {
 }
 
 impl Desktop {
-    pub(super) fn reorder_library(&mut self) {
+    pub(in crate::desktop) fn reorder_library(&mut self) {
         self.library.reorder(self.preferences.library.sort);
     }
 

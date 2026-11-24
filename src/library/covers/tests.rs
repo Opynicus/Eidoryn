@@ -6,6 +6,7 @@ use std::fs;
 const SERIAL: &str = "SCUS-94900";
 const MATCHING: Remote<'static> = Remote {
     serial: SERIAL,
+    release: None,
     generation: 0,
     kind: RemoteKind::Matching(Mode::Incremental),
 };
@@ -39,6 +40,52 @@ fn url(path: &str) -> Url {
 
 fn response(status: u16, body: Vec<u8>) -> http::Response<Vec<u8>> {
     http::Response::builder().status(status).body(body).unwrap()
+}
+
+#[cfg(feature = "ui-tests")]
+#[test]
+fn explicit_and_missing_gba_art_identify_the_rom_before_any_metadata_refresh() {
+    let cancel = AtomicBool::default();
+    let dat = br#"game (
+        name "Box & Cart (USA)"
+        region "USA"
+        serial "TSTE"
+        rom ( name "Box & Cart (USA).gba" size 512 crc 9DFA7B38 )
+    )
+    game (
+        name "Box & Cart (USA) (Rev 1)"
+        region "USA"
+        serial "TSTE"
+        rom ( name "Box & Cart (USA) (Rev 1).gba" size 512 crc FFFFFFFF )
+    )"#;
+    for fetch_art in [fetch, fetch_missing] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("renamed.gba");
+        let mut rom = [0; 512];
+        rom[0xac..0xb0].copy_from_slice(b"TSTE");
+        fs::write(&path, rom).unwrap();
+        let lib = Library::open(&dir.path().join("library.db"))
+            .unwrap()
+            .with_scrape_responses(
+                response(200, dat.to_vec()),
+                response(200, encoded(ImageFormat::Png)),
+            );
+        lib.scan_files(&[path], &cancel, |_| {}).unwrap();
+        let id = lib.games().unwrap().remove(0).id;
+        assert_eq!(
+            fetch_art(&lib, id, Provider::Libretro, "", &cancel).unwrap(),
+            "ready"
+        );
+        let cards = metadata::list_by_id(&lib, &[id]).unwrap();
+        assert!(cards[&id].thumbnail.as_ref().is_some_and(|p| p.is_file()));
+        assert!(
+            cards[&id]
+                .cover_source
+                .as_deref()
+                .unwrap()
+                .ends_with("/Box%20_%20Cart%20(USA).png")
+        );
+    }
 }
 
 #[test]
@@ -327,6 +374,35 @@ fn live_libretro_cover_smoke() {
 }
 
 #[test]
+#[ignore = "requires the local USA Aria of Sorrow cartridge and live Libretro"]
+fn live_gba_cartridge_fetches_its_own_boxart_before_metadata_refresh() {
+    let rom =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/Castlevania - Aria of Sorrow (USA).gba");
+    let cancel = AtomicBool::default();
+    for fetch_art in [fetch, fetch_missing] {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(&dir.path().join("library.db")).unwrap();
+        lib.scan_files(std::slice::from_ref(&rom), &cancel, |_| {})
+            .unwrap();
+        let game = lib.games().unwrap().remove(0);
+        assert_eq!(game.serial.as_deref(), Some("A2CE"));
+        assert_eq!(
+            fetch_art(&lib, game.id, Provider::Libretro, "", &cancel).unwrap(),
+            "ready"
+        );
+        let cards = metadata::list_by_id(&lib, &[game.id]).unwrap();
+        let info = &cards[&game.id];
+        assert!(image::open(info.thumbnail.as_ref().unwrap()).is_ok());
+        assert!(
+            info.cover_source
+                .as_deref()
+                .unwrap()
+                .ends_with("/Castlevania%20-%20Aria%20of%20Sorrow%20(USA).png")
+        );
+    }
+}
+
+#[test]
 #[ignore = "loopback integration fixture; requires local socket permission"]
 fn loopback_http_response_uses_real_transport_and_negative_cache() {
     use std::io::{BufRead, BufReader, Write};
@@ -376,6 +452,7 @@ fn user_selected_art_from_another_region_survives_background_refresh() {
     let cancel = AtomicBool::new(false);
     let chosen = Remote {
         serial: "SCPS-10031",
+        release: None,
         generation: 0,
         kind: RemoteKind::Chosen {
             revision: reserve_selection(&lib.connect().unwrap(), 1).unwrap(),
@@ -410,6 +487,7 @@ fn a_late_download_cannot_restore_a_superseded_user_selection() {
     for reset in [false, true] {
         let chosen = Remote {
             serial: "SCPS-10031",
+            release: None,
             generation: 0,
             kind: RemoteKind::Chosen {
                 revision: reserve_selection(&lib.connect().unwrap(), 1).unwrap(),
@@ -431,6 +509,60 @@ fn a_late_download_cannot_restore_a_superseded_user_selection() {
             if reset { None } else { Some("latest.png") }
         );
     }
+}
+
+#[test]
+fn an_older_gba_response_cannot_overwrite_the_selected_edition_with_the_same_code() {
+    let (dir, lib) = fixture();
+    let path = dir.path().join("game.gba");
+    let mut rom = [0; 512];
+    rom[0xac..0xb0].copy_from_slice(b"TSTE");
+    fs::write(&path, rom).unwrap();
+    let cancel = AtomicBool::default();
+    lib.scan_files(&[path], &cancel, |_| {}).unwrap();
+    let id = lib
+        .games()
+        .unwrap()
+        .into_iter()
+        .find(|g| g.platform == "GBA")
+        .unwrap()
+        .id;
+    let names = ["Box (USA)", "Box (USA) (Rev 1)"];
+    let keys = names.map(|name| metadata::gba::edition_id("TSTE", name));
+    let db = lib.connect().unwrap();
+    for (name, key) in names.iter().zip(&keys) {
+        db.execute(
+            "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date)
+             VALUES(?1,'TSTE','USA',?2,'','','')",
+            params![key, name],
+        )
+        .unwrap();
+    }
+    let art = |release| Remote {
+        serial: "TSTE",
+        release: Some(release),
+        ..REFRESH
+    };
+    metadata::select(&lib, id, &keys[0]).unwrap();
+    let outcome = fetch_url(&lib, id, art(&keys[0]), &url("original"), &cancel, || {
+        metadata::select(&lib, id, &keys[1])?;
+        fetch_url(&lib, id, art(&keys[1]), &url("rev1"), &cancel, || {
+            Ok(Some(response(200, encoded(ImageFormat::Png))))
+        })?;
+        Ok(Some(response(200, encoded(ImageFormat::Jpeg))))
+    })
+    .unwrap();
+    assert_eq!(outcome, "superseded");
+    assert_eq!(
+        metadata::list(&lib).unwrap()[&id].cover_source.as_deref(),
+        Some("https://covers.example/rev1")
+    );
+    assert!(
+        !db.prepare("SELECT 1 FROM cover_attempts WHERE game_id=? AND url=?")
+            .unwrap()
+            .exists(params![id, url("original").as_str()])
+            .unwrap()
+    );
 }
 
 #[test]

@@ -83,6 +83,8 @@ fn read_bounded(mut reader: impl Read, cancel: &AtomicBool) -> Result<Vec<u8>, S
 #[derive(Clone, Copy)]
 struct Remote<'a> {
     serial: &'a str,
+    /// GBA editions may share a serial. An automatic image belongs to this edition only.
+    release: Option<&'a str>,
     generation: i64,
     kind: RemoteKind<'a>,
 }
@@ -122,6 +124,22 @@ enum CoverRequest<'a> {
     Explicit,
     Edition(&'a super::metadata::Release),
     Job(Mode, &'a super::scrape::CoverClaim),
+}
+
+impl<'a> CoverRequest<'a> {
+    fn reserve(self, conn: &Connection, game: i64) -> Result<RemoteKind<'a>, String> {
+        Ok(match self {
+            Self::Edition(_) => RemoteKind::Chosen {
+                revision: reserve_selection(conn, game)?,
+            },
+            Self::Job(mode, claim) => RemoteKind::Job {
+                full: mode == Mode::Full,
+                claim,
+            },
+            Self::Missing => RemoteKind::Matching(Mode::Incremental),
+            Self::Explicit => RemoteKind::Matching(Mode::Full),
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -255,8 +273,9 @@ fn record(
 ) -> rusqlite::Result<()> {
     conn.execute("INSERT INTO cover_attempts(game_id,serial,url,state,retry_after,updated)
         SELECT ?1,?2,?3,?4,?5,unixepoch() FROM game_metadata WHERE game_id=?1 AND cache_generation=?6
+        AND (?7 IS NULL OR release_id IS NULL OR release_id=?7)
         ON CONFLICT(game_id,serial,url) DO UPDATE SET state=excluded.state,retry_after=excluded.retry_after,updated=excluded.updated",
-        params![id,art.serial,url,state,retry,art.generation])?;
+        params![id,art.serial,url,state,retry,art.generation,art.release])?;
     Ok(())
 }
 
@@ -329,14 +348,19 @@ fn fetch_edition(
 ) -> Result<String, String> {
     check_cancel(cancel)?;
     let conn = lib.worker_connection()?;
+    if !super::metadata::catalog_available(&conn, id).map_err(|e| e.to_string())? {
+        return Ok("skipped".into());
+    }
     // A local filename and manual display title are private. Only send a catalog
     // title to a title-based service, or a verified disc serial to a serial-based one.
-    let (serial, title, region, generation, cleared) = conn.query_row(
+    let gba = super::metadata::is_gba(&conn, id).map_err(|e| e.to_string())?;
+    let provider = if gba { Provider::Libretro } else { provider };
+    let (serial, title, region, generation, cleared, release_id) = conn.query_row(
         "SELECT COALESCE(release_serial,disc_serial),auto_title,
                 COALESCE(auto_region, CASE WHEN release_serial IS NULL OR release_serial=disc_serial THEN disc_region END),
-                cache_generation,cache_cleared FROM game_metadata WHERE game_id=?",
+                cache_generation,cache_cleared,release_id FROM game_metadata WHERE game_id=?",
         [id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?,
-                      r.get::<_, Option<String>>(2)?, r.get(3)?, r.get::<_, bool>(4)?))
+                      r.get::<_, Option<String>>(2)?, r.get(3)?, r.get::<_, bool>(4)?,r.get::<_, Option<String>>(5)?))
     ).map_err(|e|e.to_string())?;
     if cleared
         && matches!(
@@ -355,6 +379,9 @@ fn fetch_edition(
         CoverRequest::Edition(release) => Some(release),
         _ => None,
     };
+    if chosen.is_some_and(|r| r.id.starts_with("libretro-gba/") != gba) {
+        return Err("Cover edition is from a different platform".into());
+    }
     let title = chosen
         .map(|r| r.title.as_str())
         .or(title.as_deref())
@@ -371,24 +398,29 @@ fn fetch_edition(
     if provider == Provider::Igdb && title.is_empty() {
         return Err("Choose a release or fetch its release details before searching IGDB".into());
     }
-    let kind = match request {
-        CoverRequest::Edition(_) => RemoteKind::Chosen {
-            revision: reserve_selection(&conn, id)?,
-        },
-        CoverRequest::Job(mode, claim) => RemoteKind::Job {
-            full: mode == Mode::Full,
-            claim,
-        },
-        CoverRequest::Missing => RemoteKind::Matching(Mode::Incremental),
-        CoverRequest::Explicit => RemoteKind::Matching(Mode::Full),
+    let kind = request.reserve(&conn, id)?;
+    drop(conn);
+    let (key, release) = if gba {
+        let selected = chosen
+            .map(|release| release.id.as_str())
+            .or(release_id.as_deref());
+        let Some((url, edition)) = gba_boxart(lib, id, selected, serial, title, region, cancel)?
+        else {
+            return Ok("skipped".into());
+        };
+        (url, chosen.is_none().then_some(edition))
+    } else {
+        (
+            provider_key(provider, template, serial, title, region)?,
+            None,
+        )
     };
     let art = Remote {
         serial,
+        release: release.as_deref(),
         generation,
         kind,
     };
-    drop(conn);
-    let key = provider_key(provider, template, serial, title, region)?;
     let _permit = (provider == Provider::ScreenScraper)
         .then(|| SCREENSCRAPER_REQUESTS.acquire(cancel))
         .transpose()?;
@@ -399,26 +431,64 @@ fn fetch_edition(
         }
         let client = transport::api().map_err(|e| e.to_string())?;
         let result = match provider {
+            Provider::Libretro if gba => Lookup::Image(key.clone()),
             Provider::Libretro => libretro::resolve(lib, client, serial, region, cancel)?,
             Provider::ScreenScraper => screenscraper::resolve(client, serial, region, cancel)?,
             Provider::Igdb => igdb::resolve(client, title, region, cancel)?,
             Provider::Custom => Lookup::Image(cover_url(template, serial)?),
         };
         check_cancel(cancel)?;
-        match result {
-            Lookup::Missing => Ok(None),
-            Lookup::Http(response) => Ok(Some(response)),
-            Lookup::Image(image) if provider == Provider::ScreenScraper => {
-                screenscraper::fetch_image(client, image, cancel)
-            }
-            Lookup::Image(image) => {
-                let client = transport::art().map_err(|e| e.to_string())?;
-                transport::cover(client.get(image), MAX_BYTES, cancel)
-                    .map(Some)
-                    .map_err(|e| e.to_string())
-            }
-        }
+        download_lookup(client, result, provider, cancel)
     })
+}
+
+fn gba_boxart(
+    lib: &Library,
+    game: i64,
+    selected: Option<&str>,
+    serial: &str,
+    title: &str,
+    region: &str,
+    cancel: &AtomicBool,
+) -> Result<Option<(Url, String)>, String> {
+    let (name, edition) = if let Some(id) = selected {
+        if id != super::metadata::gba::edition_id(serial, title) {
+            return Ok(None);
+        }
+        (title.to_owned(), id.to_owned())
+    } else {
+        let Some(name) = super::metadata::gba::boxart_name(lib, game, serial, region, cancel)?
+        else {
+            return Ok(None);
+        };
+        let edition = super::metadata::gba::edition_id(serial, &name);
+        (name, edition)
+    };
+    Ok(Some((
+        libretro::image_url(super::metadata::gba::COVER_BASE, &name)?,
+        edition,
+    )))
+}
+
+fn download_lookup(
+    client: &reqwest::Client,
+    result: Lookup,
+    provider: Provider,
+    cancel: &AtomicBool,
+) -> Result<Option<http::Response<Vec<u8>>>, String> {
+    match result {
+        Lookup::Missing => Ok(None),
+        Lookup::Http(response) => Ok(Some(response)),
+        Lookup::Image(image) if provider == Provider::ScreenScraper => {
+            screenscraper::fetch_image(client, image, cancel)
+        }
+        Lookup::Image(image) => {
+            let client = transport::art().map_err(|e| e.to_string())?;
+            transport::cover(client.get(image), MAX_BYTES, cancel)
+                .map(Some)
+                .map_err(|e| e.to_string())
+        }
+    }
 }
 
 // Include the complete URL when identifying an asset, while persisting only its

@@ -50,6 +50,60 @@ impl Layout {
     }
 }
 
+fn media_shape(cartridge: bool) -> Div {
+    if cartridge {
+        div()
+            .absolute()
+            .w(relative(0.76))
+            .h(relative(0.57))
+            .right(relative(-0.14))
+            .bottom(relative(-0.08))
+            .rounded_md()
+            .border_1()
+            .border_color(rgba(0xffffff25))
+            .bg(rgba(0xffffff08))
+            .child(
+                div()
+                    .m_2()
+                    .h(relative(0.62))
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(rgba(0xffffff18)),
+            )
+    } else {
+        div()
+            .absolute()
+            .w(relative(0.91))
+            .aspect_square()
+            .right(relative(-0.23))
+            .bottom(relative(-0.20))
+            .rounded_full()
+            .border_1()
+            .border_color(rgba(0xffffff25))
+            .bg(rgba(0xffffff08))
+            .flex()
+            .justify_center()
+            .items_center()
+            .child(
+                div()
+                    .rounded_full()
+                    .size(relative(0.85))
+                    .border_1()
+                    .border_color(rgba(0xffffff18))
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(
+                        div()
+                            .rounded_full()
+                            .size(relative(0.24))
+                            .border_1()
+                            .border_color(rgba(0xffffff25)),
+                    ),
+            )
+    }
+}
+
 impl Desktop {
     pub(super) fn library_results(&self, window: &Window, cx: &Context<Self>) -> gpui::UniformList {
         let layout = Layout::new(
@@ -186,54 +240,31 @@ impl Desktop {
                 );
         }
         let tone = TONES[entry.game.id.rem_euclid(TONES.len() as i64) as usize];
-        let disc = div()
-            .absolute()
-            .w(relative(0.91))
-            .aspect_square()
-            .right(relative(-0.23))
-            .bottom(relative(-0.20))
-            .rounded_full()
-            .border_1()
-            .border_color(rgba(0xffffff25))
-            .bg(rgba(0xffffff08))
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(
-                div()
-                    .rounded_full()
-                    .size(relative(0.85))
-                    .border_1()
-                    .border_color(rgba(0xffffff18))
-                    .flex()
-                    .justify_center()
-                    .items_center()
-                    .child(
-                        div()
-                            .rounded_full()
-                            .size(relative(0.24))
-                            .border_1()
-                            .border_color(rgba(0xffffff25)),
-                    ),
-            );
+        let cartridge = entry.is_cartridge();
+        let placeholder = media_shape(cartridge);
         let cover = cover.bg(rgb(tone));
         if entry.cache_cleared {
             let id = entry.game.id;
-            return cover.child(disc.debug_selector(move || format!("library-placeholder-{id}")));
+            return cover
+                .child(placeholder.debug_selector(move || format!("library-placeholder-{id}")));
         }
         cover
             .p_3()
             .flex()
             .flex_col()
             .justify_between()
-            .child(disc)
+            .child(placeholder)
             .child(
                 div()
                     .relative()
                     .text_size(px(9.))
                     .text_color(rgb(0xe3e3dc))
                     .font(self.fonts.medium())
-                    .child("PLAYSTATION · PS1"),
+                    .child(if cartridge {
+                        "GAME BOY ADVANCE · GBA"
+                    } else {
+                        "PLAYSTATION · PS1"
+                    }),
             )
             .child(
                 div()
@@ -255,11 +286,15 @@ impl Desktop {
                             .truncate()
                             .text_size(px(9.))
                             .text_color(rgb(0xe3e3dc))
-                            .child(format!(
-                                "{} · DISC {:02}",
-                                self.tr(Text::LibraryMissingCover),
-                                entry.disc_count().max(1)
-                            )),
+                            .child(if cartridge {
+                                self.tr(Text::LibraryMissingCover).to_owned()
+                            } else {
+                                format!(
+                                    "{} · DISC {:02}",
+                                    self.tr(Text::LibraryMissingCover),
+                                    entry.disc_count().max(1)
+                                )
+                            }),
                     ),
             )
     }
@@ -285,6 +320,7 @@ impl Desktop {
             .flex_wrap()
             .gap(px(4.))
             .items_center()
+            .child(badge(entry.game.platform.clone(), p.text, p.border))
             .when(!entry.cache_cleared, |row| {
                 row.child(badge(
                     entry

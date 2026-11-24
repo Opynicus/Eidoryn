@@ -1,6 +1,6 @@
 # Eidoryn
 
-[![Platform: PlayStation](https://img.shields.io/badge/Platform-PlayStation-6750A4?style=flat-square)](#current-status)
+[![Platforms: PS1 and GBA](https://img.shields.io/badge/Platforms-PS1%20%7C%20GBA-6750A4?style=flat-square)](#current-status)
 [![Rust: 1.95+](https://img.shields.io/badge/Rust-1.95%2B-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![UI: GPUI](https://img.shields.io/badge/UI-GPUI-7C4DFF?style=flat-square)](https://www.gpui.rs/)
 [![Status: Experimental](https://img.shields.io/badge/Status-Experimental-E9A23B?style=flat-square)](#current-status)
@@ -14,14 +14,13 @@ Experimental project developed with extensive AI assistance. Hardware accuracy a
 
 ## Project Overview
 
-Eidoryn is an experimental emulator written in Rust with a native GPUI interface. Its current PlayStation (PS1) core provides game execution, graphics settings, and hardware debugging. The CPU, GPU, audio, disc drive, and other emulated components are implemented in this project; no third-party emulator core is integrated.
-
-The architecture leaves room for additional systems, but **GBA and PS2 are not currently supported**. No game images, BIOS files, or saves are included.
+Eidoryn is an experimental Rust emulator with a native GPUI interface. It includes independent PlayStation (PS1) and Game Boy Advance (GBA) cores developed in this project. Both use the desktop game library. Supply your own game images. The GBA core includes its own high-level emulation (HLE) of BIOS services.
 
 ## Features
 
 - **PS1 emulation:** MIPS CPU, GTE, GPU, MDEC, SPU, disc drive, DMA, timers, a shared CPU/device cycle timeline, and a digital controller.
-- **Graphics and performance options:** serial and multithreaded software rendering, optional wgpu hardware acceleration with runtime backend detection, enlarged and fullscreen views, and a CRT display filter.
+- **GBA emulation** includes an ARM/Thumb interpreter, scanline graphics, keypad input and SRAM, Flash and EEPROM cartridge saves.
+- **PS1 graphics and performance options:** serial and multithreaded software rendering, optional wgpu hardware acceleration with runtime backend detection, enlarged and fullscreen views, and a CRT display filter.
 - **Desktop experience:** English and Simplified Chinese, keyboard navigation, five built-in themes, JSON theme plugins, saved preferences, a volume slider, and system audio output.
 - **Media and saves:** ISO, BIN, multi-track CUE/BIN, and CHD CD images; two memory-card slots with automatic persistence, plus timestamped save states for returning to any saved moment.
 - **Debugging tools:** An optional debugger with CPU registers, disassembly, single stepping, and execution slices; an experimental JIT and a headless CLI. Enable the debugger in its workspace or start with `--debugger`.
@@ -30,10 +29,10 @@ The architecture leaves room for additional systems, but **GBA and PS2 are not c
 
 | Area | Status |
 | --- | --- |
-| Emulated systems | PlayStation (PS1) is in development; other systems are not implemented. |
+| Emulated systems | PlayStation and an initial Game Boy Advance core for homebrew. |
 | Host platforms | Linux x86-64 has been used for development and testing. Windows and macOS headless CLI builds have passed CI smoke tests; their desktop interfaces still need hands-on runtime validation. |
-| Rendering | Software rendering is the default. **Settings → Graphics / F8** offers optional hardware acceleration and detects usable backends. Windows automatic selection prefers DirectX 12, then Vulkan, then OpenGL. |
-| CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
+| PS1 rendering | Software rendering is the default. **Settings → Graphics / F8** offers optional hardware acceleration and detects usable backends. Windows automatic selection prefers DirectX 12, then Vulkan, then OpenGL. |
+| PS1 CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
 | Accuracy and compatibility | Device timing, graphics, and audio are not cycle-accurate. Compatibility and performance vary by game, scene, and host. |
 
 Disc swapping is not supported. Memory-card saves use the game's own save points or menus; save states can be created while running or paused.
@@ -45,23 +44,43 @@ Disc swapping is not supported. Memory-card saves use the game's own save points
 - Rust **1.95 or newer** and Cargo. A release build is recommended for running games.
 - The desktop build requires GPUI's system graphics, font, and audio development libraries, plus a working graphics driver. See the [release workflow](https://github.com/Opynicus/Eidoryn/blob/main/.github/workflows/release.yml) for the Linux build dependencies.
 - Hardware rendering requires a physical GPU and driver with compute shader support. Windows supports DirectX 12, Vulkan and OpenGL 4.3+; older devices without a compatible hardware backend can use software rendering.
-- Bring your own BIOS and game images; they are not supplied by this project.
+- Supply your own game images. Normal PS1 disc boot also requires a 512 KiB PlayStation BIOS.
 
 This UI redesign branch produces temporary test releases for Linux x86-64 Wayland, Linux x86-64 X11, and Windows x86-64, with SHA-256 checksums. These prereleases are built from the test branch and do not replace the latest release. On Linux, choose the archive matching your desktop session; Ubuntu 24.04 or a compatible newer system is required. On Windows, extract the full ZIP and run `eidoryn.exe` from its directory. Windows desktop display, input, and audio still need hands-on validation; native CI covers compilation, tests, and the headless demo. See [GitHub Releases](https://github.com/Opynicus/Eidoryn/releases) for available test packages.
 
 ### Desktop game library
 
-Open **Game library** in the sidebar and choose **Add game** to import images or scan a folder. You can also drop images directly into the library. Pick the CUE file for a multi-track game. Select a game and click **Start game**, double-click its card, or press Enter. The game view opens once the disc has loaded. If a normal boot needs a BIOS, you can select one from the library and continue.
+Open **Game library** in the sidebar and choose **Add game** to import images or scan a folder. You can also drop images directly into the library. Pick the CUE file for a multi-track game. Select a game and click **Start game**, double-click its card, or press Enter. The game view opens once the media has loaded. For PS1 discs, the library prompts for a PlayStation BIOS when needed.
 
 Drag a game onto either side of another card, or above or below a list row, to change its position. The library switches to **Manual order** and remembers the arrangement. Right-click a game to scrape its metadata, open its details, or remove it. Check the box in the upper-right corner of a card or at the start of a list row to select games. You can then check more games or select all current search results and confirm their removal. Clearing the last check returns to browsing. Removing entries keeps the disc images, memory cards, snapshots and play history.
 
-New discs appear immediately using their filenames or a release already cached on this device. By default, Eidoryn looks up release titles, aliases and dates on Wikidata by PlayStation serial and downloads covers in the background. If Wikidata has no matching edition or regional date, Eidoryn also checks GameDB-PSX by disc serial. Multiple editions require a choice. Use **Scrape metadata** on an existing game to retry a previous miss. Hover over the circular arrow in the library toolbar to see its action. Click it to refresh the entire library, including games outside the current search. In **Details**, you can choose a matching edition, group discs, relocate an image or edit individual fields and the cover. Refreshes preserve manual edits. New imports and their pending jobs are saved together. After a restart, the library resumes outstanding work. Retry an individual game from Details or retry failed games together under **View task history** on the library overview.
+New discs appear immediately using their filenames or a release already cached on this device. For PS1, Eidoryn looks up release titles, aliases and dates on Wikidata by PlayStation serial and downloads covers in the background. If Wikidata has no matching edition or regional date, Eidoryn also checks GameDB-PSX by disc serial. GBA uses the cartridge header code and region to find editions in Libretro’s No-Intro database and artwork in its GBA box-art collection. When several GBA editions share a code, the scraper checks the local ROM size and CRC32 against the catalog. If the match is still ambiguous, select the card and click **Choose edition**. Use **Scrape metadata** on an existing game to retry a previous miss. Hover over the circular arrow in the library toolbar to see its action. Click it to refresh the entire library, including games outside the current search. In **Details**, you can choose a matching edition, group discs, relocate an image or edit individual fields and the cover. Refreshes preserve manual edits. New imports and their pending jobs are saved together. After a restart, the library resumes outstanding work. Retry an individual game from Details or retry failed games together under **View task history** on the library overview.
 
-**Get cover** downloads artwork for the selected game. Libretro is the default source. On first use, Eidoryn downloads its PlayStation Redump DAT to match disc serials with regional box art. Under **Scraping settings**, choose separate limits for release lookups and cover downloads (1–20 each, initially 6 and 3). The next refresh or import uses these limits. Providers can impose lower request limits. You can also switch the cover source to ScreenScraper, IGDB or a custom HTTPS template. For ScreenScraper and IGDB, set the credential environment variables shown there before starting Eidoryn. To keep imports and browsing entirely offline, turn off **Scrape on import** and **Fill missing covers while browsing**.
+**Get cover** downloads artwork for the selected game. Libretro is the default source. On first use, Eidoryn downloads its PlayStation Redump DAT to match disc serials with regional box art. Under **Scraping settings**, choose separate limits for release lookups and cover downloads (1–20 each, initially 6 and 3). The next refresh or import uses these limits. Providers can impose lower request limits. For PS1, you can also switch the cover source to ScreenScraper, IGDB or a custom HTTPS template. For ScreenScraper and IGDB, set the credential environment variables shown there before starting Eidoryn. To keep imports and browsing entirely offline, turn off **Scrape on import** and **Fill missing covers while browsing**.
 
 Under **Scraping settings → Metadata cache**, **Clear metadata cache** defaults to the entire library. This deletes downloaded covers, release details and cached candidate editions, including details for editions you chose. Each card shows a placeholder and its local image name. The release information in Details stays empty after restarting. Use **Scrape metadata** on a game or refresh the whole library to fetch release details and artwork again, even when automatic cover downloads are off. Eidoryn remembers your edition choice for the next scrape. Choose **Removed games only** to keep the data for games still in your library. **Clear metadata when removing a game** is off by default. Cleanup preserves manual edits, custom covers, disc images, saves and play history.
 
 The user data directory contains `library.sqlite3` with the library index, cached release fields and the source records for each matched edition. The `covers/` folder shares original images and PNG thumbnails by content hash. On Linux it is `$XDG_DATA_HOME/eidoryn` (default `~/.local/share/eidoryn`), on Windows `%LOCALAPPDATA%\eidoryn`, and on macOS `~/Library/Application Support/eidoryn`. Playtime counts time spent running forward, including cutscenes and input-free menus. A normal exit saves the final interval. [Library migration, recovery and performance measurements](tests/library-optimization-validation.md)
+
+### Play a GBA cartridge
+
+Add a local `.gba` cartridge to **Game library** and click **Start game**. PS1 and GBA share a collection and a recent games list. Opening a game selects its core automatically. You can also select **GBA** in the top bar to open a cartridge directly from the console. The GBA core starts at the cartridge entry point and handles BIOS calls in Rust, so the ROM is all you need on first launch.
+
+The built-in BIOS services include interrupt waits, memory copies, integer math, affine transforms and decompression. If a game calls an unimplemented service, the error identifies the call number and the cartridge instruction address.
+
+In Game view, use the arrow keys for the D-pad, **X / Z** for A / B, **Q / E** for L / R, **Enter** for Start and **Backspace** for Select.
+
+Press **F8** and open **Controller** to edit keyboard bindings for the selected core. Under **Graphics**, enable GBA hardware acceleration to composite layers and apply LCD color effects on the GPU. The debugger shows ARM/Thumb disassembly, registers, the stack and LCD status. **F10** steps one instruction and **F9** advances one frame.
+
+Save from the game's own menu to update its raw `.sav` file. Eidoryn supports SRAM (32 KiB), Flash (64 or 128 KiB) and EEPROM (512 bytes or 8 KiB). Each save lives under `saves/gba/<ROM SHA-256>.sav` in the user data directory, so moving or renaming the ROM keeps its progress. The **Cartridge save** panel in Game view can sync, export or import a save. Import restarts the cartridge and clears rewind history.
+
+GBA uses the same **Snapshots** menu, quick slot, save-state manager and rewind controls as PS1. GBA snapshots are stored in `saves/gba/states/<ROM SHA-256>/` under the user data directory. Loading a snapshot or releasing rewind keeps the previous running or paused state. The restored timeline includes the cartridge save memory. Use **Export .sav** to keep a separate copy of in-game progress before loading an older timeline.
+
+The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending and VBlank interrupts. CPU and DMA timing are approximate. Audio and link cable support remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
+
+Run `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture` to start each local cartridge with HLE and run 1,800 frames without input. The tests read ROMs from the repository’s `tests/` folder by default. Set `EIDORYN_GBA_TEST_ROMS` to select a specific ROM or directory and `EIDORYN_GBA_BOOT_FRAMES` to change the duration.
+
+For regional editions of *Castlevania: Aria of Sorrow*, run `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored --nocapture` with the same folder, or use `EIDORYN_ARIA_ROM` to select a single image. The verified Japanese and US retail images have reference checks for their title screens, save slots and the Castle Corridor. Other editions are checked for visible output during boot and compared against an idle run of the same image to detect keypad response. Each run uses a fresh in-memory save.
 
 ### Build and launch
 
@@ -110,7 +129,7 @@ To add a language, create a file named for its language tag, such as `locales/fr
 
 Select **Settings → Appearance → Interface theme → Lemon Green** for a charcoal interface with lime accents. Eidoryn saves the selected theme, CRT, volume, mute state, preferred renderer, and fullscreen controls. CLI options such as `--theme lemon-green --volume 60 --crt soft` override saved preferences for the current session. **Settings → Graphics → Clean fullscreen** hides the playback controls when the game picture is fullscreen. The equivalent launch options are `--fullscreen --clean-fullscreen`.
 
-### Load a game
+### Load a PS1 game
 
 1. Select **Choose BIOS** and load your own 512 KiB BIOS file.
 2. Select **Open disc image** and load an ISO, CUE, or CHD file. For a multi-track BIN image, select the `.cue` that references all tracks.
@@ -137,7 +156,7 @@ Memory cards default to `saves/card1.mcd` and `saves/card2.mcd` relative to the 
 
 ### Save states
 
-Select **New snapshot** on the **Save states** page or press **Ctrl+S** to capture the current emulated machine. Each capture creates a new timestamped file in `saves/<game>/` relative to the working directory. Existing captures are retained.
+Select **New snapshot** on the **Save states** page or press **Ctrl+S** to capture the current emulated machine. Each PS1 capture creates a new timestamped file in `saves/<game>/` relative to the working directory. Existing captures are retained.
 
 In **Game view**, open **Snapshots** and select one of the current game’s three most recent snapshots to load it. Select **Manage snapshots** at the bottom of the menu, or **Save states** in the sidebar, to see the full history. Each row shows the snapshot name and time and offers load, rename, and delete actions. To permanently remove a snapshot file, select **Delete snapshot**, check its name and time, and confirm. Loading preserves the previous execution state. A running game continues, and a paused game stays paused. This restores CPU, memory, graphics, audio, device timing, disc-drive state, and connected memory-card contents together; it also works with memory cards disabled. Original disc images must remain available when restoring disc sessions. Save states use a versioned format and are not guaranteed to work across incompatible emulator versions.
 
@@ -208,11 +227,14 @@ CLI / GPUI
     ├── systems::ps1 ──→ eidoryn-ps1 ──→ optional JIT runtime
     │     media, cards,      PS1 hardware core
     │     and worker
+    ├── systems::gba ──→ eidoryn-gba
+    │     cartridge, SRAM,   GBA hardware core
+    │     and worker
     └── eidoryn-host
           audio, CRT filters, and themes
 ```
 
-The emulation worker owns the PS1 machine; the interface communicates through commands and snapshots. `crates/ps1` contains the independent hardware core, `crates/host` provides reusable host services, and `src/systems/ps1` adapts PS1 sessions to the application. See [architecture](docs/ARCHITECTURE.md) for boundaries and data flow.
+Each emulation worker owns its machine and exchanges commands and snapshots with the interface. The hardware cores live in `crates/ps1` and `crates/gba`. Desktop adapters in `src/systems` connect them to the application, and `crates/host` supplies reusable host services. See [architecture](docs/ARCHITECTURE.md) for boundaries and data flow.
 
 ## Documentation
 
@@ -228,7 +250,7 @@ The architecture document is currently in Chinese.
 - Improve PS1 device timing, audio accuracy, and game compatibility; expand regression coverage.
 - Continue measuring frame time, audio latency, and Vulkan readback costs before optimizing further.
 - Validate and improve Windows and macOS desktop execution and release workflows.
-- Explore additional system cores within the existing module boundaries; there is no implementation commitment or timeline for GBA or PS2.
+- Extend GBA compatibility with additional cartridge save types, more accurate hardware timing and audio.
 
 ## License & Acknowledgments
 

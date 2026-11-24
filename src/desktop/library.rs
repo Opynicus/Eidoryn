@@ -19,6 +19,7 @@ use super::{
     icons::icon,
     text_input::TextInput,
 };
+use eidoryn_psx::library::GamePlatform;
 use eidoryn_psx::{
     i18n::Text,
     library::{
@@ -79,7 +80,7 @@ impl Entry {
             .as_ref()
             .and_then(|m| m.title.clone())
             .unwrap_or_else(|| game.title.clone());
-        let mut terms = vec![title.clone(), game.title.clone()];
+        let mut terms = vec![title.clone(), game.title.clone(), game.platform.clone()];
         if let Some(meta) = &metadata {
             terms.extend(meta.aliases.iter().cloned());
             terms.extend(meta.region.clone());
@@ -122,6 +123,10 @@ impl Entry {
             cover_status,
             game,
         }
+    }
+
+    fn is_cartridge(&self) -> bool {
+        self.game.platform_kind() == Some(GamePlatform::Gba)
     }
 
     fn publication_date(&self) -> (Text, Option<&str>) {
@@ -256,6 +261,16 @@ impl Workspace {
             clear_playtime_confirmation: None,
             settings: false,
         }
+    }
+
+    pub(super) fn cancel_pending_launch(&mut self) {
+        self.launch_generation = self.launch_generation.wrapping_add(1);
+        self.pending_bios = None;
+        self.direct = None;
+    }
+
+    fn entry(&self, id: i64) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.game.id == id)
     }
 
     pub(super) fn subpage_title(&self) -> Option<Text> {

@@ -2,17 +2,82 @@ use super::{
     Desktop, WorkspacePage,
     components::{action, button, card, heading, label, page_heading, pair},
 };
+use eidoryn_gba::{InstructionSet, debug::DebugSnapshot};
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::shortcuts::ShortcutAction;
+use eidoryn_psx::systems::gba::Command as GbaCommand;
 use eidoryn_psx::systems::ps1::{
     cpu::REGISTER_NAMES,
-    runner::{Command, SnapshotMode},
+    runner::{Command, Snapshot, SnapshotMode},
 };
 use gpui::{Context, Window, div, prelude::*, px, rgb};
 
+#[derive(Clone, Copy)]
+enum Capture<'a> {
+    Ps1(&'a Snapshot),
+    Gba(&'a DebugSnapshot),
+}
+
+impl Capture<'_> {
+    fn pc(self) -> u32 {
+        match self {
+            Self::Ps1(snapshot) => snapshot.cpu.pc,
+            Self::Gba(debug) => debug.registers[15],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum DebugStep {
+    Instruction,
+    Slice,
+}
+
 impl Desktop {
+    fn capture(&self) -> Option<Capture<'_>> {
+        if self.is_gba() {
+            self.gba.snapshot.debug.as_deref().map(Capture::Gba)
+        } else {
+            (self.snapshot.mode == SnapshotMode::Debug).then_some(Capture::Ps1(&self.snapshot))
+        }
+    }
+
+    pub(super) fn step_debugger(&mut self, step: DebugStep, cx: &mut Context<Self>) {
+        if self.is_gba() {
+            self.release_buttons(cx);
+            self.gba_command(
+                match step {
+                    DebugStep::Instruction => GbaCommand::Step,
+                    DebugStep::Slice => GbaCommand::Slice,
+                },
+                cx,
+            );
+        } else {
+            self.command(
+                match step {
+                    DebugStep::Instruction => Command::Step,
+                    DebugStep::Slice => Command::Slice,
+                },
+                cx,
+            );
+        }
+    }
+
     pub(super) fn sync_snapshot_mode(&mut self, visible: bool) {
-        let mode = if visible && self.debugger_enabled {
+        let enabled = visible && self.debugger_enabled;
+        let capture_gba = enabled && self.is_gba() && self.gba.runner.is_some();
+        if capture_gba != self.gba.capturing_debug {
+            if let Some(runner) = &self.gba.runner
+                && let Err(error) = runner.send(GbaCommand::SetDebug(capture_gba))
+            {
+                self.notice = Some(error);
+            }
+            self.gba.capturing_debug = capture_gba;
+            if !capture_gba {
+                self.gba.snapshot.debug = None;
+            }
+        }
+        let mode = if enabled && !self.is_gba() {
             SnapshotMode::Debug
         } else {
             SnapshotMode::Display
@@ -56,24 +121,25 @@ impl Desktop {
                     .child(label(p, self.tr(Text::DebuggerOffHint)).max_w(px(420.))),
             );
         }
-        if self.snapshot.mode != SnapshotMode::Debug {
-            return page.child(
-                card(p)
-                    .px_6()
-                    .py_12()
-                    .items_center()
-                    .child(label(p, self.tr(Text::DebuggerLoading))),
-            );
-        }
+        let Some(capture) = self.capture() else {
+            return page.child(card(p).px_6().py_12().items_center().child(label(
+                p,
+                self.tr(if self.is_gba() && self.gba.snapshot.path.is_none() {
+                    Text::DebuggerOpenCartridge
+                } else {
+                    Text::DebuggerLoading
+                }),
+            )));
+        };
         let stacked = self.content_width(window) < px(760.);
-        let instructions = self.disassembly(cx).flex_1().min_w_0();
+        let instructions = self.disassembly(capture, cx).flex_1().min_w_0();
         let details = div()
             .min_w_0()
             .flex()
             .flex_col()
             .gap_4()
-            .child(self.registers())
-            .child(self.gpu_details())
+            .child(self.registers(capture))
+            .child(self.gpu_details(capture))
             .when(!stacked, |element| {
                 element
                     .w(gpui::relative(0.40))
@@ -133,9 +199,9 @@ impl Desktop {
 
     fn capture_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let capture = if self.snapshot.mode == SnapshotMode::Debug {
+        let capture = if self.capture().is_some() {
             self.tr(Text::CaptureActive)
-        } else if self.debugger_enabled {
+        } else if self.debugger_enabled && !(self.is_gba() && self.gba.snapshot.path.is_none()) {
             self.tr(Text::DebuggerLoading)
         } else {
             self.tr(Text::Paused)
@@ -182,9 +248,9 @@ impl Desktop {
                     p,
                     "debug-run",
                     self.shortcut_label(
-                        self.tr(if self.snapshot.rewinding {
+                        self.tr(if self.rewinding() {
                             Text::EndRewind
-                        } else if self.snapshot.running {
+                        } else if self.running() {
                             Text::Pause
                         } else {
                             Text::Run
@@ -192,18 +258,18 @@ impl Desktop {
                         ShortcutAction::Toggle,
                         None,
                     ),
-                    Some(if self.snapshot.running || self.snapshot.rewinding {
+                    Some(if self.running() || self.rewinding() {
                         "pause"
                     } else {
                         "play"
                     }),
                     false,
                 )
-                .on_click(cx.listener(|view, _, _, cx| view.command(Command::Toggle, cx))),
+                .on_click(cx.listener(|view, _, _, cx| view.toggle_playback(cx))),
             )
     }
 
-    fn disassembly(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn disassembly(&self, capture: Capture<'_>, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         card(p)
             .debug_selector(|| "debug-instructions".into())
@@ -221,7 +287,7 @@ impl Desktop {
                             .child(self.tr(Text::Instructions)),
                     )
                     .child(
-                        label(p, format!("PC {:08X}", self.snapshot.cpu.pc))
+                        label(p, format!("PC {:08X}", capture.pc()))
                             .px_2()
                             .py_1()
                             .rounded_md()
@@ -233,7 +299,7 @@ impl Desktop {
                     .border_b_1()
                     .border_color(rgb(p.border)),
             )
-            .child(self.instruction_table())
+            .child(self.instruction_table(capture))
             .child(
                 div()
                     .flex()
@@ -250,7 +316,9 @@ impl Desktop {
                             Some("skip"),
                             false,
                         )
-                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Step, cx))),
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.step_debugger(DebugStep::Instruction, cx);
+                        })),
                     )
                     .child(
                         button(
@@ -261,7 +329,9 @@ impl Desktop {
                                 .hint(),
                             false,
                         )
-                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Slice, cx))),
+                        .on_click(
+                            cx.listener(|view, _, _, cx| view.step_debugger(DebugStep::Slice, cx)),
+                        ),
                     )
                     .child(
                         button(
@@ -271,12 +341,12 @@ impl Desktop {
                             self.shortcut_label(self.tr(Text::Reset), ShortcutAction::Reset, None),
                             false,
                         )
-                        .on_click(cx.listener(|view, _, _, cx| view.command(Command::Reset, cx))),
+                        .on_click(cx.listener(|view, _, _, cx| view.reset_playback(cx))),
                     ),
             )
     }
 
-    fn instruction_table(&self) -> gpui::Div {
+    fn instruction_table(&self, capture: Capture<'_>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
             .flex()
@@ -296,52 +366,77 @@ impl Desktop {
                     .child(div().w(px(88.)).child(self.tr(Text::Opcode)))
                     .child(self.tr(Text::Instruction)),
             )
-            .child(
-                div().flex().flex_col().font(self.fonts.mono()).children(
-                    self.snapshot
-                        .disassembly
-                        .iter()
-                        .map(|(address, word, instruction)| {
-                            let current = *address == self.snapshot.cpu.pc;
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .px_4()
-                                .py_2()
-                                .border_b_1()
-                                .border_color(rgb(p.border))
-                                .text_xs()
-                                .bg(rgb(if current {
-                                    p.instruction_highlight()
-                                } else {
-                                    p.surface
-                                }))
-                                .text_color(rgb(if current {
-                                    p.on_instruction_highlight()
-                                } else {
-                                    p.text
-                                }))
-                                .child(div().w(px(16.)).child(if current { "›" } else { " " }))
-                                .child(div().w(px(88.)).child(format!("{address:08X}")))
-                                .child(div().w(px(88.)).child(word.map_or_else(
+            .child({
+                let row = |address: u32, opcode: String, instruction: &str| {
+                    let current = address == capture.pc();
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .px_4()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(rgb(p.border))
+                        .text_xs()
+                        .bg(rgb(if current {
+                            p.instruction_highlight()
+                        } else {
+                            p.surface
+                        }))
+                        .text_color(rgb(if current {
+                            p.on_instruction_highlight()
+                        } else {
+                            p.text
+                        }))
+                        .child(div().w(px(16.)).child(if current { "›" } else { " " }))
+                        .child(div().w(px(88.)).child(format!("{address:08X}")))
+                        .child(div().w(px(88.)).child(opcode))
+                        .child(div().flex_1().min_w_0().child(instruction.to_owned()))
+                };
+                let rows = div().flex().flex_col().font(self.fonts.mono());
+                match capture {
+                    Capture::Ps1(snapshot) => rows.children(snapshot.disassembly.iter().map(
+                        |(address, word, instruction)| {
+                            row(
+                                *address,
+                                word.map_or_else(
                                     || "--------".into(),
                                     |word| format!("{word:08X}"),
-                                )))
-                                .child(div().flex_1().min_w_0().child(instruction.clone()))
-                        }),
-                ),
-            )
+                                ),
+                                instruction,
+                            )
+                        },
+                    )),
+                    Capture::Gba(debug) => rows.children(debug.instructions.iter().map(|ins| {
+                        let opcode = match (debug.instruction_set, ins.bytes) {
+                            (InstructionSet::Thumb, 4) => {
+                                format!("{:04X} {:04X}", ins.opcode as u16, ins.opcode >> 16)
+                            }
+                            (InstructionSet::Thumb, _) => format!("{:04X}", ins.opcode),
+                            (InstructionSet::Arm, _) => format!("{:08X}", ins.opcode),
+                        };
+                        row(ins.address, opcode, &ins.assembly)
+                    })),
+                }
+            })
     }
 
-    fn registers(&self) -> gpui::Div {
+    fn registers(&self, capture: Capture<'_>) -> gpui::Div {
+        const ARM_REGISTERS: [&str; 16] = [
+            "R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "SP",
+            "LR", "PC",
+        ];
         let p = &self.themes.active().palette;
-        let cpu = &self.snapshot.cpu;
-        card(p)
+        let (cpu_name, names, registers): (_, &[&str], &[u32]) = match capture {
+            Capture::Ps1(snapshot) => ("R3000A", &REGISTER_NAMES, &snapshot.cpu.registers),
+            Capture::Gba(debug) => ("ARM7TDMI", &ARM_REGISTERS, &debug.registers),
+        };
+        let half = registers.len() / 2;
+        let card = card(p)
             .debug_selector(|| "debug-registers".into())
             .p_4()
             .gap_3()
-            .child(heading(&self.fonts, p, self.tr(Text::Registers), "R3000A"))
+            .child(heading(&self.fonts, p, self.tr(Text::Registers), cpu_name))
             .child(
                 div()
                     .p_3()
@@ -356,7 +451,7 @@ impl Desktop {
                             .text_size(px(18.))
                             .font(self.fonts.mono())
                             .text_color(rgb(p.primary))
-                            .child(format!("{:08X}", cpu.pc)),
+                            .child(format!("{:08X}", capture.pc())),
                     ),
             )
             .child(
@@ -364,11 +459,11 @@ impl Desktop {
                     .flex()
                     .flex_col()
                     .font(self.fonts.mono())
-                    .children((0..16).map(|row| {
+                    .children((0..half).map(|row| {
                         div()
                             .flex()
                             .gap_1()
-                            .children([row, row + 16].map(|register| {
+                            .children([row, row + half].map(|register| {
                                 div()
                                     .flex_1()
                                     .min_w_0()
@@ -379,64 +474,109 @@ impl Desktop {
                                     .border_b_1()
                                     .border_color(rgb(p.border))
                                     .text_xs()
-                                    .child(
-                                        div()
-                                            .text_color(rgb(p.muted))
-                                            .child(REGISTER_NAMES[register]),
-                                    )
+                                    .child(div().text_color(rgb(p.muted)).child(names[register]))
                                     .child(
                                         div()
                                             .text_color(rgb(p.primary))
-                                            .child(format!("{:08X}", cpu.registers[register])),
+                                            .child(format!("{:08X}", registers[register])),
                                     )
                             }))
                     })),
             )
-            .child(div().h(px(1.)).bg(rgb(p.border)))
-            .child(pair(
-                p,
-                "HI / LO",
-                format!("{:08X} / {:08X}", cpu.hi, cpu.lo),
-            ))
-            .child(pair(p, "COP0 status", format!("{:08X}", cpu.cop0[12])))
-            .child(pair(
-                p,
-                "Cause / EPC",
-                format!("{:08X} / {:08X}", cpu.cop0[13], cpu.cop0[14]),
-            ))
+            .child(div().h(px(1.)).bg(rgb(p.border)));
+        match capture {
+            Capture::Ps1(snapshot) => {
+                let cpu = &snapshot.cpu;
+                card.child(pair(
+                    p,
+                    "HI / LO",
+                    format!("{:08X} / {:08X}", cpu.hi, cpu.lo),
+                ))
+                .child(pair(p, "COP0 status", format!("{:08X}", cpu.cop0[12])))
+                .child(pair(
+                    p,
+                    "Cause / EPC",
+                    format!("{:08X} / {:08X}", cpu.cop0[13], cpu.cop0[14]),
+                ))
+            }
+            Capture::Gba(debug) => card
+                .child(pair(p, "CPSR", format!("{:08X}", debug.cpsr)))
+                .child(pair(
+                    p,
+                    self.tr(Text::InstructionSet),
+                    match debug.instruction_set {
+                        InstructionSet::Arm => "ARM",
+                        InstructionSet::Thumb => "Thumb",
+                    },
+                ))
+                .child(label(p, self.tr(Text::StackMemory)))
+                .children(debug.stack.iter().enumerate().map(|(i, word)| {
+                    let addr = (debug.registers[13] & !3).wrapping_add(i as u32 * 4);
+                    pair(p, format!("{addr:08X}"), format!("{word:08X}"))
+                })),
+        }
     }
 
-    fn gpu_details(&self) -> gpui::Div {
+    fn gpu_details(&self, capture: Capture<'_>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        card(p)
-            .debug_selector(|| "debug-gpu".into())
-            .p_4()
-            .gap_3()
-            .child(heading(
-                &self.fonts,
-                p,
-                self.tr(Text::GpuStatus),
-                "PLAYSTATION",
-            ))
-            .child(pair(p, self.tr(Text::Renderer), self.renderer_label()))
-            .child(pair(
-                p,
-                self.tr(Text::Resolution),
-                format!(
-                    "{} × {}",
-                    self.snapshot.native_dimensions.0, self.snapshot.native_dimensions.1
-                ),
-            ))
-            .child(pair(
-                p,
-                self.tr(Text::GpuStatus),
-                format!("{:08X}", self.snapshot.gpu_status),
-            ))
-            .child(pair(p, self.tr(Text::Memory), "2 MiB / 1024 × 512"))
-            .child(pair(
-                p,
-                self.tr(Text::InstructionsExecuted),
-                self.snapshot.cpu.instructions.to_string(),
-            ))
+        let card = card(p).debug_selector(|| "debug-gpu".into()).p_4().gap_3();
+        if let Capture::Gba(debug) = capture {
+            return card
+                .child(heading(
+                    &self.fonts,
+                    p,
+                    self.tr(Text::GpuStatus),
+                    "GAME BOY ADVANCE",
+                ))
+                .child(pair(
+                    p,
+                    self.tr(Text::Renderer),
+                    self.gba
+                        .snapshot
+                        .graphics_device
+                        .clone()
+                        .unwrap_or_else(|| self.tr(Text::SerialRenderer).into()),
+                ))
+                .child(pair(
+                    p,
+                    self.tr(Text::Resolution),
+                    format!("{} × {}", eidoryn_gba::WIDTH, eidoryn_gba::HEIGHT),
+                ))
+                .child(pair(
+                    p,
+                    "DISPCNT / DISPSTAT",
+                    format!(
+                        "{:04X} / {:04X}",
+                        debug.display_control, debug.display_status
+                    ),
+                ))
+                .child(pair(p, "VCOUNT", debug.scanline.to_string()));
+        }
+        card.child(heading(
+            &self.fonts,
+            p,
+            self.tr(Text::GpuStatus),
+            "PLAYSTATION",
+        ))
+        .child(pair(p, self.tr(Text::Renderer), self.renderer_label()))
+        .child(pair(
+            p,
+            self.tr(Text::Resolution),
+            format!(
+                "{} × {}",
+                self.snapshot.native_dimensions.0, self.snapshot.native_dimensions.1
+            ),
+        ))
+        .child(pair(
+            p,
+            self.tr(Text::GpuStatus),
+            format!("{:08X}", self.snapshot.gpu_status),
+        ))
+        .child(pair(p, self.tr(Text::Memory), "2 MiB / 1024 × 512"))
+        .child(pair(
+            p,
+            self.tr(Text::InstructionsExecuted),
+            self.snapshot.cpu.instructions.to_string(),
+        ))
     }
 }

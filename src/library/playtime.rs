@@ -58,14 +58,14 @@ impl ForwardTime {
     }
 }
 
-struct Disc {
+struct Media {
     path: PathBuf,
     identity: String,
     fast_boot: bool,
 }
 
 enum Event {
-    Disc(Uuid, Disc),
+    Select(Uuid, Media),
     Progress(Uuid, Checkpoint),
     Finish(Uuid, ExitReason),
     Clear(i64, mpsc::Sender<Result<(), String>>),
@@ -77,7 +77,7 @@ enum ExitReason {
     Interrupted,
 }
 
-pub(super) struct Playtime {
+pub struct Playtime {
     sender: Option<mpsc::Sender<Event>>,
     writer: Option<thread::JoinHandle<()>>,
     error: Arc<Mutex<Option<String>>>,
@@ -85,7 +85,7 @@ pub(super) struct Playtime {
 }
 
 impl Playtime {
-    pub(super) fn open(library: Library) -> std::io::Result<Self> {
+    pub fn open(library: Library) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::channel();
         let error = Arc::new(Mutex::new(None));
         let feedback = Arc::clone(&error);
@@ -111,12 +111,12 @@ impl Playtime {
         }
     }
 
-    pub(super) fn select(&mut self, path: PathBuf, identity: String, fast_boot: bool) {
+    pub fn select(&mut self, path: PathBuf, identity: String, fast_boot: bool) {
         self.finish();
         let id = Uuid::new_v4();
-        self.send(Event::Disc(
+        self.send(Event::Select(
             id,
-            Disc {
+            Media {
                 path,
                 identity,
                 fast_boot,
@@ -125,7 +125,7 @@ impl Playtime {
         self.current = Some((id, ForwardTime::default()));
     }
 
-    pub(super) fn sample(&mut self, forward: bool) {
+    pub fn sample(&mut self, forward: bool) {
         let Some((id, clock)) = &mut self.current else {
             return;
         };
@@ -139,13 +139,13 @@ impl Playtime {
         }
     }
 
-    pub(super) fn clear(&mut self, game: i64, completed: mpsc::Sender<Result<(), String>>) {
+    pub fn clear(&mut self, game: i64, completed: mpsc::Sender<Result<(), String>>) {
         // Queue the last partial interval before advancing the persisted baseline.
         self.sample(false);
         self.send(Event::Clear(game, completed));
     }
 
-    pub(super) fn finish(&mut self) {
+    pub fn finish(&mut self) {
         self.end(ExitReason::Normal);
     }
 
@@ -156,7 +156,7 @@ impl Playtime {
         }
     }
 
-    pub(super) fn error(&self) -> Option<String> {
+    pub fn error(&self) -> Option<String> {
         self.error.lock().ok()?.clone()
     }
 }
@@ -179,7 +179,7 @@ impl Drop for Playtime {
 }
 
 struct Pending {
-    disc: Disc,
+    media: Media,
     game: Option<i64>,
     point: Option<Checkpoint>,
     finished: Option<ExitReason>,
@@ -192,9 +192,9 @@ impl Pending {
             game
         } else {
             let game = library.associate_opened(
-                &self.disc.path,
-                &self.disc.identity,
-                self.disc.fast_boot,
+                &self.media.path,
+                &self.media.identity,
+                self.media.fast_boot,
             )?;
             self.game = Some(game);
             game
@@ -267,11 +267,11 @@ fn write_sessions(library: &Library, rx: &mpsc::Receiver<Event>, error: &Mutex<O
         let shutdown = matches!(event, Err(mpsc::RecvTimeoutError::Disconnected));
         let mut clear = None;
         match event {
-            Ok(Event::Disc(id, disc)) => {
+            Ok(Event::Select(id, media)) => {
                 sessions.insert(
                     id,
                     Pending {
-                        disc,
+                        media,
                         game: None,
                         point: None,
                         finished: None,
@@ -418,9 +418,9 @@ mod tests {
         conn.execute_batch("CREATE TRIGGER unavailable BEFORE INSERT ON sessions BEGIN SELECT RAISE(FAIL,'disk unavailable'); END").unwrap();
         let writer = Playtime::open(library.clone()).unwrap();
         let id = Uuid::new_v4();
-        writer.send(Event::Disc(
+        writer.send(Event::Select(
             id,
-            Disc {
+            Media {
                 path,
                 identity,
                 fast_boot: false,
@@ -505,7 +505,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("library.sqlite");
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "systems::ps1::runner::playtime::tests::crash_recovery_replay_and_out_of_order_checkpoints_are_idempotent"])
+            .args(["--exact", "library::playtime::tests::crash_recovery_replay_and_out_of_order_checkpoints_are_idempotent"])
             .env(CHILD_DB, &path)
             .status()
             .unwrap();

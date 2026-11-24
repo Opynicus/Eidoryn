@@ -154,7 +154,7 @@ impl Desktop {
                 .spawn(async move {
                     let ids = match ids {
                         Some(ids) => ids,
-                        None => store.visible_game_ids()?,
+                        None => store.visible_games_for_scraping()?,
                     };
                     scrape::enqueue_games(&store, &ids, Mode::Full, provider)?;
                     Ok::<_, String>(ids)
@@ -307,14 +307,9 @@ impl Desktop {
             .iter()
             .flat_map(Receiver::try_iter)
             .collect();
-        if self.preferences.library.scrape_new_games {
-            for &id in &added {
-                if !state.is_queued(id) {
-                    state.incremental.insert(id);
-                }
-            }
-        } else {
-            state.incremental.clear();
+        if !added.is_empty() {
+            // Import persists eligible jobs in the same transaction as the game.
+            state.next_recovery = Instant::now();
         }
         if self
             .library
@@ -348,6 +343,10 @@ impl Desktop {
         let Some(store) = self.library.store.clone() else {
             return;
         };
+        // A new batch replaces the result shown by an earlier manual lookup.
+        self.library.metadata_lookups.retain(|id, lookup| {
+            !ids.contains(id) || matches!(lookup, super::MetadataLookup::Fetching(_))
+        });
         for entry in &mut self.library.entries {
             if ids.contains(&entry.game.id) {
                 entry.scrape_active = true;
@@ -466,6 +465,8 @@ impl Desktop {
             ),
         ];
         for (key, count) in [
+            (Text::LibraryPending, report.needs_choice),
+            (Text::LibraryNoReleaseMatch, report.not_found),
             (Text::LibrarySkipped, report.skipped),
             (Text::LibraryFailed, report.failed),
             (Text::LibraryRetryWait, report.retry_waiting),
@@ -642,8 +643,13 @@ impl Desktop {
         let status = match row.status {
             JobStatus::Pending => Text::LibraryScrapePending,
             JobStatus::Running => Text::LibraryProcessing,
-            JobStatus::Succeeded if row.skipped => Text::LibrarySkipped,
-            JobStatus::Succeeded => Text::LibraryScrapeFinished,
+            JobStatus::Succeeded => match row.outcome {
+                Some(scrape::JobOutcome::NeedsChoice) => Text::LibraryPending,
+                Some(scrape::JobOutcome::NotFound) if row.cover => Text::LibraryNotFound,
+                Some(scrape::JobOutcome::NotFound) => Text::LibraryNoReleaseMatch,
+                Some(scrape::JobOutcome::Skipped) => Text::LibrarySkipped,
+                None => Text::LibraryScrapeFinished,
+            },
             JobStatus::RetryWait => Text::LibraryRetryWait,
             JobStatus::Failed => Text::LibraryFailed,
             JobStatus::Cancelled => Text::LibraryScrapeCancelled,

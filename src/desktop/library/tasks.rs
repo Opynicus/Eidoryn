@@ -1,7 +1,7 @@
 use super::{Desktop, Entry, Text, div, label, scraping::progress_bar};
 use crate::desktop::{WorkspacePage, graphics::switch, icons::icon};
 use eidoryn_psx::{
-    library::{Library, ScanPhase, ScanReport, TrackChoice, covers, metadata},
+    library::{GamePlatform, Library, ScanPhase, ScanReport, TrackChoice, covers, metadata},
     systems::ps1::{media::validate_bios_path, runner::Command},
 };
 use gpui::{Context, Div, PathPromptOptions, prelude::*, px, rgb};
@@ -81,6 +81,18 @@ impl Desktop {
         recent: bool,
         cx: &mut Context<Self>,
     ) {
+        if GamePlatform::from_path(&path) == Some(GamePlatform::Gba) {
+            let title = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            self.open_gba(path, title, cx);
+            return;
+        }
+        self.switch_core(GamePlatform::Ps1, cx);
+        self.library.launch_generation = self.library.launch_generation.wrapping_add(1);
+        let generation = self.library.launch_generation;
         if path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("bin"))
@@ -95,6 +107,9 @@ impl Desktop {
                     })
                     .await;
                 let _ = this.update(cx, |v, cx| {
+                    if v.library.launch_generation != generation || v.is_gba() {
+                        return;
+                    }
                     match result {
                         Ok(cues) if !cues.is_empty() => {
                             v.library.direct = Some(DirectChoice {
@@ -185,11 +200,23 @@ impl Desktop {
     }
 
     pub(super) fn clear_playtime(&mut self, id: i64, cx: &mut Context<Self>) {
+        let cartridge = self.library.entry(id).is_some_and(Entry::is_cartridge);
+        if cartridge && self.gba.runner.is_none() {
+            self.library_write(cx, move |store| store.clear_statistics(id));
+            return;
+        }
         let (completed, rx) = mpsc::channel();
-        if let Err(error) = self.runner.send(Command::ClearLibraryStatistics {
-            game_id: id,
-            completed,
-        }) {
+        let sent = if cartridge && let Some(runner) = &self.gba.runner {
+            runner.send(eidoryn_psx::systems::gba::Command::ClearStatistics(
+                id, completed,
+            ))
+        } else {
+            self.runner.send(Command::ClearLibraryStatistics {
+                game_id: id,
+                completed,
+            })
+        };
+        if let Err(error) = sent {
             self.notice = Some(error);
             cx.notify();
             return;
@@ -211,12 +238,17 @@ impl Desktop {
     }
 
     pub(in crate::desktop) fn refresh_playing_library(&mut self, cx: &mut Context<Self>) {
+        let current = if self.is_gba() {
+            self.gba.snapshot.path.as_ref()
+        } else {
+            self.snapshot.disc_path.as_ref()
+        };
         if self.page == crate::desktop::WorkspacePage::Library
-            && self.snapshot.disc_mounted
+            && current.is_some()
             && self.library.last_refresh.elapsed() >= Duration::from_secs(30)
         {
             self.library.last_refresh = Instant::now();
-            if let Some(path) = &self.snapshot.disc_path
+            if let Some(path) = current
                 && let Some(entry) = self
                     .library
                     .entries
@@ -571,59 +603,67 @@ impl Desktop {
 
     pub(super) fn launch_library(&mut self, id: i64, cx: &mut Context<Self>) {
         self.library.select(id);
-        let Some(game) = self
-            .library
-            .entries
-            .iter()
-            .find(|e| e.game.id == id)
-            .map(|e| &e.game)
-        else {
+        let Some(entry) = self.library.entry(id) else {
             return;
         };
-        let Some(loc) = game
+        let Some(platform) = entry.game.platform_kind() else {
+            return;
+        };
+        let title = entry.title.clone();
+        let Some(loc) = entry
+            .game
             .locations
             .iter()
             .find(|l| Some(l.id) == self.library.location)
-            .or_else(|| game.locations.iter().find(|l| l.available))
-            .or_else(|| game.locations.first())
+            .or_else(|| entry.game.locations.iter().find(|l| l.available))
+            .or_else(|| entry.game.locations.first())
         else {
             return;
         };
         let path = loc.path.clone();
         let fast_boot = loc.fast_boot;
-        self.library.location = Some(loc.id);
-        self.library.pending_bios = None;
         let location = loc.id;
         let available = loc.available;
+        self.library.location = Some(location);
+        self.library.pending_bios = None;
         let bios = self.bios.clone();
         self.library.launch_generation = self.library.launch_generation.wrapping_add(1);
         let generation = self.library.launch_generation;
         cx.spawn(async move |this, cx| {
-            let (path, bios, disc_available, choice, validation) = cx
+            let (path, bios, available_file, choice, validation) = cx
                 .background_executor()
                 .spawn(async move {
-                    let disc_available = available && path.is_file();
+                    let available_file = available && path.is_file();
                     let mut choice = bios.clone();
-                    let validation = if disc_available {
+                    let validation = if available_file && platform == GamePlatform::Ps1 {
                         eidoryn_psx::preferences::validate_bios_choice(&mut choice)
                     } else {
                         Ok(None)
                     };
-                    (path, bios, disc_available, choice, validation)
+                    (path, bios, available_file, choice, validation)
                 })
                 .await;
             let _ = this.update(cx, |v, cx| {
                 if v.library.launch_generation != generation
                     || v.library.selected != Some(id)
                     || v.library.location != Some(location)
-                    || v.bios != bios
+                    || (platform == GamePlatform::Ps1 && v.bios != bios)
                     || v.page != crate::desktop::WorkspacePage::Library
                 {
                     return;
                 }
-                if !disc_available {
+                if !available_file {
                     v.library_picker(Picker::Relocate(location), cx);
                     v.notice = Some(v.tr(Text::LibraryMissing).to_owned());
+                    cx.notify();
+                    return;
+                }
+                v.switch_core(platform, cx);
+                if v.active_core != platform || v.closing() {
+                    return;
+                }
+                if platform == GamePlatform::Gba {
+                    v.open_gba(path, title, cx);
                 } else if bios.is_some() && choice.is_none() {
                     v.bios = None;
                     v.notice = Some(v.tr(Text::MissingBios).into());

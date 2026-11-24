@@ -3,13 +3,16 @@
 pub mod covers;
 mod http_retry;
 mod jobs;
+mod media;
 pub mod metadata;
 mod ordering;
+pub(crate) mod playtime;
 mod scan;
 pub mod scrape;
 mod store;
 mod transport;
 
+pub use media::GamePlatform;
 pub use ordering::{GameMove, Placement};
 use rusqlite::{Connection, TransactionBehavior};
 pub use scan::{ScanPhase, ScanProgress, ScanReport, ScanRoot, TrackChoice};
@@ -55,6 +58,14 @@ pub struct Game {
     pub locations: Vec<Location>,
     pub seconds: u64,
     pub last_played: Option<i64>,
+}
+
+impl Game {
+    pub fn platform_kind(&self) -> Option<GamePlatform> {
+        [GamePlatform::Ps1, GamePlatform::Gba]
+            .into_iter()
+            .find(|platform| platform.as_str() == self.platform)
+    }
 }
 
 #[derive(Debug, Clone)]

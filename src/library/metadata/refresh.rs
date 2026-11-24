@@ -6,6 +6,7 @@ use super::{
 use crate::library::scrape::Mode;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::{
+    borrow::Cow,
     collections::HashMap,
     sync::{
         Arc, Mutex, Weak,
@@ -32,6 +33,9 @@ pub fn refresh_online_cancellable(
     id: i64,
     cancel: &AtomicBool,
 ) -> Result<RefreshOutcome, String> {
+    if !super::catalog_available(&lib.connect()?, id).map_err(|e| e.to_string())? {
+        return Ok(RefreshOutcome::NotFound);
+    }
     let batch = Batch::default();
     let prepared = batch
         .prepare(lib, id, Mode::Full, cancel)
@@ -96,6 +100,7 @@ enum Hit {
 pub(in crate::library) struct Prepared {
     cache_generation: i64,
     serial: Option<String>,
+    gba_edition: Option<String>,
     hit: Hit,
 }
 
@@ -107,7 +112,14 @@ impl Batch {
         mode: Mode,
         cancel: &AtomicBool,
     ) -> Result<Prepared, ProviderError> {
+        let gba = super::is_gba(
+            &*lib.worker_connection().map_err(ProviderError::Database)?,
+            id,
+        )?;
         self.prepare_with(lib, id, mode, cancel, |serial| {
+            if gba {
+                return super::gba::lookup(lib, serial, cancel);
+            }
             #[cfg(feature = "ui-tests")]
             if let Some(responses) = &lib.scrape_responses {
                 return super::wikidata::recorded_response(responses.metadata.clone(), serial);
@@ -150,6 +162,7 @@ impl Batch {
             return Ok(Prepared {
                 cache_generation: evidence.cache_generation,
                 serial: None,
+                gba_edition: None,
                 hit: Hit::Missing,
             });
         };
@@ -213,9 +226,32 @@ impl Batch {
                 }
             }
         };
+        drop(current);
+        // Only the provider response is shared by serial. Two ROMs with the same
+        // header code can be different revisions and must be matched separately.
+        let gba_edition = if evidence.gba && evidence.selected.is_none() {
+            let raw = match &hit {
+                Hit::Fetched(fetched)
+                    if fetched.download.source.payload_version == super::gba::PAYLOAD_VERSION =>
+                {
+                    Some(Cow::Borrowed(fetched.download.raw.as_slice()))
+                }
+                Hit::Cached => super::gba::cached_editions(&conn, key)?.map(Cow::Owned),
+                _ => None,
+            };
+            raw.map(|raw| {
+                super::gba::matching_title(&conn, id, key, evidence.region.as_deref(), &raw, cancel)
+            })
+            .transpose()?
+            .flatten()
+            .map(|name| super::gba::edition_id(key, &name))
+        } else {
+            None
+        };
         Ok(Prepared {
             cache_generation: evidence.cache_generation,
             serial: evidence.serial,
+            gba_edition,
             hit,
         })
     }
@@ -228,13 +264,21 @@ fn complete_cached_edition(
     serial: &str,
     evidence: &Evidence,
 ) -> rusqlite::Result<bool> {
-    let releases = cached_for(conn, serial)?;
+    if evidence.gba
+        && evidence.selected.is_none()
+        && super::gba::cached_editions(conn, serial)?.is_some()
+    {
+        return Ok(true);
+    }
+    let releases = cached_for(conn, serial, evidence.gba)?;
     let edition = if let Some(id) = &evidence.selected {
         releases.iter().find(|r| &r.id == id)
     } else {
         matching_serial(&releases, Some(serial), evidence.region.as_deref())
     };
-    let Some(edition) = edition.filter(|r| !r.date.is_empty() && !r.title.is_empty()) else {
+    let Some(edition) =
+        edition.filter(|r| (evidence.gba || !r.date.is_empty()) && !r.title.is_empty())
+    else {
         return Ok(false);
     };
     conn.prepare_cached(
@@ -344,8 +388,8 @@ impl Prepared {
                 }
             }
         }
-        let releases = cached_for(tx, &serial).map_err(|e| e.to_string())?;
-        let release = if let Some(key) = &ev.selected {
+        let releases = cached_for(tx, &serial, ev.gba).map_err(|e| e.to_string())?;
+        let release = if let Some(key) = ev.selected.as_ref().or(self.gba_edition.as_ref()) {
             releases.iter().find(|r| &r.id == key)
         } else {
             matching_serial(&releases, Some(&serial), ev.region.as_deref())

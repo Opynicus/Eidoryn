@@ -1,7 +1,7 @@
 //! One emulation thread owns the machine; clients send commands and consume snapshots.
 mod pacing;
 #[cfg(feature = "desktop")]
-mod playtime;
+use crate::library::playtime;
 mod snapshot;
 mod worker;
 
@@ -34,9 +34,9 @@ impl QuickSlot {
     }
 }
 
-pub const MIN_REWIND_SECONDS: u16 = 5;
-pub const MAX_REWIND_SECONDS: u16 = 120;
-pub const DEFAULT_REWIND_SECONDS: u16 = 30;
+pub use crate::systems::checkpoints::{
+    DEFAULT_REWIND_SECONDS, MAX_REWIND_SECONDS, MIN_REWIND_SECONDS,
+};
 
 pub enum Command {
     /// Enable persistent statistics only for an interactive desktop session.
@@ -79,6 +79,8 @@ pub enum Command {
     SetRewindSeconds(u16),
     SetRewinding(bool),
     Toggle,
+    /// Leave the machine paused even if an earlier run command is still queued.
+    Pause,
     Step,
     Slice,
     Reset,

@@ -3,21 +3,23 @@ name = "eidoryn"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Eidoryn — a PlayStation emulator with a native GPUI interface"
+description = "Eidoryn — a PlayStation and Game Boy Advance emulator with a native GPUI interface"
 license = "GPL-3.0-only"
 
 [lib]
 name = "eidoryn_psx"
 
 [workspace]
-members = ["crates/ps1", "crates/host", "crates/jit-runtime"]
+members = ["crates/gba", "crates/ps1", "crates/host", "crates/jit-runtime"]
 default-members = ["."]
 resolver = "3"
 
 [features]
 default = ["desktop", "wayland", "x11", "hardware", "jit"]
 desktop = [
+    "dep:eidoryn-gba",
     "dep:chrono",
+    "dep:crc32fast",
     "dep:gpui",
     "dep:gpui_platform",
     "dep:httpdate",
@@ -37,16 +39,18 @@ desktop = [
 ]
 wayland = ["desktop", "gpui_platform/wayland"]
 x11 = ["desktop", "gpui_platform/x11"]
-vulkan = ["eidoryn-ps1/vulkan"]
-opengl = ["eidoryn-ps1/opengl"]
-dx12 = ["eidoryn-ps1/dx12"]
-metal = ["eidoryn-ps1/metal"]
+vulkan = ["eidoryn-ps1/vulkan", "eidoryn-gba?/vulkan"]
+opengl = ["eidoryn-ps1/opengl", "eidoryn-gba?/opengl"]
+dx12 = ["eidoryn-ps1/dx12", "eidoryn-gba?/dx12"]
+metal = ["eidoryn-ps1/metal", "eidoryn-gba?/metal"]
 hardware = ["dx12", "metal", "vulkan", "opengl"]
 jit = ["eidoryn-ps1/jit"]
 # Opt-in GPUI interaction tests; headless builds keep their minimal dependencies.
 ui-tests = ["desktop", "gpui/test-support"]
 
 [dependencies]
+crc32fast = { version = "1.5", optional = true }
+eidoryn-gba = { path = "crates/gba", optional = true }
 eidoryn-ps1 = { path = "crates/ps1", default-features = false }
 eidoryn-host = { path = "crates/host", default-features = false }
 # Follow official main; Cargo.lock pins the exact tested revision for both crates.

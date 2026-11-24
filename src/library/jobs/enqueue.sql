@@ -1,11 +1,12 @@
 INSERT INTO scrape_jobs(game_id,provider,job_type,mode,dependency)
-SELECT ?1,?2,?3,?4,
-    CASE WHEN ?4='full' AND ?2 IN ('libretro','screenscraper','custom')
+SELECT ?1,CASE WHEN platform='GBA' AND ?3='metadata' THEN 'libretro-gba'
+               WHEN platform='GBA' THEN 'libretro' ELSE ?2 END,?3,?4,
+    CASE WHEN platform='PS1' AND ?4='full' AND ?2 IN ('libretro','screenscraper','custom')
               AND EXISTS(SELECT 1 FROM scrape_jobs WHERE id=?5 AND status='retry_wait')
               AND EXISTS(SELECT 1 FROM game_metadata WHERE game_id=?1
                          AND COALESCE(release_serial,disc_serial,'')<>'')
          THEN NULL ELSE ?5 END
-WHERE EXISTS(SELECT 1 FROM games WHERE id=?1 AND NOT hidden)
+FROM games WHERE id=?1 AND platform IN ('PS1','GBA') AND NOT hidden
   AND (?4='full' OR NOT EXISTS(SELECT 1 FROM game_metadata WHERE game_id=?1 AND cache_cleared))
 ON CONFLICT(game_id,provider,job_type) WHERE status IN ('pending','retry_wait','running')
 DO UPDATE SET

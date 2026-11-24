@@ -995,3 +995,108 @@ fn cancelling_availability_checks_releases_the_observation_and_preserves_the_loc
     assert!(cancel.load(Ordering::Relaxed));
     assert!(available);
 }
+
+#[test]
+fn mixed_library_keeps_platforms_stats_and_catalog_work_separate() {
+    use super::{GamePlatform, covers, metadata, scrape};
+    use sha2::{Digest, Sha256};
+
+    let mut f = Fixture::new();
+    f.db.configure_import_scraping(Some(covers::Provider::Libretro));
+    f.image("Disc.iso", 1);
+    let cart_path = f.media.join("Disc.GbA");
+    let mut rom = vec![0; 32 * 1024];
+    rom[0xa0..0xa4].copy_from_slice(b"DEMO");
+    rom[0xac..0xb0].copy_from_slice(b"ABCE");
+    fs::write(&cart_path, &rom).unwrap();
+    let scan = f.scan();
+    assert_eq!((scan.added, scan.failed, scan.pending), (2, 0, 0));
+    let games = f.db.games().unwrap();
+    let disc = games
+        .iter()
+        .find(|g| g.platform_kind() == Some(GamePlatform::Ps1))
+        .unwrap();
+    let cart = games
+        .iter()
+        .find(|g| g.platform_kind() == Some(GamePlatform::Gba))
+        .unwrap();
+    assert_eq!(cart.title, "DEMO");
+    assert_eq!(cart.serial.as_deref(), Some("ABCE"));
+    assert_eq!(cart.region.as_deref(), Some("USA"));
+    assert!(
+        f.db.connect()
+            .unwrap()
+            .query_row(
+                "SELECT strong_id IS NULL FROM discs WHERE home_game_id=? AND platform='GBA'",
+                [cart.id],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap()
+    );
+    assert_eq!(scrape::due_games(&f.db).unwrap().len(), 2);
+    scrape::enqueue_games(
+        &f.db,
+        &[cart.id],
+        scrape::Mode::Full,
+        covers::Provider::Libretro,
+    )
+    .unwrap();
+    assert_eq!(scrape::due_games(&f.db).unwrap()[0].0, cart.id);
+    assert!(
+        metadata::search_candidates(&f.db, cart.id, "SCUS-94900")
+            .unwrap()
+            .is_empty()
+    );
+    let jobs = scrape::recent_jobs(&f.db).unwrap();
+    assert!(
+        jobs.iter()
+            .any(|job| job.title == "DEMO" && job.provider == "libretro-gba")
+    );
+    assert!(
+        f.db.confirm_copy(cart.locations[0].id, disc.locations[0].id)
+            .is_err()
+    );
+    assert!(f.db.relocate(disc.locations[0].id, &cart_path).is_err());
+    assert!(f.db.group_disc(cart.locations[0].disc_id, disc.id).is_err());
+    assert_eq!(f.db.games().unwrap().len(), 2);
+
+    // The usual launcher association binds the session to the existing cartridge.
+    let sha = format!("{:x}", Sha256::digest(&rom));
+    let home = f.db.associate_opened(&cart_path, &sha, false).unwrap();
+    assert_eq!(home, cart.id);
+    f.session(home, 120);
+    metadata::set_override(&f.db, home, metadata::Field::Title, Some("My demo")).unwrap();
+    let moved = f.media.join("Moved.gba");
+    fs::rename(&cart_path, &moved).unwrap();
+    f.db.relocate(cart.locations[0].id, &moved).unwrap();
+    let reopened = Library::open(&f.root.path().join("index.sqlite3")).unwrap();
+    let cart = reopened.games_by_id(&[home]).unwrap().remove(0);
+    assert_eq!(cart.platform_kind(), Some(GamePlatform::Gba));
+    assert_eq!(cart.locations[0].path, moved.canonicalize().unwrap());
+    assert_eq!(cart.seconds, 120);
+    assert_eq!(
+        metadata::list(&reopened).unwrap()[&home].title.as_deref(),
+        Some("My demo")
+    );
+}
+
+#[test]
+fn cartridge_sample_collisions_require_full_verification() {
+    let f = Fixture::new();
+    let first = f.media.join("A.gba");
+    let second = f.media.join("B.gba");
+    let mut bytes = vec![0; 128 * 1024];
+    fs::write(&first, &bytes).unwrap();
+    bytes[8192] = 1; // Outside the bounded scan pages.
+    fs::write(&second, &bytes).unwrap();
+    fs::write(f.media.join("truncated.gba"), [0; 16]).unwrap();
+    let scan = f.scan();
+    assert_eq!((scan.added, scan.pending, scan.failed), (2, 1, 1));
+    let games = f.db.games().unwrap();
+    assert_eq!(games[0].title, "A");
+    assert!(
+        f.db.confirm_copy(games[0].locations[0].id, games[1].locations[0].id)
+            .is_err()
+    );
+    assert!(f.db.relocate(games[0].locations[0].id, &second).is_err());
+}

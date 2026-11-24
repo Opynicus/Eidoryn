@@ -1,4 +1,4 @@
-use super::shortcuts::shortcut_keystroke;
+use super::shortcuts::{ShortcutEditor, shortcut_keystroke};
 use super::{Desktop, FullscreenView, SettingsTab, WorkspacePage};
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::shortcuts::ShortcutAction;
@@ -9,6 +9,7 @@ use gpui::{Context, KeyDownEvent, KeyUpEvent, PathPromptOptions, Window};
 pub(super) enum ImagePicker {
     Bios,
     Exe,
+    Gba,
 }
 
 impl Desktop {
@@ -54,6 +55,33 @@ impl Desktop {
     }
 
     pub(super) fn command(&mut self, command: Command, cx: &mut Context<Self>) {
+        if self.closing() {
+            return;
+        }
+        if self.is_gba() && !matches!(command, Command::RequestClose) {
+            use eidoryn_psx::systems::gba::Command as Gba;
+            let action = match command {
+                Command::SaveState => Gba::SaveState,
+                Command::QuickSave => Gba::QuickSave,
+                Command::QuickSaveIfUnchanged { revision, slot } => {
+                    Gba::QuickSaveIfUnchanged { revision, slot }
+                }
+                Command::QuickLoad => Gba::QuickLoad,
+                Command::LoadState { path } => Gba::LoadState { path },
+                Command::RenameState { path, name } => Gba::RenameState { path, name },
+                Command::DeleteState { path, modified } => Gba::DeleteState { path, modified },
+                Command::RefreshSaveStates => Gba::RefreshSaveStates,
+                Command::SetRewinding(held) => Gba::SetRewinding(held),
+                _ => return,
+            };
+            if !matches!(action, Gba::SetRewinding(_)) {
+                self.stop_rewind(cx);
+            }
+            self.notice = None;
+            self.gba_command(action, cx);
+            cx.notify();
+            return;
+        }
         if matches!(command, Command::Toggle)
             && (self.rewind_sources != 0 || self.snapshot.rewinding)
         {
@@ -95,14 +123,22 @@ impl Desktop {
     pub(super) fn release_buttons(&mut self, cx: &mut Context<Self>) {
         if self.pressed_buttons != 0 {
             self.pressed_buttons = 0;
-            self.notice = self.runner.send(Command::SetButtons(0)).err();
+            if self.is_gba() {
+                self.gba_command(eidoryn_psx::systems::gba::Command::Buttons(0), cx);
+            } else {
+                self.notice = self.runner.send(Command::SetButtons(0)).err();
+            }
             cx.notify();
         }
     }
     pub(super) fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.rewind_sources != 0 {
             let stroke = shortcut_keystroke(&event.keystroke, cx);
-            self.release_rewind_key(Some(&stroke.key), &stroke.modifiers, cx);
+            self.release_rewind_key(Some(&stroke.key), stroke.modifiers, cx);
+        }
+        if self.is_gba() {
+            self.gba_key(&event.keystroke.key, false, cx);
+            return;
         }
         if let Some(button) = self.preferences.keybindings.button(&event.keystroke.key)
             && self.pressed_buttons & button.mask() != 0
@@ -114,7 +150,7 @@ impl Desktop {
     pub(super) fn release_rewind_key(
         &mut self,
         released: Option<&str>,
-        modifiers: &gpui::Modifiers,
+        modifiers: gpui::Modifiers,
         cx: &mut Context<Self>,
     ) {
         use super::rewind::RewindSource;
@@ -125,7 +161,7 @@ impl Desktop {
                 .binding(ShortcutAction::Rewind)
                 .is_none_or(|chord| {
                     released.is_some_and(|key| chord.matches_key(key))
-                        || !chord.modifiers.is_subset_of(modifiers)
+                        || !chord.modifiers.is_subset_of(&modifiers)
                 })
         {
             self.hold_rewind(RewindSource::Keyboard, false, cx);
@@ -135,6 +171,7 @@ impl Desktop {
         let prompt = self.tr(match kind {
             ImagePicker::Bios => Text::BiosPicker,
             ImagePicker::Exe => Text::ExePicker,
+            ImagePicker::Gba => Text::OpenCartridge,
         });
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -166,6 +203,15 @@ impl Desktop {
                             view.bios = Some(path);
                             view.notice = None;
                         }
+                        ImagePicker::Gba if view.is_gba() => {
+                            let title = path
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned();
+                            view.open_gba(path, title, cx);
+                        }
+                        ImagePicker::Gba => {}
                         ImagePicker::Exe => view.command(Command::Load { path, bios: false }, cx),
                     },
                     Ok(None) => return,
@@ -176,7 +222,7 @@ impl Desktop {
         });
         match kind {
             // A newer selection cancels the pending picker or validation before it can update the UI.
-            ImagePicker::Bios => self.bios_selection = Some(task),
+            ImagePicker::Bios | ImagePicker::Gba => self.image_picker = Some(task),
             ImagePicker::Exe => task.detach(),
         }
     }
@@ -257,7 +303,7 @@ impl Desktop {
             }
             return;
         }
-        let modifiers = &event.keystroke.modifiers;
+        let modifiers = event.keystroke.modifiers;
         // A focused control owns its ordinary navigation and activation keys.
         let control_key = !self.focus.is_focused(window)
             && !modifiers.modified()
@@ -280,7 +326,10 @@ impl Desktop {
             }
             return;
         }
-        if let Some(action) = action {
+        // Preserve the controller binding in profiles created when these shortcuts
+        // only applied to PS1. The editor prevents new conflicts on either core.
+        let gba_button = self.accepts_gba_button(key, modifiers);
+        if let Some(action) = action.filter(|a| !(gba_button && a.is_checkpoint())) {
             self.run_shortcut(action, window, cx);
             cx.stop_propagation();
             return;
@@ -310,6 +359,12 @@ impl Desktop {
                 _ => return, // Enter/Space activate the focused control on key-up.
             }
         }
+        if self.is_gba() {
+            if gba_button {
+                self.gba_key(key, true, cx);
+            }
+            return;
+        }
         if !modifiers.control
             && !modifiers.alt
             && !modifiers.platform
@@ -327,9 +382,11 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         match action {
-            ShortcutAction::Toggle => self.command(Command::Toggle, cx),
-            ShortcutAction::Step => self.command(Command::Step, cx),
-            ShortcutAction::Slice => self.command(Command::Slice, cx),
+            ShortcutAction::Toggle => self.toggle_playback(cx),
+            ShortcutAction::Step => {
+                self.step_debugger(super::inspector::DebugStep::Instruction, cx);
+            }
+            ShortcutAction::Slice => self.step_debugger(super::inspector::DebugStep::Slice, cx),
             ShortcutAction::Enlarge => self.toggle_view(window, cx),
             ShortcutAction::Crt => self.toggle_crt(cx),
             ShortcutAction::Settings => self.open_settings(cx),
@@ -338,12 +395,12 @@ impl Desktop {
                 self.toggle_clean_fullscreen(cx);
                 window.focus(&self.focus, cx);
             }
-            ShortcutAction::Reset => self.command(Command::Reset, cx),
+            ShortcutAction::Reset => self.reset_playback(cx),
             ShortcutAction::Snapshot => self.command(Command::SaveState, cx),
             ShortcutAction::QuickSave => self.command(Command::QuickSave, cx),
             ShortcutAction::QuickLoad => self.command(Command::QuickLoad, cx),
             ShortcutAction::Rewind => {
-                self.hold_rewind(super::rewind::RewindSource::Keyboard, true, cx)
+                self.hold_rewind(super::rewind::RewindSource::Keyboard, true, cx);
             }
         }
     }
@@ -405,6 +462,10 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.is_gba() && self.page != page {
+            self.image_picker.take();
+            self.release_buttons(cx);
+        }
         self.snapshot_confirmation = None;
         self.dismiss_library_context_menu();
         self.stop_rewind(cx);
@@ -421,13 +482,18 @@ impl Desktop {
             self.release_buttons(cx);
             self.command(Command::RefreshSaveStates, cx);
         }
-        self.rebinding = None;
-        self.keybindings_draft = None;
-        self.shortcut_editor = Default::default();
+        self.discard_binding_drafts();
         self.rewind_disable_origin = None;
         self.graphics.open = false;
         window.focus(&self.focus, cx);
         cx.notify();
+    }
+
+    pub(super) fn discard_binding_drafts(&mut self) {
+        self.rebinding = None;
+        self.keybindings_draft = None;
+        self.gba.keybindings_draft = None;
+        self.shortcut_editor = ShortcutEditor::default();
     }
 
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -435,18 +501,14 @@ impl Desktop {
         self.dismiss_library_context_menu();
         self.stop_rewind(cx);
         self.release_buttons(cx);
-        self.rebinding = None;
-        self.keybindings_draft = None;
-        self.shortcut_editor = Default::default();
+        self.discard_binding_drafts();
         self.graphics.open = true;
         self.settings_tab = SettingsTab::Graphics;
         cx.notify();
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.rebinding = None;
-        self.keybindings_draft = None;
-        self.shortcut_editor = Default::default();
+        self.discard_binding_drafts();
         self.rewind_disable_origin = None;
         self.graphics.open = false;
         window.focus(&self.focus, cx);

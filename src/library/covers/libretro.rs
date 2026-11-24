@@ -186,16 +186,20 @@ fn cached(db: &Connection, serial: &str, region: &str) -> Result<Lookup, String>
     let Some(name) = selected else {
         return Ok(Lookup::Missing);
     };
+    Ok(Lookup::Image(image_url(BOXART, &name)?))
+}
+
+pub(super) fn image_url(base: &str, name: &str) -> Result<Url, String> {
     let filename = name.replace(
         ['&', '*', '/', ':', '`', '<', '>', '?', '\\', '|', '"'],
         "_",
     );
-    let mut url = Url::parse(BOXART).map_err(|e| e.to_string())?;
+    let mut url = Url::parse(base).map_err(|e| e.to_string())?;
     url.path_segments_mut()
         .map_err(|()| "Invalid Libretro thumbnail endpoint")?
         .pop_if_empty()
         .push(&format!("{filename}.png"));
-    Ok(Lookup::Image(url))
+    Ok(url)
 }
 
 #[cfg(test)]

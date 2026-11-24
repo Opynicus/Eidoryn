@@ -9,6 +9,12 @@ use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px, rgb, rgba}
 
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.gba.focus_game)
+            && self.is_gba()
+            && self.page == WorkspacePage::Game
+        {
+            window.focus(&self.focus, cx);
+        }
         self.sync_save_state_selection();
         if self.graphics.open && self.settings_tab == SettingsTab::Graphics {
             self.detect_hardware(cx);
@@ -42,8 +48,12 @@ impl Render for Desktop {
                     || self.graphics.open
                     || self.renaming_state.is_some()
                     || self.notice.is_some()
-                    || self.snapshot.message.is_some()
-                    || self.snapshot.success_message.is_some(),
+                    || if self.is_gba() {
+                        self.gba.snapshot.error.is_some()
+                            || self.gba.snapshot.success_message.is_some()
+                    } else {
+                        self.snapshot.message.is_some() || self.snapshot.success_message.is_some()
+                    },
                 |root| root.font(self.fonts.normal()),
             )
             .on_drop(
@@ -59,7 +69,7 @@ impl Render for Desktop {
             .on_key_up(cx.listener(Self::key_up))
             .on_modifiers_changed(cx.listener(
                 |view, event: &gpui::ModifiersChangedEvent, _, cx| {
-                    view.release_rewind_key(None, &event.modifiers, cx);
+                    view.release_rewind_key(None, event.modifiers, cx);
                 },
             ))
             .when(self.navigation.is_dragging(), |root| {
@@ -175,8 +185,10 @@ impl Desktop {
             .rounded_lg()
             .bg(rgb(p.surface))
             .child(self.play_button(cx))
-            .child(self.quick_state_controls(cx))
-            .child(self.audio_controls(cx))
+            .when(!self.is_gba(), |bar| {
+                bar.child(self.quick_state_controls(cx))
+                    .child(self.audio_controls(cx))
+            })
             .child(
                 ghost_icon_button(
                     p,
@@ -234,6 +246,17 @@ impl Desktop {
     }
 
     pub(super) fn playback_label(&self) -> &'static str {
+        if self.is_gba() {
+            return self.tr(if self.gba.snapshot.rewinding {
+                Text::Rewinding
+            } else if self.gba.snapshot.running {
+                Text::Running
+            } else if self.gba.snapshot.path.is_some() {
+                Text::Paused
+            } else {
+                Text::Stopped
+            });
+        }
         self.tr(if self.snapshot.rewinding {
             Text::Rewinding
         } else {
@@ -337,6 +360,37 @@ impl Desktop {
 
     fn emulation_status(&self, window: &Window) -> gpui::Div {
         let p = self.themes.active().palette;
+        let (fps, target, renderer) = if self.is_gba() {
+            (
+                self.gba.snapshot.video_fps,
+                eidoryn_gba::FRAME_RATE,
+                self.gba
+                    .snapshot
+                    .graphics_device
+                    .as_deref()
+                    .unwrap_or_else(|| self.tr(Text::SerialRenderer)),
+            )
+        } else {
+            (
+                self.snapshot.video_fps,
+                self.snapshot.target_fps,
+                self.renderer_label(),
+            )
+        };
+        let speed = 100.0 * fps / target;
+        let metrics = format!(
+            "{fps:.1} / {target:.1} FPS  ·  {speed:.0}% {}",
+            self.tr(Text::Speed)
+        );
+        let status = if self.is_gba() {
+            format!(
+                "{metrics}  ·  {} × {}  ·  {renderer}",
+                eidoryn_gba::WIDTH,
+                eidoryn_gba::HEIGHT
+            )
+        } else {
+            format!("{metrics}  ·  {renderer}")
+        };
         div()
             .h(px(28.))
             .flex_shrink_0()
@@ -348,19 +402,12 @@ impl Desktop {
             .border_color(rgb(p.border))
             .text_size(px(11.))
             .text_color(rgb(p.muted))
-            .child(format!(
-                "{:.1} / {:.1} FPS  ·  {:.0}% {}  ·  {}",
-                self.snapshot.video_fps,
-                self.snapshot.target_fps,
-                100. * self.snapshot.video_fps / self.snapshot.target_fps,
-                self.tr(Text::Speed),
-                self.renderer_label()
-            ))
+            .child(status)
             .when(window.viewport_size().width >= px(1100.), |bar| {
                 let hints = [
                     (ShortcutAction::Enlarge, self.tr(Text::EnlargeGame)),
                     (ShortcutAction::Crt, "CRT"),
-                    (ShortcutAction::Settings, self.tr(Text::GraphicsSettings)),
+                    (ShortcutAction::Settings, self.tr(Text::Settings)),
                     (ShortcutAction::Fullscreen, self.tr(Text::Fullscreen)),
                 ]
                 .into_iter()
@@ -414,9 +461,7 @@ impl Desktop {
             )
             .child(label(p, breadcrumb).text_size(px(13.)))
             .child(div().flex_1())
-            .when(library, |bar| {
-                bar.child(label(p, "PS1 LIBRARY").text_size(px(11.)).mr_2())
-            })
+            .child(self.core_selector(cx))
             .when(window.is_fullscreen(), |bar| {
                 bar.child(self.enlargement_button(window, cx))
             })
@@ -430,16 +475,11 @@ impl Desktop {
                     .border_color(rgb(p.border))
                     .px_3()
                     .py_1()
-                    .child(
-                        div()
-                            .size(px(7.))
-                            .rounded_full()
-                            .bg(rgb(if self.snapshot.running {
-                                p.running_indicator()
-                            } else {
-                                p.paused_indicator()
-                            })),
-                    )
+                    .child(div().size(px(7.)).rounded_full().bg(rgb(if self.running() {
+                        p.running_indicator()
+                    } else {
+                        p.paused_indicator()
+                    })))
                     .child(label(p, self.playback_label()).text_size(px(12.))),
             )
             .child(
@@ -465,7 +505,11 @@ impl Desktop {
         let p = &self.themes.active().palette;
         self.notice
             .as_ref()
-            .or(self.snapshot.message.as_ref())
+            .or(if self.is_gba() {
+                self.gba.snapshot.error.as_ref()
+            } else {
+                self.snapshot.message.as_ref()
+            })
             .map(|message| {
                 (
                     message,
@@ -476,7 +520,12 @@ impl Desktop {
                 )
             })
             .or_else(|| {
-                self.snapshot.success_message.as_ref().map(|message| {
+                (if self.is_gba() {
+                    self.gba.snapshot.success_message.as_ref()
+                } else {
+                    self.snapshot.success_message.as_ref()
+                })
+                .map(|message| {
                     (
                         message,
                         p.success,

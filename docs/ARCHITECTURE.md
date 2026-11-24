@@ -1,6 +1,6 @@
 # Eidoryn 代码结构
 
-Eidoryn 是应用层，当前只实现 PlayStation。GBA、PS2 等是未来扩展方向，不是已经支持的平台。本次重构将可独立构建的硬件核心、可复用的宿主服务和具体主机的应用适配明确分开；不为尚不存在的核心定义统一 CPU、存档或渲染器协议。
+Eidoryn 的桌面应用通过各自的适配层运行 PlayStation 和 Game Boy Advance。两个硬件核心可以独立构建，共用的游戏库在同一个收藏中展示两种平台，按条目的平台选择启动核心。顶栏的核心选择决定键位、图形设置和调试器的数据来源。
 
 ```text
 Eidoryn (CLI / GPUI)
@@ -8,13 +8,16 @@ Eidoryn (CLI / GPUI)
 │   ├── eidoryn-ps1              CPU / Bus / GPU / SPU / CD-ROM / SIO 等硬件
 │   │   └── eidoryn-jit-runtime  可选原生执行边界
 │   └── eidoryn-host::audio      有界 PCM 传输
+├── systems::gba ── eidoryn-gba  卡带、运行线程与 SAV 文件 / ARM7TDMI、总线与显示
 └── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
-`eidoryn-ps1` 不依赖宿主模块、GPUI、CPAL 或主题；默认依赖标准库、用于 CD-ROM 短参数与延迟响应的 smallvec，以及即时存档使用的 serde、bincode、sha2。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认仅依赖标准库。wgpu 硬件后端/JIT 是核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`dx12`、`metal`、`vulkan`、`opengl`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
+`eidoryn-ps1` 默认配置不依赖宿主模块、GPUI、CPAL 或主题；默认依赖标准库、用于 CD-ROM 短参数与延迟响应的 smallvec，以及即时存档使用的 serde、bincode、sha2。`eidoryn-host` 不依赖任何主机核心或 GPUI，默认仅依赖标准库。两个核心的可选 wgpu 后端共用 `eidoryn-host::graphics` 的设备识别，各自实现着色和输出。JIT 是 PS1 核心的可选特性，`audio-output`/`themes` 是宿主模块的可选特性。应用的 `desktop`、`dx12`、`metal`、`vulkan`、`opengl`、`jit` 特性转发到对应组件；`wayland` 和 `x11` 启用桌面及对应 GPUI 窗口后端。默认仍同时包含这两个 Linux 后端，发布构建使用 `--no-default-features --features wayland,vulkan,jit` 或 `x11,vulkan,jit` 分别构建；Windows/macOS 继续使用原生窗口后端。
 
 | 位置 | 职责 |
 | --- | --- |
+| `crates/gba/` | 独立 GBA 硬件核心，按扫描线采集图层与窗口状态，可用 GPU 合成 RGB 帧；按需读取 ARM7TDMI、栈和 LCD 调试快照 |
+| `src/systems/gba.rs`、`src/library/playtime.rs` | GBA 运行、卡带存档、快照和倒带，以及两种平台共用的游玩时长记录 |
 | `crates/ps1/src/{cpu,bus,machine}.rs` | MIPS CPU、总线、机器状态与执行；DMA 位于 `bus/dma.rs` |
 | `crates/ps1/src/cpu_engine.rs`、`cpu/jit.rs` | 解释器/JIT 选择、缓存及逐指令异常/中断/代码失效检查 |
 | `crates/ps1/src/gpu/` | 自主软件光栅器、多线程绘图、共享 wgpu 计算管线与 WGSL；GP0/GP1 和显示时序位于 `gpu.rs` |

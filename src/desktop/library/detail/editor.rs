@@ -394,11 +394,11 @@ impl Desktop {
         let p = self.library_palette();
         let query = input.read(cx).value().trim().to_lowercase();
         // The full library is searchable; render a short choice list in the detail pane.
-        let has_other = self
-            .library
-            .entries
-            .iter()
-            .any(|e| e.game.id != game && e.search.contains(&query));
+        let candidates = self.library.entries.iter().filter(|entry| {
+            entry.game.id != game
+                && entry.game.platform_kind() == Some(eidoryn_psx::library::GamePlatform::Ps1)
+                && entry.search.contains(&query)
+        });
         let multiple_discs = self
             .library
             .entries
@@ -421,52 +421,42 @@ impl Desktop {
                     },
                 ))
             })
-            .when(!has_other, |s| {
+            .when(candidates.clone().next().is_none(), |s| {
                 s.child(label(&p, self.tr(Text::LibraryNoResults)))
             })
-            .children(
-                self.library
-                    .entries
-                    .iter()
-                    .filter(|e| e.game.id != game && e.search.contains(&query))
-                    .take(20)
-                    .enumerate()
-                    .map(|(i, e)| {
-                        let id = e.game.id;
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().flex_1().child(e.title.clone()))
-                            .child(self.library_button(
-                                ("lib-group-target", i),
-                                Text::LibraryGroupHere,
+            .children(candidates.take(20).enumerate().map(|(i, e)| {
+                let id = e.game.id;
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_1().child(e.title.clone()))
+                    .child(self.library_button(
+                        ("lib-group-target", i),
+                        Text::LibraryGroupHere,
+                        false,
+                        cx,
+                        move |v, w, cx| {
+                            v.dismiss_editor(w, cx);
+                            v.library_write(cx, move |s| s.group_disc(disc, id));
+                        },
+                    ))
+                    .when_some(
+                        e.game.locations.iter().find(|l| l.available).map(|l| l.id),
+                        |s, other| {
+                            s.child(self.library_button(
+                                ("lib-copy", i),
+                                Text::LibraryCopy,
                                 false,
                                 cx,
                                 move |v, w, cx| {
                                     v.dismiss_editor(w, cx);
-                                    v.library_write(cx, move |s| s.group_disc(disc, id));
+                                    v.library_write(cx, move |s| s.confirm_copy(location, other));
                                 },
                             ))
-                            .when_some(
-                                e.game.locations.iter().find(|l| l.available).map(|l| l.id),
-                                |s, other| {
-                                    s.child(self.library_button(
-                                        ("lib-copy", i),
-                                        Text::LibraryCopy,
-                                        false,
-                                        cx,
-                                        move |v, w, cx| {
-                                            v.dismiss_editor(w, cx);
-                                            v.library_write(cx, move |s| {
-                                                s.confirm_copy(location, other)
-                                            });
-                                        },
-                                    ))
-                                },
-                            )
-                    }),
-            )
+                        },
+                    )
+            }))
     }
 }
 

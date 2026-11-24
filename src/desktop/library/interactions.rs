@@ -11,26 +11,17 @@ enum CardAction {
     Remove,
 }
 
-const ACTIONS: [(CardAction, Text, &str, &str); 3] = [
-    (
-        CardAction::Scrape,
-        Text::LibraryScrapeMetadata,
-        "reset",
-        "lib-card-scrape",
-    ),
-    (
-        CardAction::Details,
-        Text::LibraryDetails,
-        "info",
-        "lib-card-details",
-    ),
-    (
-        CardAction::Remove,
-        Text::LibraryRemove,
-        "close",
-        "lib-card-remove",
-    ),
-];
+impl CardAction {
+    const ALL: [Self; 3] = [Self::Scrape, Self::Details, Self::Remove];
+
+    fn item(self) -> (Text, &'static str, &'static str) {
+        match self {
+            Self::Scrape => (Text::LibraryScrapeMetadata, "reset", "lib-card-scrape"),
+            Self::Details => (Text::LibraryDetails, "info", "lib-card-details"),
+            Self::Remove => (Text::LibraryRemove, "close", "lib-card-remove"),
+        }
+    }
+}
 
 pub(super) struct CardMenu {
     pub(super) id: i64,
@@ -238,38 +229,43 @@ impl Desktop {
                 cx.notify();
             }))
             .on_key_down(cx.listener(Self::card_menu_key))
-            .children(ACTIONS.into_iter().enumerate().map(
-                |(index, (action, label, glyph, selector))| {
-                    let color = if matches!(action, CardAction::Remove) {
-                        p.danger_text()
-                    } else {
-                        p.text
-                    };
-                    div()
-                        .id(selector)
-                        .debug_selector(move || selector.into())
-                        .role(gpui::Role::MenuItem)
-                        .aria_label(self.tr(label))
-                        .rounded_md()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .h(px(34.))
-                        .text_sm()
-                        .text_color(rgb(color))
-                        .cursor_pointer()
-                        .when(menu.active == index, |row| {
-                            row.aria_active_descendant().bg(rgb(p.tonal))
-                        })
-                        .hover(move |row| row.bg(rgb(p.tonal_hover)))
-                        .child(icon(glyph, color).size(px(15.)))
-                        .child(self.tr(label))
-                        .on_click(cx.listener(move |v, _, window, cx| {
-                            v.choose_card_action(action, window, cx);
-                        }))
-                },
-            ));
+            .children(
+                CardAction::ALL
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, action)| {
+                        let (label, glyph, selector) = action.item();
+                        let color = if matches!(action, CardAction::Remove) {
+                            p.danger_text()
+                        } else {
+                            p.text
+                        };
+                        div()
+                            .id(selector)
+                            .debug_selector(move || selector.into())
+                            .role(gpui::Role::MenuItem)
+                            .aria_label(self.tr(label))
+                            .rounded_md()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .h(px(34.))
+                            .text_sm()
+                            .text_color(rgb(color))
+                            .cursor_pointer()
+                            .when(menu.active == index, |row| {
+                                row.aria_active_descendant().bg(rgb(p.tonal))
+                            })
+                            .hover(move |row| row.bg(rgb(p.tonal_hover)))
+                            .child(icon(glyph, color).size(px(15.)))
+                            .child(self.tr(label))
+                            .on_click(cx.listener(move |v, _, window, cx| {
+                                v.choose_card_action(action, window, cx);
+                            }))
+                    }),
+            );
         Some(
             deferred(
                 anchored()
@@ -290,7 +286,7 @@ impl Desktop {
         let Some(menu) = &mut self.library.card_menu else {
             return;
         };
-        let count = ACTIONS.len();
+        let count = CardAction::ALL.len();
         match (
             event.keystroke.key.as_str(),
             event.keystroke.modifiers.shift,
@@ -298,7 +294,7 @@ impl Desktop {
             ("up", _) | ("tab", true) => menu.active = (menu.active + count - 1) % count,
             ("down", _) | ("tab", false) => menu.active = (menu.active + 1) % count,
             ("enter" | "space", _) => {
-                let action = ACTIONS[menu.active].0;
+                let action = CardAction::ALL[menu.active];
                 self.choose_card_action(action, window, cx);
             }
             ("escape", _) => {

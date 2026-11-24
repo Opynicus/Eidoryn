@@ -1,4 +1,5 @@
 //! Immutable state published to frontends and diagnostic clients.
+pub use crate::systems::checkpoints::QuickSlot;
 use crate::systems::ps1::{
     card_file::CardStatus,
     cpu::{Cpu, disassemble},
@@ -7,20 +8,13 @@ use crate::systems::ps1::{
     machine::Machine,
     state_file::SaveStateInfo,
 };
-use std::{path::PathBuf, sync::Arc, time::SystemTime};
+use std::{path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionState {
     Running,
     Paused,
     Stopped,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QuickSlot {
-    Empty,
-    Saved(SystemTime),
-    Unavailable,
 }
 
 /// Display clients do not need formatted CPU instructions.

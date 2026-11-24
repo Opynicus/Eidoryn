@@ -163,6 +163,7 @@ impl Stage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum JobKind {
     Metadata,
+    GbaMetadata,
     Cover(Provider),
 }
 
@@ -170,6 +171,7 @@ impl JobKind {
     fn stored_names(self) -> (&'static str, &'static str) {
         let provider = match self {
             Self::Metadata => "wikidata",
+            Self::GbaMetadata => "libretro-gba",
             Self::Cover(Provider::Libretro) => "libretro",
             Self::Cover(Provider::ScreenScraper) => "screenscraper",
             Self::Cover(Provider::Igdb) => "igdb",
@@ -181,6 +183,7 @@ impl JobKind {
     fn from_stored(stage: Stage, provider: &str) -> rusqlite::Result<Self> {
         [
             Self::Metadata,
+            Self::GbaMetadata,
             Self::Cover(Provider::Libretro),
             Self::Cover(Provider::ScreenScraper),
             Self::Cover(Provider::Igdb),
@@ -193,7 +196,7 @@ impl JobKind {
 
     pub(super) fn stage(self) -> Stage {
         match self {
-            Self::Metadata => Stage::Metadata,
+            Self::Metadata | Self::GbaMetadata => Stage::Metadata,
             Self::Cover(_) => Stage::Cover,
         }
     }
@@ -342,6 +345,18 @@ pub(super) struct Failure {
     pub deadline: Option<i64>,
 }
 
+/// Finish only artwork that still depends on this metadata decision.
+pub(super) fn skip_dependent_covers(
+    tx: &Transaction<'_>,
+    metadata_job: i64,
+) -> rusqlite::Result<()> {
+    tx.prepare_cached(
+        "UPDATE scrape_jobs SET dependency=NULL,status='succeeded',outcome='skipped',updated_at=unixepoch()
+         WHERE dependency=? AND status IN ('pending','retry_wait')",
+    )?.execute([metadata_job])?;
+    Ok(())
+}
+
 /// Serial-based sources can proceed on a manual refresh even when the release
 /// provider cannot choose an edition or asks us to retry later.
 pub(super) fn release_serial_covers(db: &Connection, metadata_job: i64) -> rusqlite::Result<()> {
@@ -478,6 +493,8 @@ pub(super) enum GameState {
     RetryWaiting,
     Cancelled,
     Skipped,
+    NeedsChoice,
+    NotFound,
     Done,
 }
 
@@ -492,7 +509,8 @@ pub(super) fn state(db: &Connection, id: i64) -> rusqlite::Result<State> {
                 printf('#%d %s/%s (%s, %d/%d): %s',id,provider,job_type,last_error_code,attempt_count,max_attempts,last_error_message) END),
             count(*) FILTER(WHERE status IN ('pending','running'))>0,
             count(*) FILTER(WHERE status='retry_wait')>0,
-            count(*) FILTER(WHERE status='cancelled')>0
+            count(*) FILTER(WHERE status='cancelled')>0,
+            max(CASE WHEN job_type='metadata' THEN outcome END)
         FROM scrape_jobs AS j WHERE j.game_id=? AND EXISTS(SELECT 1 FROM target_jobs t WHERE t.id=j.id)"
     )?;
     read.query_row([id], |row| {
@@ -502,10 +520,13 @@ pub(super) fn state(db: &Connection, id: i64) -> rusqlite::Result<State> {
             GameState::Pending
         } else if row.get(4)? {
             GameState::Cancelled
-        } else if row.get(0)? {
-            GameState::Skipped
         } else {
-            GameState::Done
+            match row.get::<_, Option<String>>(5)?.as_deref() {
+                Some("needs_choice") => GameState::NeedsChoice,
+                Some("not_found") => GameState::NotFound,
+                _ if row.get(0)? => GameState::Skipped,
+                _ => GameState::Done,
+            }
         };
         Ok(State {
             outcome,
@@ -526,13 +547,22 @@ pub enum JobStatus {
     Cancelled,
 }
 
+/// A completed stage with an actionable result or no downloaded data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::Type)]
+#[sqlx(rename_all = "snake_case")]
+pub enum JobOutcome {
+    NeedsChoice,
+    NotFound,
+    Skipped,
+}
+
 #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
 pub struct JobRecord {
     pub title: String,
     pub provider: String,
     pub cover: bool,
     pub status: JobStatus,
-    pub skipped: bool,
+    pub outcome: Option<JobOutcome>,
     pub updated_at: i64,
 }
 
@@ -542,7 +572,8 @@ pub fn recent_jobs(lib: &Library) -> Result<Vec<JobRecord>, String> {
     let query = sqlx::query_as(
         "SELECT COALESCE(m.user_title,m.auto_title,g.fallback_title) AS title,
                 j.provider,j.job_type='cover' AS cover,j.status,
-                COALESCE(j.outcome='skipped',0) AS skipped,j.updated_at
+                CASE WHEN j.outcome IN ('needs_choice','not_found','skipped') THEN j.outcome
+                     WHEN j.outcome='skip_cover' THEN 'skipped' END AS outcome,j.updated_at
          FROM scrape_jobs j JOIN games g ON g.id=j.game_id
          LEFT JOIN game_metadata m ON m.game_id=g.id
          WHERE NOT g.hidden ORDER BY j.id DESC LIMIT 20",

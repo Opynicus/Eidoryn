@@ -34,6 +34,7 @@ impl ReleaseRequest {
         store: &Library,
         id: i64,
         provider: covers::Provider,
+        cartridge: bool,
         template: &str,
         cancel: &AtomicBool,
     ) -> ScrapeResult {
@@ -51,6 +52,7 @@ impl ReleaseRequest {
         };
         // Serial-based sources can still identify the cover when the release lookup misses.
         let cover = match (&release, provider) {
+            _ if cartridge && !matches!(release, Ok(RefreshOutcome::Updated)) => None,
             (Ok(RefreshOutcome::NoSerial), _)
             | (Ok(RefreshOutcome::Candidates), covers::Provider::Igdb) => None,
             _ if cancel.load(Ordering::Relaxed) => None,
@@ -122,6 +124,7 @@ impl Desktop {
         let match_cancel = Arc::clone(&self.library.match_cancel);
         let request = Arc::new(AtomicBool::new(false));
         let provider = self.preferences.library.cover_provider;
+        let cartridge = self.library.entry(id).is_some_and(Entry::is_cartridge);
         let template = self.preferences.library.cover_template.clone();
         self.library
             .metadata_lookups
@@ -130,7 +133,7 @@ impl Desktop {
             let cancel = Arc::clone(&request);
             let ScrapeResult { release, cover } = cx
                 .background_executor()
-                .spawn(async move { action.run(&store, id, provider, &template, &cancel) })
+                .spawn(async move { action.run(&store, id, provider, cartridge, &template, &cancel) })
                 .await;
             let _ = this.update_in(cx, |v, window, cx| {
                 if !matches!(v.library.metadata_lookups.get(&id), Some(MetadataLookup::Fetching(current)) if Arc::ptr_eq(current, &request)) {
@@ -189,10 +192,8 @@ impl Desktop {
     }
 
     pub(in crate::desktop) fn close_detail_dialog(&mut self) -> bool {
-        if !self.library.details
-            || self.library.settings
-            || (self.library.editor.is_none() && self.library.clear_playtime_confirmation.is_none())
-        {
+        let confirming = self.library.details && self.library.clear_playtime_confirmation.is_some();
+        if self.library.settings || (self.library.editor.is_none() && !confirming) {
             return false;
         }
         self.library.close_editor();
@@ -200,13 +201,16 @@ impl Desktop {
     }
 
     pub(in crate::desktop) fn detail_dialog(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if !self.library.details || self.library.settings {
+        if self.library.settings {
             return None;
         }
         if let Some(editor) = &self.library.editor {
             return Some(self.library_modal(self.tr(editor.title()), self.library_editor(cx), cx));
         }
-        let id = self.library.clear_playtime_confirmation?;
+        let id = self
+            .library
+            .clear_playtime_confirmation
+            .filter(|_| self.library.details)?;
         let title = Text::LibraryClearTime;
         let entry = self
             .library
@@ -336,10 +340,12 @@ impl Desktop {
         let discs = entry.disc_count();
         let summary = [
             entry.serial.clone(),
-            Some(
+            Some(if entry.is_cartridge() {
+                self.tr(Text::Cartridge).to_owned()
+            } else {
                 self.tr(Text::LibraryDiscCount)
-                    .replace("{count}", &discs.to_string()),
-            ),
+                    .replace("{count}", &discs.to_string())
+            }),
             Some(self.library_duration(entry)),
         ]
         .into_iter()
@@ -382,9 +388,13 @@ impl Desktop {
                     .flex_col()
                     .gap_2()
                     .child(
-                        label(&p, self.tr(Text::LibraryDetailEyebrow))
-                            .text_color(rgb(p.primary))
-                            .font(self.fonts.semibold()),
+                        label(
+                            &p,
+                            self.tr(Text::LibraryDetailEyebrow)
+                                .replace("{platform}", &entry.game.platform),
+                        )
+                        .text_color(rgb(p.primary))
+                        .font(self.fonts.semibold()),
                     )
                     .child(
                         div()
@@ -430,7 +440,11 @@ impl Desktop {
         .join(" · ");
         let date = entry.publication_date();
         let matched = entry.matched_release(self.tr(Text::LibraryPending));
-        if matched.is_none() && date.1.is_none() && source.is_empty() {
+        if (entry.cache_cleared || !entry.is_cartridge())
+            && matched.is_none()
+            && date.1.is_none()
+            && source.is_empty()
+        {
             return label(&p, self.tr(Text::LibraryNoReleaseInfo))
                 .debug_selector(|| "lib-release-empty".into());
         }
@@ -439,10 +453,10 @@ impl Desktop {
         self.detail_fields(&[
             (
                 Text::LibraryPlatform,
-                Some(if entry.game.platform == "PS1" {
-                    "PlayStation"
-                } else {
-                    &entry.game.platform
+                Some(match entry.game.platform_kind() {
+                    Some(crate::desktop::GamePlatform::Ps1) => "PlayStation",
+                    Some(crate::desktop::GamePlatform::Gba) => "Game Boy Advance",
+                    None => &entry.game.platform,
                 }),
             ),
             (Text::LibrarySerial, entry.serial.as_deref()),
@@ -486,28 +500,31 @@ impl Desktop {
                 cx,
                 move |v, w, cx| v.edit_library(Edit::Match(id), String::new(), w, cx),
             ));
-        let panel =
-            section(&p)
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(self.panel_heading(
-                            Text::LibraryReleaseInfo,
-                            self.tr(Text::LibraryReleaseHint),
-                        ))
-                        .child(self.library_button(
-                            "lib-edit-info",
-                            Text::LibraryEditInfo,
-                            false,
-                            cx,
-                            move |v, w, cx| v.edit_release(id, w, cx),
-                        )),
-                )
-                .child(self.edition_fields(entry))
-                .child(actions);
+        let panel = section(&p)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(self.panel_heading(
+                        Text::LibraryReleaseInfo,
+                        self.tr(if entry.is_cartridge() {
+                            Text::LibraryCartridgeInfoHint
+                        } else {
+                            Text::LibraryReleaseHint
+                        }),
+                    ))
+                    .child(self.library_button(
+                        "lib-edit-info",
+                        Text::LibraryEditInfo,
+                        false,
+                        cx,
+                        move |v, w, cx| v.edit_release(id, w, cx),
+                    )),
+            )
+            .child(self.edition_fields(entry))
+            .child(actions);
         match self.library.metadata_lookups.get(&id) {
             Some(MetadataLookup::Finished(text)) => panel.child(label(&p, self.tr(*text))),
             Some(MetadataLookup::Failed(error)) => panel.child(
@@ -565,13 +582,15 @@ impl Desktop {
                     .items_start()
                     .flex_wrap()
                     .gap_2()
-                    .child(
-                        self.panel_heading(
-                            Text::LibraryLocations,
-                            self.tr(Text::LibraryLocationsHint),
-                        ),
-                    )
-                    .when_some(selected, |s, loc| {
+                    .child(self.panel_heading(
+                        Text::LibraryLocations,
+                        self.tr(if entry.is_cartridge() {
+                            Text::LibraryCartridgeLocationsHint
+                        } else {
+                            Text::LibraryLocationsHint
+                        }),
+                    ))
+                    .when_some(selected.filter(|_| !entry.is_cartridge()), |s, loc| {
                         let edit = Edit::Group {
                             disc: loc.disc_id,
                             location: loc.id,
@@ -587,15 +606,32 @@ impl Desktop {
                     }),
             )
             .children(entry.game.locations.iter().enumerate().map(|(i, loc)| {
-                self.detail_location(i, loc, selected.is_some_and(|s| s.id == loc.id), cx)
+                self.detail_location(
+                    i,
+                    loc,
+                    entry.is_cartridge(),
+                    selected.is_some_and(|s| s.id == loc.id),
+                    cx,
+                )
             }))
             .child(label(&p, self.tr(Text::LibraryLocationNote)))
     }
 
-    fn detail_location(&self, i: usize, loc: &Location, selected: bool, cx: &Context<Self>) -> Div {
+    fn detail_location(
+        &self,
+        i: usize,
+        loc: &Location,
+        cartridge: bool,
+        selected: bool,
+        cx: &Context<Self>,
+    ) -> Div {
         let p = self.library_palette();
         let id = loc.id;
-        let disc = format!("{} {}", self.tr(Text::LibraryDisc), loc.disc_number);
+        let disc = if cartridge {
+            self.tr(Text::Cartridge).to_owned()
+        } else {
+            format!("{} {}", self.tr(Text::LibraryDisc), loc.disc_number)
+        };
         let heading = loc
             .serial
             .as_ref()
@@ -673,6 +709,8 @@ impl Desktop {
             Text::LibraryManualCover
         } else if entry.thumbnail.is_some() {
             Text::LibraryCachedCover
+        } else if entry.is_cartridge() {
+            Text::LibraryNoCartridgeCover
         } else {
             Text::LibraryNoCover
         };
@@ -715,7 +753,9 @@ impl Desktop {
                         Text::LibraryResetCover,
                         false,
                         cx,
-                        move |v, _, cx| v.library_write(cx, move |s| covers::reset_local(s, id)),
+                        move |v, _, cx| {
+                            v.library_write(cx, move |s| covers::reset_local(s, id));
+                        },
                     ))
                     .child(
                         self.library_button(

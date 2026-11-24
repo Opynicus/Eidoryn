@@ -4,7 +4,7 @@ use super::{
 };
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::{
-    preferences::Preferences,
+    preferences::{GbaRenderer, Preferences},
     shortcuts::ShortcutAction,
     systems::ps1::{
         cpu_engine::CpuMode,
@@ -129,7 +129,7 @@ impl GraphicsControls {
 
 impl Desktop {
     pub(super) fn detect_hardware(&mut self, cx: &mut Context<Self>) {
-        if self.graphics.backends.is_some() || self.graphics.detecting {
+        if self.is_gba() || self.graphics.backends.is_some() || self.graphics.detecting {
             return;
         }
         self.graphics.detecting = true;
@@ -433,7 +433,89 @@ impl Desktop {
         )
     }
 
+    fn set_gba_hardware(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if let Some(runner) = &self.gba.runner {
+            let request = self.gba.snapshot.graphics_request.wrapping_add(1);
+            match runner.send(eidoryn_psx::systems::gba::Command::SetHardware { enabled, request })
+            {
+                Ok(()) => self.gba.graphics_request = Some((request, enabled)),
+                Err(error) => self.notice = Some(error),
+            }
+        } else {
+            self.preferences.gba_renderer = GbaRenderer::from_hardware(enabled);
+            self.save_preferences();
+        }
+        cx.notify();
+    }
+
+    fn gba_graphics_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        let snapshot = &self.gba.snapshot;
+        let preferred =
+            eidoryn_gba::GPU_COMPILED && self.preferences.gba_renderer == GbaRenderer::Hardware;
+        let expected_hardware = snapshot.path.is_none() && preferred;
+        let ready = eidoryn_gba::GPU_COMPILED && self.gba.graphics_request.is_none();
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(self.setting_group(Text::Performance, cx, |cx| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(pair(
+                        p,
+                        self.tr(Text::Renderer),
+                        snapshot.graphics_device.as_deref().unwrap_or_else(|| {
+                            self.tr(if expected_hardware {
+                                Text::HardwareRenderer
+                            } else {
+                                Text::SerialRenderer
+                            })
+                        }),
+                    ))
+                    .child(
+                        switch(
+                            &self.fonts,
+                            p,
+                            "hardware-switch",
+                            self.tr(Text::HardwareAcceleration),
+                            self.tr(Text::GbaHardwareHint),
+                            preferred,
+                            ready,
+                        )
+                        .when(ready, |s| {
+                            s.on_click(cx.listener(move |view, _, _, cx| {
+                                view.set_gba_hardware(!preferred, cx);
+                            }))
+                        }),
+                    )
+                    .when(self.gba.graphics_request.is_some(), |s| {
+                        s.child(label(p, self.tr(Text::Applying)))
+                    })
+                    .when(!eidoryn_gba::GPU_COMPILED, |s| {
+                        s.child(label(p, self.tr(Text::NoHardwareRenderer)))
+                    })
+                    .when_some(snapshot.graphics_error.as_deref(), |s, error| {
+                        s.child(label(p, error.to_owned()))
+                    })
+            }))
+            .child(self.setting_group(Text::DisplayOptions, cx, |cx| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(label(p, self.tr(Text::Crt)))
+                    .child(self.crt_choices(cx))
+                    .child(self.clean_fullscreen_control(cx))
+            }))
+    }
+
     pub(super) fn graphics_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
+        if self.is_gba() {
+            return self.gba_graphics_panel(cx);
+        }
         let p = &self.themes.active().palette;
         let ready = self.graphics.pending.is_none() && self.graphics.pending_cpu.is_none();
         div()
@@ -529,6 +611,7 @@ pub(super) fn switch(
     let hint = detail.clone();
     div()
         .id(id)
+        .debug_selector(move || id.to_owned())
         .py_3()
         .border_t_1()
         .border_color(rgb(p.border))
@@ -694,6 +777,40 @@ mod tests {
         assert!(controls.available(RendererMode::Dx12));
         assert!(!controls.available(RendererMode::Vulkan));
         assert!(!controls.available(RendererMode::OpenGl));
+    }
+
+    #[cfg(all(
+        feature = "ui-tests",
+        any(
+            feature = "vulkan",
+            feature = "opengl",
+            feature = "metal",
+            feature = "dx12"
+        )
+    ))]
+    #[gpui::test]
+    fn gba_graphics_switch_persists_separately_before_loading(cx: &mut gpui::TestAppContext) {
+        use super::super::tests::{click_control, desktop};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("preferences.json");
+        let (view, cx) = cx.add_window_view(desktop);
+        cx.simulate_resize(gpui::size(px(1280.), px(1000.)));
+        view.update(cx, |view, cx| {
+            view.preferences_path = Some(path.clone());
+            view.switch_core(eidoryn_psx::library::GamePlatform::Gba, cx);
+            view.open_settings(cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("backend-vulkan").is_none());
+        click_control(cx, "hardware-switch");
+        let saved = Preferences::load(&path).unwrap();
+        assert_eq!(saved.gba_renderer, GbaRenderer::Hardware);
+        assert_eq!(saved.renderer(), RendererMode::Serial);
+        click_control(cx, "hardware-switch");
+        assert_eq!(
+            Preferences::load(&path).unwrap().gba_renderer,
+            GbaRenderer::Software
+        );
     }
 
     #[cfg(feature = "ui-tests")]

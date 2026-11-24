@@ -329,6 +329,13 @@ impl Desktop {
         (fast_boot && self.bios.is_none()) || self.validate_current_bios(cx)
     }
 
+    pub(super) fn remember_media(&mut self, path: &std::path::Path, fast_boot: bool) {
+        match self.preferences.remember_disc(path, fast_boot) {
+            Ok(()) => self.save_preferences(),
+            Err(error) => self.notice = Some(error),
+        }
+    }
+
     pub(super) fn receive_media_selection(&mut self, snapshot: &Snapshot, cx: &mut Context<Self>) {
         if snapshot.media_revision == self.snapshot.media_revision {
             return;
@@ -375,13 +382,7 @@ impl Desktop {
                 SelectedMedia::Disc | SelectedMedia::ReopenedDisc | SelectedMedia::LibraryDisc,
             ) => {
                 if let Some(path) = &snapshot.disc_path {
-                    match self
-                        .preferences
-                        .remember_disc(path, snapshot.disc_fast_boot)
-                    {
-                        Ok(()) => self.save_preferences(),
-                        Err(error) => self.notice = Some(error),
-                    }
+                    self.remember_media(path, snapshot.disc_fast_boot);
                 }
             }
             _ => {}

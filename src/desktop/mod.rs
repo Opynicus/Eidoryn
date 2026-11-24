@@ -7,12 +7,13 @@ mod console;
 mod controller;
 mod drawer;
 mod fonts;
+mod gba;
 mod graphics;
 mod icons;
+mod inspector;
 mod library;
 mod library_ui;
 mod probe;
-mod ps1_inspector;
 mod recent_games;
 mod rewind;
 mod save_states;
@@ -26,6 +27,7 @@ mod video;
 mod view;
 
 use audio_controls::AudioControls;
+use eidoryn_psx::library::GamePlatform;
 use eidoryn_psx::{
     app,
     audio::{AudioBuffer, output::AudioOutput},
@@ -213,7 +215,7 @@ fn open_window(
                         let weak = cx.weak_entity();
                         window.on_window_should_close(cx, move |_, cx| {
                             weak.update(cx, |view: &mut Desktop, cx| {
-                                view.command(Command::RequestClose, cx);
+                                view.request_close(cx);
                             })
                             .is_err()
                         });
@@ -226,11 +228,13 @@ fn open_window(
                             );
                         }
                         Desktop {
+                            active_core: GamePlatform::Ps1,
+                            gba: gba::Session::default(),
                             library,
                             sidebar: None,
                             navigation: sidebar::Navigation::default(),
                             bios_details_open: false,
-                            bios_selection: None,
+                            image_picker: None,
                             memory_details_open: false,
                             fonts: fonts::Fonts::new(Arc::clone(cx.text_system())),
                             graphics: graphics::GraphicsControls::new(
@@ -298,11 +302,13 @@ fn open_window(
 
 #[allow(clippy::struct_excessive_bools)] // Independent view, debugger, and appearance preferences.
 struct Desktop {
+    active_core: GamePlatform,
+    gba: gba::Session,
     library: library::Workspace,
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
     navigation: sidebar::Navigation,
     bios_details_open: bool,
-    bios_selection: Option<gpui::Task<()>>,
+    image_picker: Option<gpui::Task<()>>,
     memory_details_open: bool,
     fonts: fonts::Fonts,
     language: eidoryn_psx::i18n::Language,
@@ -332,7 +338,7 @@ struct Desktop {
     renaming_state: Option<save_states::RenameState>,
     rewind_sources: u8,
     rewind_disable_origin: Option<FocusHandle>,
-    rebinding: Option<eidoryn_psx::keybindings::PadButton>,
+    rebinding: Option<controller::RecordingButton>,
     keybindings_draft: Option<eidoryn_psx::keybindings::KeyBindings>,
     shortcut_editor: shortcuts::ShortcutEditor,
     probe: Option<probe::Probe>,
@@ -499,6 +505,7 @@ impl Desktop {
     }
 
     fn receive_snapshot(&mut self, cx: &mut gpui::Context<Self>) {
+        self.receive_gba(cx);
         self.tick_library_scrape(cx);
         self.refresh_playing_library(cx);
         if let Some(command) = self.probe.as_mut().and_then(probe::Probe::input) {
@@ -511,6 +518,7 @@ impl Desktop {
             cx.notify();
         }
         if let Some(mut snapshot) = self.runner.take_snapshot() {
+            self.receive_close_error(&snapshot);
             // A queued debug snapshot can arrive after the user closes the view.
             if self.snapshot_mode == SnapshotMode::Display {
                 snapshot.mode = SnapshotMode::Display;
@@ -527,15 +535,21 @@ impl Desktop {
             if let Some(warning) = snapshot.presentation_warning.take() {
                 append_notice(&mut self.notice, warning);
             }
-            self.receive_media_selection(&snapshot, cx);
-            if snapshot.renamed_state != self.snapshot.renamed_state
+            if !self.is_gba() {
+                self.receive_media_selection(&snapshot, cx);
+            }
+            if !self.is_gba()
+                && snapshot.renamed_state != self.snapshot.renamed_state
                 && let Some((old, new)) = &snapshot.renamed_state
                 && self.selected_save_state.as_ref() == Some(old)
             {
                 self.selected_save_state = Some(new.clone());
             }
             let frame_changed = !snapshot.has_same_frame(&self.snapshot);
-            if frame_changed && let Some(image) = &mut self.image {
+            if frame_changed
+                && !self.is_gba()
+                && let Some(image) = &mut self.image
+            {
                 // Coalesce pending frames without keeping a second RGB allocation.
                 image.dirty = true;
             }
@@ -598,6 +612,13 @@ impl Desktop {
     }
 
     fn display_title(&self) -> &str {
+        if self.is_gba() {
+            return if self.gba.snapshot.path.is_some() {
+                &self.gba.snapshot.title
+            } else {
+                "Game Boy Advance"
+            };
+        }
         if self.snapshot.is_demo {
             self.tr(eidoryn_psx::i18n::Text::BuiltinDemo)
         } else {
