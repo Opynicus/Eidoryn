@@ -11,6 +11,7 @@ pub(crate) use super::transport::ProviderError;
 pub use cache::CacheScope;
 pub(super) use cache::{clear_in_transaction, migrate_release_preferences};
 pub use matching::candidates;
+pub(super) use matching::{disc_market_filter, region_matches};
 use matching::{has_title_candidate, index_names, matching_serial, title_hint};
 use providers::{is_release_serial, lookup_release};
 use refresh::download_serial;
@@ -174,7 +175,7 @@ fn match_evidence(
         .map(|s| cached_for(conn, s, gba))
         .transpose()?
         .unwrap_or_default();
-    if let Some(release) = matching_serial(&cached, serial, region) {
+    if let Some(release) = matching_serial(&cached, serial, region, gba) {
         assign(conn, id, &release.id, false)?;
     } else {
         // A title or alias is only a suggestion. Never assign an edition from a filename.

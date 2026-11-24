@@ -357,7 +357,7 @@ mod tests {
         let db = Catalog::parse(DAT_FIXTURE, &AtomicBool::default()).unwrap();
         let usa = db.response("AXXE").unwrap();
         let record =
-            super::super::matching_serial(&usa.releases, Some("AXXE"), Some("USA")).unwrap();
+            super::super::matching_serial(&usa.releases, Some("AXXE"), Some("USA"), true).unwrap();
         assert_eq!(record.region, "USA, Europe");
         assert_eq!(record.date, "");
         assert!(db.response("DIFF").unwrap().releases.is_empty());
@@ -365,7 +365,8 @@ mod tests {
         assert_eq!(jpn.releases.len(), 2);
         assert_ne!(jpn.releases[0].id, jpn.releases[1].id);
         assert!(
-            super::super::matching_serial(&jpn.releases, Some("AXXJ"), Some("Japan")).is_none()
+            super::super::matching_serial(&jpn.releases, Some("AXXJ"), Some("Japan"), true)
+                .is_none()
         );
     }
 

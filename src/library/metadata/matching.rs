@@ -3,18 +3,35 @@ use super::{Library, Release, evidence, is_release_serial};
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashSet;
 
-pub(super) fn region_matches(disc: &str, release_market: &str) -> bool {
-    release_market.split(',').map(str::trim).any(|market| {
-        disc == market || (disc == "Europe" && crate::library::european_market(market))
-    })
+/// PS1 reports the licensing territory. On an NTSC-J disc the stored value
+/// "Japan" also covers releases sold in other Asian markets.
+pub(in crate::library) fn disc_market_filter(region: &str) -> &str {
+    if region == "Japan" { "NTSC-J" } else { region }
+}
+
+pub(in crate::library) fn region_matches(disc: &str, release_market: &str) -> bool {
+    release_market
+        .split([',', '/'])
+        .map(str::trim)
+        .any(|market| {
+            disc == market
+                || (disc == "Europe" && crate::library::european_market(market))
+                || (disc == "NTSC-J" && super::gamedb::ntsc_j_market(market))
+        })
 }
 
 pub(super) fn matching_serial<'a>(
     rows: &'a [Release],
     serial: Option<&str>,
     region: Option<&str>,
+    gba: bool,
 ) -> Option<&'a Release> {
     let serial = serial?;
+    let region = if gba {
+        region
+    } else {
+        region.map(disc_market_filter)
+    };
     let mut exact = rows
         .iter()
         .filter(|r| r.serial == serial && region.is_none_or(|v| region_matches(v, &r.region)));

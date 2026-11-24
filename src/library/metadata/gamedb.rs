@@ -187,6 +187,10 @@ impl VideoTerritory {
     }
 }
 
+pub(super) fn ntsc_j_market(market: &str) -> bool {
+    VideoTerritory::for_market(market) == Some(VideoTerritory::NtscJ)
+}
+
 fn release_region<'a>(serial: &str, record: &'a Value) -> Option<&'a str> {
     let territory = VideoTerritory::from_catalog(record.get("region")?.as_str()?)?;
     let name = record

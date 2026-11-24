@@ -355,12 +355,13 @@ fn fetch_edition(
     // title to a title-based service, or a verified disc serial to a serial-based one.
     let gba = super::metadata::is_gba(&conn, id).map_err(|e| e.to_string())?;
     let provider = if gba { Provider::Libretro } else { provider };
-    let (serial, title, region, generation, cleared, release_id) = conn.query_row(
+    let (serial, title, region, disc_only, generation, cleared, release_id) = conn.query_row(
         "SELECT COALESCE(release_serial,disc_serial),auto_title,
                 COALESCE(auto_region, CASE WHEN release_serial IS NULL OR release_serial=disc_serial THEN disc_region END),
+                auto_region IS NULL AND disc_region IS NOT NULL AND release_serial IS NULL AND preferred_release_id IS NULL,
                 cache_generation,cache_cleared,release_id FROM game_metadata WHERE game_id=?",
         [id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?,
-                      r.get::<_, Option<String>>(2)?, r.get(3)?, r.get::<_, bool>(4)?,r.get::<_, Option<String>>(5)?))
+                      r.get::<_, Option<String>>(2)?, r.get::<_, bool>(3)?, r.get(4)?, r.get::<_, bool>(5)?,r.get::<_, Option<String>>(6)?))
     ).map_err(|e|e.to_string())?;
     if cleared
         && matches!(
@@ -395,6 +396,13 @@ fn fetch_edition(
         .or(region.as_deref())
         .or_else(|| super::metadata::serial_region(serial))
         .unwrap_or("");
+    // Key raw licensing evidence separately from a known market so legacy
+    // misses for a Japan-market cover do not suppress a new disc lookup.
+    let region = if provider == Provider::Libretro && !gba && chosen.is_none() && disc_only {
+        super::metadata::disc_market_filter(region)
+    } else {
+        region
+    };
     if provider == Provider::Igdb && title.is_empty() {
         return Err("Choose a release or fetch its release details before searching IGDB".into());
     }

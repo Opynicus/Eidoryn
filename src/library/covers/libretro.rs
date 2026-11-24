@@ -161,9 +161,9 @@ fn replace_index(
 
 fn matches_region(dat: &str, region: &str) -> bool {
     region.is_empty()
-        || dat.split(" / ").any(|part| {
-            part == region || region == "Europe" && crate::library::european_market(part)
-        })
+        || region
+            .split(',')
+            .any(|market| crate::library::metadata::region_matches(market.trim(), dat))
 }
 
 fn cached(db: &Connection, serial: &str, region: &str) -> Result<Lookup, String> {
@@ -205,6 +205,42 @@ pub(super) fn image_url(base: &str, name: &str) -> Result<Url, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ntsc_j_disc_art_uses_the_matching_serials_market_and_preserves_ambiguity() {
+        let (_dir, lib) = super::super::tests::fixture();
+        let mut db = lib.connect().unwrap();
+        let catalog = r#"game (
+            name "Castlevania - Symphony of the Night (Asia)"
+            serial "SCPS-45196"
+            region "Asia"
+        )"#;
+        let serial = "SCPS-45196";
+        replace_index(&mut db, catalog, 1, &AtomicBool::default()).unwrap();
+        let Lookup::Image(url) = cached(&db, serial, "NTSC-J").unwrap() else {
+            panic!("the licensed disc has one serial-matched Asian release");
+        };
+        assert!(
+            url.path()
+                .ends_with("/Castlevania%20-%20Symphony%20of%20the%20Night%20(Asia).png")
+        );
+        assert!(matches!(
+            cached(&db, serial, "Japan").unwrap(),
+            Lookup::Missing
+        ));
+        assert!(matches!(
+            cached(&db, serial, "USA").unwrap(),
+            Lookup::Missing
+        ));
+
+        let multiple = format!("{catalog}\n{}", catalog.replace("Asia", "Japan"));
+        replace_index(&mut db, &multiple, 2, &AtomicBool::default()).unwrap();
+        assert!(cached(&db, serial, "NTSC-J").is_err());
+        let Lookup::Image(url) = cached(&db, serial, "Asia").unwrap() else {
+            panic!("the selected market identifies the artwork");
+        };
+        assert!(url.path().ends_with("(Asia).png"));
+    }
 
     #[test]
     fn indexes_only_disc_fields_and_never_guesses_between_editions() {

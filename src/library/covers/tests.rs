@@ -88,6 +88,53 @@ fn explicit_and_missing_gba_art_identify_the_rom_before_any_metadata_refresh() {
     }
 }
 
+#[cfg(feature = "ui-tests")]
+#[test]
+fn missing_ntsc_j_art_retries_legacy_miss_but_selected_japan_market_remains_exact() {
+    let (_dir, lib) = fixture();
+    let serial = "SCPS-45196";
+    let lib = lib.with_scrape_responses(
+        response(200, vec![]),
+        response(200, encoded(ImageFormat::Png)),
+    );
+    let db = lib.connect().unwrap();
+    db.execute(
+        "UPDATE game_metadata SET disc_serial=?,disc_region='Japan' WHERE game_id=1",
+        [serial],
+    )
+    .unwrap();
+    let old_key = provider_key(Provider::Libretro, "", serial, "", "Japan").unwrap();
+    record(
+        &db,
+        1,
+        Remote { serial, ..MATCHING },
+        old_key.as_str(),
+        "not_found",
+        i64::MAX,
+    )
+    .unwrap();
+    let cancel = AtomicBool::default();
+    assert_eq!(
+        fetch_missing(&lib, 1, Provider::Libretro, "", &cancel).unwrap(),
+        "ready"
+    );
+    assert!(
+        metadata::list(&lib).unwrap()[&1]
+            .thumbnail
+            .as_ref()
+            .is_some_and(|file| file.is_file())
+    );
+    db.execute(
+        "UPDATE game_metadata SET release_serial=?,auto_region='Japan' WHERE game_id=1",
+        [serial],
+    )
+    .unwrap();
+    assert_eq!(
+        fetch_missing(&lib, 1, Provider::Libretro, "", &cancel).unwrap(),
+        "not_found"
+    );
+}
+
 #[test]
 fn cached_download_local_override_and_atomic_failures() {
     let (dir, lib) = fixture();

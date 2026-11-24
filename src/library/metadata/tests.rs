@@ -1005,11 +1005,42 @@ fn european_disc_matches_a_single_local_market_and_reuses_its_dated_cache() {
         matching_serial(
             &[edition("France"), edition("UK")],
             Some(DISC),
-            Some("Europe")
+            Some("Europe"),
+            false
         )
         .is_none()
     );
-    assert!(matching_serial(&[edition("Australia")], Some(DISC), Some("Europe")).is_none());
+    assert!(matching_serial(&[edition("Australia")], Some(DISC), Some("Europe"), false).is_none());
+}
+
+#[test]
+fn ntsc_j_license_accepts_one_asian_market_for_the_disc_serial() {
+    let serial = "SCPS-45196";
+    let edition = |region: &str| Release {
+        id: format!("gamedb/{region}"),
+        title: "Castlevania: Symphony of the Night".into(),
+        serial: serial.into(),
+        region: region.into(),
+        date: String::new(),
+        aliases: String::new(),
+        work_date: String::new(),
+    };
+    let matched_market = |rows: &[Release], serial: &str| {
+        matching_serial(rows, Some(serial), Some("Japan"), false).map(|r| r.region.clone())
+    };
+    assert_eq!(
+        matched_market(&[edition("Asia")], serial).as_deref(),
+        Some("Asia")
+    );
+    assert_eq!(matched_market(&[edition("USA")], serial), None);
+    assert_eq!(
+        matched_market(&[edition("Japan"), edition("Asia")], serial),
+        None
+    );
+    assert_eq!(matched_market(&[edition("Asia")], "SLPM-86023"), None);
+    let mut gba = edition("Asia");
+    gba.serial = "A2CJ".into();
+    assert!(matching_serial(&[gba], Some("A2CJ"), Some("Japan"), true).is_none());
 }
 
 mod cache;

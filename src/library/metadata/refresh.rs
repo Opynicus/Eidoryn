@@ -274,7 +274,12 @@ fn complete_cached_edition(
     let edition = if let Some(id) = &evidence.selected {
         releases.iter().find(|r| &r.id == id)
     } else {
-        matching_serial(&releases, Some(serial), evidence.region.as_deref())
+        matching_serial(
+            &releases,
+            Some(serial),
+            evidence.region.as_deref(),
+            evidence.gba,
+        )
     };
     let Some(edition) =
         edition.filter(|r| (evidence.gba || !r.date.is_empty()) && !r.title.is_empty())
@@ -392,7 +397,7 @@ impl Prepared {
         let release = if let Some(key) = ev.selected.as_ref().or(self.gba_edition.as_ref()) {
             releases.iter().find(|r| &r.id == key)
         } else {
-            matching_serial(&releases, Some(&serial), ev.region.as_deref())
+            matching_serial(&releases, Some(&serial), ev.region.as_deref(), ev.gba)
         };
         if let Some(release) = release {
             assign(tx, id, &release.id, ev.selected.is_some()).map_err(|e| e.to_string())?;
