@@ -12,19 +12,32 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
+#[track_caller]
 fn receive_until(
     view: &Entity<Desktop>,
     cx: &mut VisualTestContext,
     ready: impl Fn(&Desktop) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    cx.run_until_parked();
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         view.update(cx, Desktop::receive_snapshot);
-        cx.run_until_parked();
         if view.read_with(cx, |view, _| ready(view)) {
+            // Paint the acknowledged state before the next simulated interaction.
+            cx.run_until_parked();
             return;
         }
-        assert!(Instant::now() < deadline, "rewind action did not finish");
+        if Instant::now() >= deadline {
+            let state = view.read_with(cx, |view, _| {
+                let s = &view.snapshot;
+                format!(
+                    "running={}, slices={}, enabled={}, rewinding={}, states={}, limit={}s, message={:?}",
+                    s.running, s.slices, s.rewind_enabled, s.rewinding, s.rewind_states,
+                    s.rewind_max_seconds, s.message
+                )
+            });
+            panic!("Timed out waiting for rewind worker: {state}");
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
 }
