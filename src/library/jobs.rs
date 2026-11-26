@@ -70,27 +70,23 @@ pub fn enqueue_games(
                             .await?;
                     }
                     let mode = mode_name(mode);
-                    let metadata = sqlx::query_file_scalar!(
-                        "src/library/jobs/enqueue.sql",
-                        id,
-                        metadata_provider,
-                        metadata_stage,
-                        mode,
-                        None::<i64>
-                    )
-                    .fetch_optional(&mut *tx)
-                    .await?;
-                    if let Some(dependency) = metadata {
-                        sqlx::query_file_scalar!(
-                            "src/library/jobs/enqueue.sql",
-                            id,
-                            cover_provider,
-                            cover_stage,
-                            mode,
-                            dependency
-                        )
-                        .fetch_one(&mut *tx)
+                    let metadata: Option<i64> = sqlx::query_scalar(ENQUEUE)
+                        .bind(id)
+                        .bind(metadata_provider)
+                        .bind(metadata_stage)
+                        .bind(mode)
+                        .bind(None::<i64>)
+                        .fetch_optional(&mut *tx)
                         .await?;
+                    if let Some(dependency) = metadata {
+                        sqlx::query(ENQUEUE)
+                            .bind(id)
+                            .bind(cover_provider)
+                            .bind(cover_stage)
+                            .bind(mode)
+                            .bind(dependency)
+                            .fetch_one(&mut *tx)
+                            .await?;
                     }
                 }
                 tx.commit().await?;
@@ -118,21 +114,13 @@ pub fn cancel_games(lib: &Library, ids: &[i64]) -> Result<(), String> {
 /// Discover work on a background thread. Disk, rather than the wake-up signal, is authoritative.
 pub fn due_games(lib: &Library) -> Result<Vec<(i64, Mode)>, String> {
     let pool = lib.pool()?;
+    let query = sqlx::query_as::<_, (i64, bool)>(include_str!("jobs/due.sql"));
     let rows = runtime()?
-        .block_on(sqlx::query_file!("src/library/jobs/due.sql").fetch_all(pool))
+        .block_on(query.fetch_all(pool))
         .map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
-        .map(|row| {
-            (
-                row.game_id,
-                if row.full == 1 {
-                    Mode::Full
-                } else {
-                    Mode::Incremental
-                },
-            )
-        })
+        .map(|(id, full)| (id, if full { Mode::Full } else { Mode::Incremental }))
         .collect())
 }
 

@@ -15,4 +15,4 @@ DO UPDATE SET
     THEN scrape_jobs.dependency ELSE excluded.dependency END,
   next_attempt_at=CASE WHEN excluded.mode='full' AND scrape_jobs.status='retry_wait'
      AND scrape_jobs.last_error_code NOT IN ('limited','rate_limited') THEN 0 ELSE scrape_jobs.next_attempt_at END
-RETURNING id AS "id!: i64"
+RETURNING id

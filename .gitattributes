@@ -1,2 +1,0 @@
-# SQLx hashes query files byte for byte when checking its offline cache.
-*.sql text eol=lf
