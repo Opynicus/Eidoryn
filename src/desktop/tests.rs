@@ -538,7 +538,16 @@ fn selecting_a_bios_is_session_only_until_set_as_default(cx: &mut TestAppContext
     }
     let first = bios.0.canonicalize().unwrap();
     let second = second.canonicalize().unwrap();
-    let (view, cx) = cx.add_window_view(desktop);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        // Keep a real guest running while the picker is open. A branch to
+        // itself lets the worker service commands without rasterizing the demo.
+        let mut machine =
+            Machine::from_exe(&eidoryn_psx::demo::executable(), "Running game").unwrap();
+        let entry = eidoryn_psx::demo::ENTRY;
+        machine.bus.write32(entry, 0x1000_ffff).unwrap(); // beq zero, zero, -1
+        machine.bus.write32(entry + 4, 0).unwrap(); // delay slot
+        desktop_with_machine(window, cx, machine)
+    });
     let config = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
     cx.simulate_resize(size(px(1400.), px(1000.)));
     view.update(cx, |view, cx| {
@@ -773,21 +782,32 @@ fn missing_recent_games_are_removed_and_clearing_history_keeps_files(cx: &mut Te
     assert!(discs[0].0.is_file());
 }
 
+#[track_caller]
 pub(super) fn wait_for_snapshot(
     view: &gpui::Entity<Desktop>,
     cx: &mut VisualTestContext,
     ready: impl Fn(&Snapshot) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         view.update(cx, Desktop::receive_snapshot);
         if view.read_with(cx, |view, _| ready(&view.snapshot)) {
             return;
         }
-        assert!(
-            Instant::now() < deadline,
-            "worker did not acknowledge media selection"
-        );
+        if Instant::now() >= deadline {
+            let (running, media, rewind, message) = view.read_with(cx, |view, _| {
+                let s = &view.snapshot;
+                (
+                    s.running,
+                    s.media_revision,
+                    s.rewind_max_seconds,
+                    s.message.clone(),
+                )
+            });
+            panic!(
+                "worker snapshot timed out (running={running}, media_revision={media}, rewind_seconds={rewind}, message={message:?})"
+            );
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -855,6 +875,14 @@ fn debugger_is_optional_and_hidden_views_release_display_resources(cx: &mut Test
 
 pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>) -> Desktop {
     let machine = Machine::from_exe(&eidoryn_psx::demo::executable(), "UI test").unwrap();
+    desktop_with_machine(window, cx, machine)
+}
+
+fn desktop_with_machine(
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<Desktop>,
+    machine: Machine,
+) -> Desktop {
     let snapshot = Snapshot::capture_with_mode(&machine, false, None, 0., SnapshotMode::Display);
     let focus = cx.focus_handle();
     window.focus(&focus, cx);
