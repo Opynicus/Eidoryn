@@ -145,36 +145,45 @@ fn graphics_requests_keep_the_loaded_cartridge_running_with_or_without_a_gpu() {
     let temp = tempfile::tempdir().unwrap();
     let rom = temp.path().join("gpu-probe.gba");
     fixture::write_cartridge(&rom);
-    let runner = Runner::start(None, temp.path().to_owned()).unwrap();
-    runner
-        .send(Command::Load {
+    // Drive guest frames explicitly so adapter discovery and shader compilation
+    // on a cold graphics driver do not consume a snapshot polling timeout.
+    let mut worker = super::Worker::new(temp.path(), None, None);
+    worker
+        .apply(Command::Load {
             path: rom,
             title: "GPU probe".into(),
         })
         .unwrap();
-    let initial = expect_pixels(&runner, [0, 0, 255], 0);
-    runner
-        .send(Command::SetHardware {
+    worker.frame().unwrap();
+    assert_eq!(&worker.snapshot.rgb[..6], &[0, 0, 255, 0, 0, 0]);
+    let revision = worker.snapshot.media_revision;
+    worker
+        .apply(Command::SetHardware {
             enabled: true,
             request: 1,
         })
         .unwrap();
-    let switched = wait_for(&runner, |s| s.graphics_request == 1);
+    let switched = &worker.snapshot;
+    assert_eq!(switched.graphics_request, 1);
     assert!(switched.running);
     assert_eq!(
         switched.graphics_device.is_some(),
         switched.graphics_error.is_none()
     );
-    assert_eq!(initial.media_revision, switched.media_revision);
-    runner.send(Command::Buttons(1)).unwrap();
-    expect_pixels(&runner, [255, 0, 0], 0);
-    runner
-        .send(Command::SetHardware {
+    assert_eq!(revision, switched.media_revision);
+    worker.apply(Command::Buttons(1)).unwrap();
+    // Input may change after the first scanline has already latched.
+    worker.frame().unwrap();
+    worker.frame().unwrap();
+    assert_eq!(&worker.snapshot.rgb[..6], &[255, 0, 0, 0, 0, 0]);
+    worker
+        .apply(Command::SetHardware {
             enabled: false,
             request: 2,
         })
         .unwrap();
-    let software = wait_for(&runner, |s| s.graphics_request == 2);
+    let software = &worker.snapshot;
+    assert_eq!(software.graphics_request, 2);
     assert!(software.graphics_device.is_none() && software.graphics_error.is_none());
     assert!(software.running);
 }
