@@ -44,6 +44,9 @@ pub(super) fn clear_cache() {
 }
 
 pub(super) fn is_supported_serial(serial: &str) -> bool {
+    if let Some(number) = serial.strip_prefix("DTL-S") {
+        return number.len() == 4 && number.bytes().all(|c| c.is_ascii_digit());
+    }
     let Some((prefix, number)) = serial.split_once('-') else {
         return false;
     };
@@ -179,7 +182,7 @@ impl VideoTerritory {
     fn for_market(market: &str) -> Option<Self> {
         match market {
             "USA" | "Canada" => Some(Self::NtscU),
-            "Japan" | "Asia" | "Korea" | "Taiwan" | "China" => Some(Self::NtscJ),
+            "Japan" | "Asia" | "Korea" | "Taiwan" | "China" | "Singapore" => Some(Self::NtscJ),
             "Australia" | "Israel" => Some(Self::Pal),
             country if crate::library::european_market(country) => Some(Self::Pal),
             _ => None,
@@ -187,8 +190,22 @@ impl VideoTerritory {
     }
 }
 
-pub(super) fn ntsc_j_market(market: &str) -> bool {
-    VideoTerritory::for_market(market) == Some(VideoTerritory::NtscJ)
+pub(in crate::library) fn license_matches_market(license: &str, market: &str) -> bool {
+    VideoTerritory::from_catalog(license)
+        .is_some_and(|territory| VideoTerritory::for_market(market) == Some(territory))
+}
+
+/// Redump and GameDB name the market in a parenthesized group. Revisions,
+/// languages and disc numbers are other groups in the same playlist name.
+pub(in crate::library) fn named_markets(name: &str) -> Option<&str> {
+    name.split('(')
+        .skip(1)
+        .filter_map(|s| s.split_once(')').map(|(tag, _)| tag))
+        .find(|group| {
+            group
+                .split(',')
+                .all(|m| VideoTerritory::for_market(m.trim()).is_some())
+        })
 }
 
 fn release_region<'a>(serial: &str, record: &'a Value) -> Option<&'a str> {
@@ -197,21 +214,11 @@ fn release_region<'a>(serial: &str, record: &'a Value) -> Option<&'a str> {
         .get("release_name")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    // A release name can have other parenthetical groups before its markets,
-    // and language, revision and disc tags after them.
-    for group in name
-        .split('(')
-        .skip(1)
-        .filter_map(|s| s.split_once(')').map(|(tag, _)| tag))
-    {
-        let mut territories = group
+    if let Some(group) = named_markets(name) {
+        return group
             .split(',')
-            .map(|market| VideoTerritory::for_market(market.trim()));
-        if territories.clone().all(|candidate| candidate.is_some()) {
-            return territories
-                .any(|candidate| candidate == Some(territory))
-                .then_some(group);
-        }
+            .any(|market| VideoTerritory::for_market(market.trim()) == Some(territory))
+            .then_some(group);
     }
     match territory {
         VideoTerritory::NtscU => Some("USA"),
@@ -367,6 +374,7 @@ mod tests {
             "SLPS-10001": {"serial":"SLPS-10001","region":"NTSC-U","title":"Incorrect region","release_name":"Example (Japan)"},
             "SLPS-10002": {"region":"NTSC-J","title":"Missing serial"},
             "SLPS-10003": {"serial":"SLPS-10003","region":"Unknown","title":"Unknown territory","release_name":"Example (Japan)"},
+            "DTL-S3035": {"serial":"DTL-S3035","region":"NTSC-U","title":"Net Yaroze Boot Disc","release_name":"Net Yaroze Boot Disc (USA, Europe)","release_date":"1996-11"},
         })).unwrap()
     }
 
@@ -391,6 +399,9 @@ mod tests {
         assert_eq!(raw["SLPS-10000"]["extra"]["test"], "kept");
         assert_eq!(catalog.lookup("SLUS-10000").unwrap().releases[0].date, "");
         assert_eq!(catalog.lookup("SLUS-10001").unwrap().releases[0].date, "");
+        let yaroze = catalog.lookup("DTL-S3035").unwrap();
+        assert_eq!(yaroze.releases[0].region, "USA, Europe");
+        assert_eq!(yaroze.releases[0].date, "");
         assert_eq!(
             catalog.lookup("SCPS-45002").unwrap().releases[0].region,
             "Asia"
@@ -410,6 +421,8 @@ mod tests {
             "SLUS-00１23",
             "Disc 1",
             "SLUS-0001",
+            "DTL-S30356",
+            "DTL-S30A5",
         ] {
             assert!(!is_supported_serial(invalid));
         }
@@ -433,6 +446,50 @@ mod tests {
             assert_eq!(result.releases[0].region, market);
             assert_eq!(result.releases[0].date, expected_date);
         }
+    }
+
+    /// Walk every supported serial in the full production catalog. Requires a
+    /// local copy of the public PSX.data.json, so ordinary CI stays offline.
+    #[test]
+    #[ignore = "set EIDORYN_GAMEDB_PSX to a downloaded PSX.data.json"]
+    fn all_catalog_editions_keep_serial_territory_and_date_provenance() {
+        use std::collections::BTreeSet;
+        let data = std::fs::read(std::env::var_os("EIDORYN_GAMEDB_PSX").unwrap()).unwrap();
+        let catalog = Catalog::parse(&data).unwrap();
+        let mut markets = BTreeSet::new();
+        let mut checked = 0;
+        for (serial, rows) in &catalog.by_serial {
+            let response = catalog.lookup(serial).unwrap();
+            let evidence: BTreeMap<String, Value> = serde_json::from_slice(&response.raw).unwrap();
+            assert_eq!(evidence.len(), rows.len());
+            for release in &response.releases {
+                let key = release.id.strip_prefix("gamedb/").unwrap();
+                let record = &evidence[key];
+                assert_eq!(record["serial"].as_str(), Some(release.serial.as_str()));
+                let license = record["region"].as_str().unwrap();
+                assert!(
+                    release
+                        .region
+                        .split(',')
+                        .any(|market| license_matches_market(license, market.trim())),
+                    "{key}: {license} vs {}",
+                    release.region
+                );
+                if !release.date.is_empty() {
+                    assert!(!release.region.contains(','));
+                    assert_eq!(record["release_date"].as_str(), Some(release.date.as_str()));
+                    assert!(valid_date(&release.date));
+                }
+                markets.insert(release.region.clone());
+                checked += 1;
+            }
+        }
+        println!(
+            "GameDB-PSX: {} serials, {checked} resolved editions, {} market groups: {markets:?}",
+            catalog.by_serial.len(),
+            markets.len()
+        );
+        assert!(checked > 1_000);
     }
 
     #[test]

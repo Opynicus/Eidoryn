@@ -861,7 +861,9 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
     let preferences = eidoryn_psx::preferences::Preferences::default();
     Desktop {
         active_core: super::GamePlatform::Ps1,
+        close: super::session::CloseState::Open,
         gba: super::gba::Session::default(),
+        nds: super::nds::Session::default(),
         library: library::Workspace::new(None),
         sidebar: None,
         navigation: sidebar::Navigation::default(),
@@ -892,15 +894,10 @@ pub(super) fn desktop(window: &mut gpui::Window, cx: &mut gpui::Context<Desktop>
         snapshot_mode: SnapshotMode::Display,
         crt: CrtState::new(eidoryn_psx::video_filter::CrtFilter::Off),
         last_redraw: Instant::now(),
+        focus_game: false,
         focus,
         notice: None,
-        audio: AudioControls {
-            buffer: AudioBuffer::default(),
-            output: None,
-            volume: 75,
-            muted: true,
-            dragging: false,
-        },
+        audio: AudioControls::new(75, true),
         bios: None,
         presentation: Presentation::default(),
         page: WorkspacePage::Console,
@@ -1149,6 +1146,37 @@ fn game_workspace_keeps_playback_and_quick_actions_below_the_frame(cx: &mut Test
             let rewind = cx.debug_bounds("rewind-hold").unwrap();
             assert!(rewind.left() >= stage.right() || rewind.top() >= stage.bottom());
         }
+    }
+}
+
+#[gpui::test]
+fn handheld_game_views_share_volume_and_mute_across_core_switches(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(desktop);
+    let _cleanup = TestConfig(view.read_with(cx, |v, _| v.preferences_path.clone().unwrap()));
+    cx.simulate_resize(size(px(1280.), px(960.)));
+    click_control(cx, "nav-game");
+    for (selector, core) in [
+        ("core-gba", GamePlatform::Gba),
+        ("core-nds", GamePlatform::Nds),
+    ] {
+        click_control(cx, selector);
+        assert!(cx.debug_bounds("volume-slider").is_some());
+        // Feed the destination queue directly to measure gain independently of a sound card.
+        view.update(cx, |v, _| {
+            let queue = v.audio.buffer(core).clone();
+            queue.set_playing(true);
+            queue.push(&[[16_384, -16_384]; 2048]);
+            let mut output = [0_f32; 2];
+            v.audio.muted = true;
+            v.audio.apply_volume();
+            queue.render(&mut output, 2, 48_000, |x| x);
+            assert_eq!(output, [0.0, 0.0]);
+            v.audio.volume = 50;
+            v.audio.muted = false;
+            v.audio.apply_volume();
+            queue.render(&mut output, 2, 48_000, |x| x);
+            assert_eq!(output, [0.25, -0.25]);
+        });
     }
 }
 

@@ -5,10 +5,13 @@
 use std::{sync::atomic::AtomicBool, time::Duration};
 
 use crate::library::transport;
-use reqwest::{Client, Url};
+use reqwest::{Client, RequestBuilder, Url};
 use serde::Deserialize;
 
-use super::Lookup;
+use super::{
+    Lookup,
+    markets::{MARKETS, Market},
+};
 use crate::library::http_retry::RequestLimit;
 
 // The IGDB API allows four requests per second and eight simultaneous connections.
@@ -70,19 +73,9 @@ pub(super) fn resolve(
     let Some(query) = query(title) else {
         return Ok(Lookup::Missing);
     };
-    let configured = "Set EIDORYN_IGDB_CLIENT_ID and EIDORYN_IGDB_ACCESS_TOKEN for IGDB";
-    let credential = |key| {
-        std::env::var(key)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .ok_or(configured)
-    };
-    let request = client
-        .post(GAMES)
-        .header("Client-ID", credential("EIDORYN_IGDB_CLIENT_ID")?)
-        .bearer_auth(credential("EIDORYN_IGDB_ACCESS_TOKEN")?)
-        .header("Accept", "application/json")
-        .body(query);
+    let request = lookup_request(client, query, |key| {
+        std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+    })?;
     let _permit = REQUESTS.acquire(cancel)?;
     let response =
         transport::request(request, MAX_BYTES, cancel).map_err(|error| error.to_string())?;
@@ -90,6 +83,23 @@ pub(super) fn resolve(
         REQUESTS.defer(response.headers());
     }
     lookup(response, title, region)
+}
+
+fn lookup_request(
+    client: &Client,
+    query: String,
+    credential: impl Fn(&str) -> Option<String>,
+) -> Result<RequestBuilder, &'static str> {
+    let missing = "Set EIDORYN_IGDB_CLIENT_ID and EIDORYN_IGDB_ACCESS_TOKEN for IGDB";
+    Ok(client
+        .post(GAMES)
+        .header(
+            "Client-ID",
+            credential("EIDORYN_IGDB_CLIENT_ID").ok_or(missing)?,
+        )
+        .bearer_auth(credential("EIDORYN_IGDB_ACCESS_TOKEN").ok_or(missing)?)
+        .header("Accept", "application/json")
+        .body(query))
 }
 
 fn query(title: &str) -> Option<String> {
@@ -142,13 +152,22 @@ fn regional_cover<'a>(games: &'a [Game], title: &str, region: &str) -> Option<&'
     if matches.next().is_some() || game.platforms.len() != 1 {
         return None;
     }
-    let mut images = game.localizations.iter().filter_map(|l| {
-        l.region
-            .as_ref()
-            .filter(|r| r.matches(region))
-            .and(l.cover.as_ref())
-            .map(|c| c.image_id.as_str())
-    });
+    let images_for = |continental| {
+        game.localizations.iter().filter_map(move |l| {
+            let market = l.region.as_ref()?;
+            let eligible = if continental {
+                market.north_america()
+            } else {
+                market.matches(region)
+            };
+            eligible.then_some(l.cover.as_ref()?.image_id.as_str())
+        })
+    };
+    let mut images = images_for(false).peekable();
+    // Retain the existing US fallback only when IGDB has no US-specific front.
+    if images.peek().is_none() && region == "USA" {
+        images = images_for(true).peekable();
+    }
     let image = images.next()?;
     (!image.is_empty()
         && image.len() <= 128
@@ -160,24 +179,71 @@ fn regional_cover<'a>(games: &'a [Game], title: &str, region: &str) -> Option<&'
 }
 
 impl Region {
-    fn matches(&self, region: &str) -> bool {
-        let identifier = self.identifier.to_ascii_lowercase().replace('_', "-");
-        let name = self.name.to_ascii_lowercase();
-        match region {
-            "USA" => {
-                matches!(
-                    identifier.as_str(),
-                    "us" | "usa" | "en-us" | "north-america"
-                ) || matches!(
-                    name.as_str(),
-                    "united states" | "united states of america" | "north america"
-                )
+    fn north_america(&self) -> bool {
+        let (name, id) = (self.name.trim(), self.identifier.trim());
+        (is_north_america(name) && (id.is_empty() || is_north_america(id)))
+            || (name.is_empty() && is_north_america(id))
+    }
+
+    fn matches(&self, release: &str) -> bool {
+        let name = named_market(&self.name);
+        let id = self.identifier.trim();
+        let identified = named_market(id).or_else(|| {
+            // A lowercase locale such as "fr" names a language. It cannot distinguish
+            // France from Canada. The legacy US/JP/EU identifiers are region aliases.
+            let territory = locale_territory(id).or_else(|| {
+                (id.bytes().all(|b| b.is_ascii_uppercase()) || matches!(id, "us" | "jp" | "eu"))
+                    .then_some(id)
+            })?;
+            MARKETS
+                .iter()
+                .find(|m| m.identifier.eq_ignore_ascii_case(territory))
+        });
+        match (name, identified) {
+            (Some(a), Some(b)) if a.name != b.name => false,
+            (Some(market), _) | (_, Some(market)) => {
+                let continental = is_north_america(self.name.trim()) || is_north_america(id);
+                market.requested(release)
+                    && (!continental || matches!(market.name, "USA" | "Canada"))
             }
-            "Japan" => matches!(identifier.as_str(), "jp" | "ja-jp") || name == "japan",
-            "Europe" => identifier == "eu" || name == "europe",
             _ => false,
         }
     }
+}
+
+fn is_north_america(label: &str) -> bool {
+    label.eq_ignore_ascii_case("north-america") || label.eq_ignore_ascii_case("north america")
+}
+
+fn named_market(name: &str) -> Option<&'static Market> {
+    let name = name.trim();
+    let canonical = match name.to_ascii_lowercase().as_str() {
+        "united states" | "united states of america" => "USA",
+        "united kingdom" | "great britain" => "UK",
+        "south korea" | "republic of korea" => "Korea",
+        "worldwide" => "World",
+        _ => name,
+    };
+    MARKETS
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(canonical))
+}
+
+// For locale identifiers the territory follows the language and optional script,
+// e.g. fr-CA or zh-Hant-TW. Language alone does not identify a different country.
+fn locale_territory(locale: &str) -> Option<&str> {
+    let mut parts = locale.split(['-', '_']);
+    let language = parts.next()?;
+    if !(2..=3).contains(&language.len()) || !language.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    let next = parts.next()?;
+    let territory = if next.len() == 4 && next.bytes().all(|b| b.is_ascii_alphabetic()) {
+        parts.next()?
+    } else {
+        next
+    };
+    (territory.len() == 2 && parts.next().is_none()).then_some(territory)
 }
 
 #[cfg(test)]
@@ -199,7 +265,7 @@ mod tests {
         let response = http::Response::new(serde_json::to_vec(games).unwrap());
         match lookup(response, title, region).unwrap() {
             Lookup::Image(url) => Some(url.to_string()),
-            Lookup::Missing => None,
+            Lookup::NeedsChoice | Lookup::Missing => None,
             Lookup::Http(_) => panic!("unexpected HTTP error"),
         }
     }
@@ -221,6 +287,122 @@ mod tests {
     }
 
     #[test]
+    fn selects_each_release_market_from_a_mixed_localization_response() {
+        let markets = [
+            ("Asia", "Asia"),
+            ("Australia", "en-AU"),
+            ("Austria", "de-AT"),
+            ("Belgium", "fr-BE"),
+            ("Canada", "fr_CA"),
+            ("China", "zh-Hans-CN"),
+            ("Denmark", "da-DK"),
+            ("Europe", "EU"),
+            ("Finland", "fi-FI"),
+            ("France", "fr-FR"),
+            ("Germany", "de-DE"),
+            ("Greece", "el-GR"),
+            ("Ireland", "en-IE"),
+            ("Israel", "he-IL"),
+            ("Italy", "it-IT"),
+            ("Japan", "ja-JP"),
+            ("Korea", "ko-KR"),
+            ("Netherlands", "nl-NL"),
+            ("Norway", "nb-NO"),
+            ("Poland", "pl-PL"),
+            ("Portugal", "pt-PT"),
+            ("Russia", "ru-RU"),
+            ("Scandinavia", "Scandinavia"),
+            ("Singapore", "en-SG"),
+            ("Spain", "es-ES"),
+            ("Sweden", "sv-SE"),
+            ("Taiwan", "zh-Hant-TW"),
+            ("UK", "en-GB"),
+            ("USA", "en-US"),
+            ("World", "Worldwide"),
+        ];
+        let mut localized = game();
+        localized["game_localizations"] = json!(
+            markets
+                .iter()
+                .map(|(market, id)| {
+                    json!({"region":{"identifier":id},"cover":{"image_id":market}})
+                })
+                .collect::<Vec<_>>()
+        );
+        let games = json!([localized]);
+        for (market, _) in markets {
+            let cover =
+                format!("https://images.igdb.com/igdb/image/upload/t_cover_big_2x/{market}.jpg");
+            assert_eq!(
+                result(&games, "Test Adventure", market),
+                Some(cover),
+                "{market}"
+            );
+        }
+        for ambiguous in [
+            "Belgium / Netherlands",
+            "Japan, Asia",
+            "USA / Europe",
+            "Unknown",
+            "",
+        ] {
+            assert!(
+                result(&games, "Test Adventure", ambiguous).is_none(),
+                "{ambiguous}"
+            );
+        }
+    }
+
+    #[test]
+    fn inconsistent_regions_and_language_only_names_do_not_override_country_evidence() {
+        let mut localized = game();
+        localized["game_localizations"] = json!([
+            {"region":{"name":"Canada","identifier":"en-US"},"cover":{"image_id":"conflict"}},
+            {"region":{"name":"French"},"cover":{"image_id":"language"}},
+            {"region":{"identifier":"fr","name":"French"},"cover":{"image_id":"language2"}},
+            {"region":{"identifier":"fr-FR","name":"North America"},"cover":{"image_id":"inconsistent"}},
+            {"region":{"name":"United Kingdom"},"cover":{"image_id":"uk"}},
+            {"region":{"name":"South Korea"},"cover":{"image_id":"kr"}}
+        ]);
+        let games = json!([localized]);
+        for market in ["USA", "Canada", "France"] {
+            assert!(
+                result(&games, "Test Adventure", market).is_none(),
+                "{market}"
+            );
+        }
+        assert!(
+            result(&games, "Test Adventure", "UK")
+                .unwrap()
+                .ends_with("/uk.jpg")
+        );
+        assert!(
+            result(&games, "Test Adventure", "Japan / Korea")
+                .unwrap()
+                .ends_with("/kr.jpg")
+        );
+    }
+
+    #[test]
+    fn country_specific_art_precedes_the_legacy_north_american_fallback() {
+        let mut localized = game();
+        let response = json!([localized]);
+        assert!(result(&response, "Test Adventure", "Canada").is_none());
+        localized["game_localizations"].as_array_mut().unwrap().extend([
+            json!({"region":{"name":"North America","identifier":"en-US"},"cover":{"image_id":"specific_us"}}),
+            json!({"region":{"name":"North America","identifier":"fr-CA"},"cover":{"image_id":"specific_ca"}}),
+        ]);
+        let response = json!([localized]);
+        for (market, file) in [("USA", "/specific_us.jpg"), ("Canada", "/specific_ca.jpg")] {
+            assert!(
+                result(&response, "Test Adventure", market)
+                    .unwrap()
+                    .ends_with(file)
+            );
+        }
+    }
+
+    #[test]
     fn ambiguous_title_platform_or_art_cannot_supply_a_cover() {
         assert!(result(&json!([game(), game()]), "Test Adventure", "USA").is_none());
         let mut mixed = game();
@@ -228,6 +410,7 @@ mod tests {
         assert!(result(&json!([mixed]), "Test Adventure", "USA").is_none());
         let mut collision = game();
         collision["game_localizations"][0]["region"] = json!({"identifier":"US"});
+        collision["game_localizations"][1]["region"] = json!({"identifier":"en-US"});
         assert!(result(&json!([collision]), "Test Adventure", "USA").is_none());
         let mut invalid = game();
         invalid["game_localizations"][0]["cover"]["image_id"] = json!("../screenshot.jpg");
@@ -237,6 +420,25 @@ mod tests {
 
     #[test]
     fn preserves_http_status_and_limits_upstream_data() {
+        let client = Client::new();
+        for missing in ["EIDORYN_IGDB_CLIENT_ID", "EIDORYN_IGDB_ACCESS_TOKEN"] {
+            let request = lookup_request(&client, query("Game").unwrap(), |key| {
+                (key != missing).then(|| "test-value".to_owned())
+            });
+            assert_eq!(
+                request.err(),
+                Some("Set EIDORYN_IGDB_CLIENT_ID and EIDORYN_IGDB_ACCESS_TOKEN for IGDB")
+            );
+        }
+        for status in [401, 403] {
+            let denied = http::Response::builder()
+                .status(status)
+                .body(b"private response".to_vec())
+                .unwrap();
+            assert!(
+                matches!(lookup(denied, "Game", "USA"), Ok(Lookup::Http(response)) if response.status() == status)
+            );
+        }
         let retry = http::Response::builder()
             .status(429)
             .header("Retry-After", "30")

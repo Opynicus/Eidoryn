@@ -2,6 +2,7 @@
 use super::checkpoints::{DEFAULT_REWIND_SECONDS, QuickSlot, SaveStateInfo, StateDirectory};
 use crate::library::{Library, playtime::Playtime};
 use eidoryn_gba::Machine;
+use eidoryn_host::audio::AudioBuffer;
 use std::fmt::Write as _;
 use std::{
     fs::{self, File},
@@ -80,6 +81,15 @@ pub struct Runner {
 
 impl Runner {
     pub fn start(store: Option<Library>, data_dir: PathBuf) -> Result<Self, String> {
+        Self::start_with_audio(store, data_dir, None)
+    }
+
+    /// Start a cartridge worker with an optional PCM queue at the core's sample rate.
+    pub fn start_with_audio(
+        store: Option<Library>,
+        data_dir: PathBuf,
+        audio: Option<AudioBuffer>,
+    ) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel();
         let latest = Arc::new(Mutex::new(None));
         let output = Arc::clone(&latest);
@@ -89,7 +99,7 @@ impl Runner {
             .map_err(|e| e.to_string())?;
         let worker = thread::Builder::new()
             .name("eidoryn-gba".into())
-            .spawn(move || Worker::new(&data_dir, tracker).run(&rx, &output))
+            .spawn(move || Worker::new(&data_dir, tracker, audio).run(&rx, &output))
             .map_err(|e| e.to_string())?;
         Ok(Self {
             tx: Some(tx),
@@ -125,6 +135,7 @@ struct Cartridge {
     save: PathBuf,
     lock: Arc<File>,
     pending_save: bool,
+    saved_rtc: Option<[u8; eidoryn_gba::RTC_BATTERY_LEN]>,
 }
 
 impl Cartridge {
@@ -165,6 +176,7 @@ impl Cartridge {
                 .map_err(|e| format!("{}: {e}", save.display()))?;
             Arc::new(lock)
         };
+        let saved_rtc = battery::load_rtc(&mut machine, &save)?;
         battery::load_existing(&mut machine, &save)?;
         Ok((
             Self {
@@ -172,6 +184,7 @@ impl Cartridge {
                 save,
                 lock,
                 pending_save: false,
+                saved_rtc,
             },
             identity,
         ))
@@ -201,6 +214,7 @@ impl FrameRate {
 }
 
 struct Worker {
+    audio: Option<AudioBuffer>,
     saves: PathBuf,
     states: Option<StateDirectory>,
     rewind: rewind::Rewind,
@@ -215,8 +229,9 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(data_dir: &Path, tracker: Option<Playtime>) -> Self {
+    fn new(data_dir: &Path, tracker: Option<Playtime>, audio: Option<AudioBuffer>) -> Self {
         Self {
+            audio,
             saves: data_dir.join("saves/gba"),
             states: None,
             rewind: rewind::Rewind::default(),
@@ -248,6 +263,9 @@ impl Worker {
     }
 
     fn pause(&mut self) {
+        if let Some(audio) = &self.audio {
+            audio.set_playing(false);
+        }
         self.end_rewind();
         self.held = 0;
         self.reset_frame_rate();
@@ -318,6 +336,7 @@ impl Worker {
                 cart.machine.step()
             }
             .map_err(|error| error.to_string())?;
+            drop(cart.machine.take_audio_samples());
             self.snapshot.rgb = Arc::from(cart.machine.pixels());
             if frame {
                 self.completed_rewind_frame()?;
@@ -449,6 +468,11 @@ impl Worker {
             .frame_rate
             .get_or_insert_with(|| FrameRate::new(Instant::now()));
         cart.machine.run_frame().map_err(|e| e.to_string())?;
+        let samples = cart.machine.take_audio_samples();
+        if let Some(audio) = &self.audio {
+            audio.set_playing(true);
+            audio.push(&samples);
+        }
         // Even identical framebuffers count. Debug stepping and worker notifications do not.
         if let Some(fps) = meter.completed_frame(Instant::now()) {
             self.snapshot.video_fps = fps;

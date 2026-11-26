@@ -68,12 +68,40 @@ fn write_image(path: &Path, bytes: &[u8]) -> Result<(), String> {
     atomic_write(path, bytes, false).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// The RTC has its own battery-backed settings. Keep the portable Flash image raw.
+pub(super) fn load_rtc(
+    machine: &mut Machine,
+    save: &Path,
+) -> Result<Option<[u8; eidoryn_gba::RTC_BATTERY_LEN]>, String> {
+    let Some(defaults) = machine.rtc_battery() else {
+        return Ok(None);
+    };
+    let path = save.with_extension("rtc");
+    match read_image(&path) {
+        Ok(bytes) => {
+            machine
+                .restore_rtc_battery(&bytes)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(machine.rtc_battery())
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Some(defaults)),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
 impl Cartridge {
     pub(super) fn flush(&mut self) -> Result<(), String> {
         self.pending_save |= self.machine.take_battery_dirty();
         if self.pending_save {
             write_image(&self.save, self.machine.battery_save())?;
             self.pending_save = false;
+        }
+        let rtc = self.machine.rtc_battery();
+        if rtc != self.saved_rtc
+            && let Some(bytes) = rtc
+        {
+            write_image(&self.save.with_extension("rtc"), &bytes)?;
+            self.saved_rtc = rtc;
         }
         Ok(())
     }
@@ -121,6 +149,42 @@ impl Cartridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_calibration_survives_reopen_and_restoring_an_earlier_timeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let rom = dir.path().join("clock.gba");
+        let mut bytes = vec![0; eidoryn_gba::HEADER_LEN];
+        bytes.extend_from_slice(b"SIIRTC_V001\0FLASH1M_V103");
+        fs::write(&rom, bytes).unwrap();
+        let saves = dir.path().join("saves");
+        let open = || Cartridge::load(&rom, &saves, None).map(|(cart, _)| cart);
+        let mut cart = open().unwrap();
+        let path = cart.save.with_extension("rtc");
+        let baseline = cart.machine.save_state().unwrap();
+        let defaults = cart.machine.rtc_battery().unwrap();
+        let mut calibrated = defaults;
+        calibrated[..8].copy_from_slice(&3600i64.to_le_bytes());
+        cart.machine.restore_rtc_battery(&calibrated).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(cart.sync_battery().is_err());
+        assert_eq!(cart.saved_rtc, Some(defaults));
+        fs::remove_dir(&path).unwrap();
+        cart.flush().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), calibrated);
+        assert_eq!(fs::metadata(&cart.save).unwrap().len(), 128 * 1024);
+        drop(cart);
+
+        let mut reopened = open().unwrap();
+        assert_eq!(reopened.machine.rtc_battery(), Some(calibrated));
+        reopened.machine.load_state(&baseline).unwrap();
+        reopened.flush().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), defaults);
+        drop(reopened);
+        fs::write(&path, b"bad clock").unwrap();
+        assert!(open().is_err());
+        assert_eq!(fs::read(path).unwrap(), b"bad clock");
+    }
 
     #[test]
     fn import_export_and_sync_publish_only_complete_cartridge_images() {

@@ -25,7 +25,9 @@ struct RewindStatus {
 
 impl Desktop {
     pub(super) fn rewinding(&self) -> bool {
-        if self.is_gba() {
+        if self.is_nds() {
+            false
+        } else if self.is_gba() {
             self.gba.snapshot.rewinding
         } else {
             self.snapshot.rewinding
@@ -53,6 +55,9 @@ impl Desktop {
     }
 
     pub(super) fn hold_rewind(&mut self, source: RewindSource, held: bool, cx: &mut Context<Self>) {
+        if self.is_nds() {
+            return;
+        }
         if held && !self.rewind_status().enabled {
             return;
         }

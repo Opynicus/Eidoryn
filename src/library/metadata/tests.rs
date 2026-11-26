@@ -362,6 +362,33 @@ fn conflicts_are_persistent_and_a_newer_manual_match_wins() {
 }
 
 #[test]
+fn new_regional_candidates_retract_a_previous_automatic_match() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = Library::open(&tmp.path().join("index.db")).unwrap();
+    fixture(&lib, 1, Some(TEST_SERIAL));
+    let a = downloaded("Q1", "First edition");
+    let b = downloaded("Q2", "Second edition");
+    refresh_with(&lib, 1, |_| Ok(response(vec![a.clone()]))).unwrap();
+    lib.connect()
+        .unwrap()
+        .execute(
+            "INSERT INTO cover_assets(game_id,kind,serial,source,original,thumb)
+         VALUES(1,'download',?,'source','original.png','thumb.png')",
+            [TEST_SERIAL],
+        )
+        .unwrap();
+    set_override(&lib, 1, Field::Title, Some("My copy")).unwrap();
+    let result = refresh_with(&lib, 1, |_| Ok(response(vec![a, b]))).unwrap();
+    assert_eq!(result, RefreshOutcome::Candidates);
+    let cards = list(&lib).unwrap();
+    let card = &cards[&1];
+    assert!(card.pending && card.release_id.is_none() && card.thumbnail.is_none());
+    assert!(card.date.is_none() && card.source.is_none());
+    assert_eq!(card.title.as_deref(), Some("My copy"));
+    assert_eq!(candidates(&lib, 1, "").unwrap().len(), 2);
+}
+
+#[test]
 fn v1_upgrade_preserves_user_edits_and_session_rows() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("index.db");
@@ -585,7 +612,7 @@ fn prepared_results_and_source_provenance_roll_back_with_the_job() {
             .exists([])
             .unwrap()
     );
-    assert!(!has_title_candidate(&db, "example adventure", false).unwrap());
+    assert!(!has_title_candidate(&db, "example adventure", GamePlatform::Ps1).unwrap());
 
     // The failed writer dropped its body. A later job must refetch rather than
     // mark an empty cache successful.
@@ -595,7 +622,7 @@ fn prepared_results_and_source_provenance_roll_back_with_the_job() {
         has_title_candidate(
             &db,
             &title_hint("  Example–Adventure (Disc 2) [copy]"),
-            false
+            GamePlatform::Ps1
         )
         .unwrap()
     );
@@ -1010,7 +1037,7 @@ fn european_disc_matches_a_single_local_market_and_reuses_its_dated_cache() {
         )
         .is_none()
     );
-    assert!(matching_serial(&[edition("Australia")], Some(DISC), Some("Europe"), false).is_none());
+    assert!(matching_serial(&[edition("Australia")], Some(DISC), Some("Europe"), false).is_some());
 }
 
 #[test]

@@ -24,7 +24,9 @@ impl Desktop {
                 p,
                 self.tr(Text::YourPlayspace),
                 self.tr(Text::Welcome),
-                self.tr(if self.is_gba() {
+                self.tr(if self.is_nds() {
+                    Text::NdsWelcome
+                } else if self.is_gba() {
                     Text::GbaWelcome
                 } else {
                     Text::WelcomeHint
@@ -45,42 +47,45 @@ impl Desktop {
             .child(self.recent_games_card(cx))
     }
 
-    fn gba_launch_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn cartridge_launch_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let (id, platform, text, picker) = if self.is_nds() {
+            (
+                "open-nds",
+                "Nintendo DS",
+                Text::OpenNds,
+                super::actions::ImagePicker::Nds,
+            )
+        } else {
+            (
+                "open-gba",
+                "Game Boy Advance",
+                Text::OpenCartridge,
+                super::actions::ImagePicker::Gba,
+            )
+        };
         card(p)
             .debug_selector(|| "launch-card".into())
             .p_5()
             .gap_4()
-            .child(heading(
-                &self.fonts,
-                p,
-                self.tr(Text::LaunchGame),
-                "Game Boy Advance",
-            ))
+            .child(heading(&self.fonts, p, self.tr(Text::LaunchGame), platform))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        action(
-                            &self.fonts,
-                            p,
-                            "open-gba",
-                            self.tr(Text::OpenCartridge),
-                            Some("play"),
-                            true,
-                        )
-                        .debug_selector(|| "open-gba".into())
-                        .on_click(cx.listener(|v, _, _, cx| {
-                            v.pick_image(super::actions::ImagePicker::Gba, cx);
-                        })),
+                        action(&self.fonts, p, id, self.tr(text), Some("play"), true)
+                            .debug_selector(move || id.into())
+                            .on_click(cx.listener(move |v, _, _, cx| {
+                                v.pick_image(picker, cx);
+                            })),
                     )
                     .child(
                         button(
                             &self.fonts,
                             p,
-                            "open-gba-library",
+                            "open-cartridge-library",
                             self.tr(Text::Library),
                             false,
                         )
@@ -93,8 +98,8 @@ impl Desktop {
 
     fn launch_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        if self.is_gba() {
-            return self.gba_launch_card(cx);
+        if !self.is_ps1() {
+            return self.cartridge_launch_card(cx);
         }
         card(p)
             .debug_selector(|| "launch-card".into())
@@ -180,7 +185,7 @@ impl Desktop {
                 self.tr(Text::Session),
                 self.playback_label(),
             ))
-            .child(self.display_stage(height))
+            .child(self.display_stage(height, cx))
             .child(
                 div()
                     .flex()
@@ -198,7 +203,9 @@ impl Desktop {
                             )
                             .child(label(
                                 p,
-                                if self.is_gba() {
+                                if self.is_nds() {
+                                    "Nintendo DS"
+                                } else if self.is_gba() {
                                     "Game Boy Advance"
                                 } else if self.snapshot.disc_mounted {
                                     self.tr(Text::DiscSession)
@@ -215,7 +222,7 @@ impl Desktop {
             )
     }
 
-    fn display_stage(&self, height: f32) -> gpui::Div {
+    fn display_stage(&self, height: f32, cx: &Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
         div()
             .debug_selector(|| "display-stage".into())
@@ -226,49 +233,60 @@ impl Desktop {
             .border_1()
             .border_color(rgb(p.stage_border()))
             .bg(rgb(p.video_background))
-            .child(if self.is_gba() && self.gba.snapshot.path.is_none() {
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(label(p, self.tr(Text::OpenCartridge)))
-                    .into_any_element()
-            } else if !self.is_gba()
-                && self.snapshot.is_demo
-                && self.snapshot.execution_state()
-                    == eidoryn_psx::systems::ps1::runner::ExecutionState::Paused
-                && self.snapshot.cpu.instructions == 0
-            {
-                div()
-                    .debug_selector(|| "demo-standby".into())
-                    .size_full()
-                    .bg(rgb(p.standby_surface()))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .font(self.fonts.title())
-                            .text_size(px(32.))
-                            .text_color(rgb(p.standby_title()))
-                            .child("EIDORYN"),
-                    )
-                    .child(
-                        label(p, self.tr(Text::PlayStationEmulator))
-                            .text_color(rgb(p.standby_caption())),
-                    )
-                    .child(
-                        label(p, self.tr(Text::DemoStandby))
-                            .text_color(rgb(p.standby_hint()))
-                            .mt_3(),
-                    )
-                    .into_any_element()
-            } else {
-                self.video().into_any_element()
-            })
+            .child(
+                if self.is_gba() && self.gba.snapshot.path.is_none()
+                    || self.is_nds() && self.nds.snapshot.path.is_none()
+                {
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(label(
+                            p,
+                            self.tr(if self.is_nds() {
+                                Text::OpenNds
+                            } else {
+                                Text::OpenCartridge
+                            }),
+                        ))
+                        .into_any_element()
+                } else if self.is_ps1()
+                    && self.snapshot.is_demo
+                    && self.snapshot.execution_state()
+                        == eidoryn_psx::systems::ps1::runner::ExecutionState::Paused
+                    && self.snapshot.cpu.instructions == 0
+                {
+                    div()
+                        .debug_selector(|| "demo-standby".into())
+                        .size_full()
+                        .bg(rgb(p.standby_surface()))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .font(self.fonts.title())
+                                .text_size(px(32.))
+                                .text_color(rgb(p.standby_title()))
+                                .child("EIDORYN"),
+                        )
+                        .child(
+                            label(p, self.tr(Text::PlayStationEmulator))
+                                .text_color(rgb(p.standby_caption())),
+                        )
+                        .child(
+                            label(p, self.tr(Text::DemoStandby))
+                                .text_color(rgb(p.standby_hint()))
+                                .mt_3(),
+                        )
+                        .into_any_element()
+                } else {
+                    self.video(cx).into_any_element()
+                },
+            )
     }
 
     pub(super) fn play_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -343,7 +361,7 @@ impl Desktop {
                             .gap_3()
                             .min_w_0()
                             .flex_1()
-                            .child(self.display_stage(height))
+                            .child(self.display_stage(height, cx))
                             .child(self.game_toolbar(window, cx)),
                     )
                     .child(
@@ -355,22 +373,37 @@ impl Desktop {
                                 sidebar.w(px(side_width)).flex_shrink_0()
                             })
                             .child(self.quick_slot_card())
-                            .child(
-                                card(p)
-                                    .p_4()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font(self.fonts.semibold())
-                                            .child(self.tr(Text::Rewind)),
-                                    )
-                                    .child(self.rewind_controls(cx)),
-                            )
-                            .when(!self.is_gba(), |s| s.child(self.memory_card(cx)))
+                            .when(!self.is_nds(), |s| {
+                                s.child(
+                                    card(p)
+                                        .p_4()
+                                        .gap_3()
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font(self.fonts.semibold())
+                                                .child(self.tr(Text::Rewind)),
+                                        )
+                                        .child(self.rewind_controls(cx)),
+                                )
+                            })
+                            .when(self.is_ps1(), |s| s.child(self.memory_card(cx)))
                             .when(self.is_gba(), |s| {
-                                s.child(self.gba_battery_card(cx))
-                                    .child(self.gba_controller_card(cx))
+                                s.child(self.gba_battery_card(cx)).child(
+                                    self.handheld_controller_card(
+                                        &self.preferences.gba_keybindings,
+                                        cx,
+                                    ),
+                                )
+                            })
+                            .when(self.is_nds(), |s| {
+                                s.child(
+                                    self.handheld_controller_card(
+                                        &self.preferences.nds_keybindings,
+                                        cx,
+                                    )
+                                    .child(label(p, self.tr(Text::NdsTouchHint))),
+                                )
                             }),
                     ),
             )
@@ -391,7 +424,7 @@ impl Desktop {
                     .gap_2()
                     .child(self.play_button(cx))
                     .child(self.quick_state_controls(cx))
-                    .child(self.snapshot_menu_button(cx)),
+                    .when(!self.is_nds(), |s| s.child(self.snapshot_menu_button(cx))),
             )
             .child(
                 div()
@@ -411,7 +444,7 @@ impl Desktop {
                     .child(self.crt_control(cx))
                     .child(self.fullscreen_button(window, cx))
                     .child(div().flex_1())
-                    .when(!self.is_gba(), |s| s.child(self.audio_controls(cx))),
+                    .child(self.audio_controls(cx)),
             )
     }
 

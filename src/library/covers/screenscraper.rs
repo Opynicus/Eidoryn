@@ -1,7 +1,7 @@
 //! Resolve a PS1 serial to its regional front cover using the ScreenScraper v2 API.
-use super::Lookup;
-use crate::library::transport;
-use reqwest::{Client, StatusCode, Url, header::CONTENT_TYPE};
+use super::{Lookup, markets::MARKETS};
+use crate::library::{metadata, transport};
+use reqwest::{Client, RequestBuilder, StatusCode, Url, header::CONTENT_TYPE};
 use serde_json::Value;
 use std::{env, sync::atomic::AtomicBool};
 
@@ -11,16 +11,7 @@ const MAX_RESPONSE: usize = 1024 * 1024;
 fn setting(name: &str) -> Option<String> {
     env::var(format!("EIDORYN_SCREENSCRAPER_{name}"))
         .ok()
-        .filter(|value| !value.is_empty())
-}
-
-fn region_code(region: &str) -> Option<&'static str> {
-    match region {
-        "USA" | "us" => Some("us"),
-        "Europe" | "eu" => Some("eu"),
-        "Japan" | "jp" => Some("jp"),
-        _ => None,
-    }
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn media_url(raw: &str) -> Result<Url, String> {
@@ -60,10 +51,16 @@ fn parse(bytes: &[u8], serial: &str, region: &str) -> Result<Lookup, String> {
     }
     // When the API identifies a specific ROM, ignore a conflicting serial.
     let rom = game.get("rom");
-    let reported = rom
-        .and_then(|v| v.get("romserial").or_else(|| v.pointer("/romid/romserial")))
+    let rom_field = |field: &str| {
+        rom.and_then(|v| {
+            v.get("romid")
+                .and_then(|id| id.get(field))
+                .or_else(|| v.get(field))
+        })
         .and_then(Value::as_str)
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.trim().is_empty())
+    };
+    let reported = rom_field("romserial");
     if reported.is_some_and(|s| {
         !s.split([',', ';', '|'])
             .any(|id| id.trim().eq_ignore_ascii_case(serial))
@@ -73,18 +70,36 @@ fn parse(bytes: &[u8], serial: &str, region: &str) -> Result<Lookup, String> {
     let Some(media) = game.get("medias").and_then(Value::as_array) else {
         return Ok(Lookup::Missing);
     };
-    let front = media
-        .iter()
-        .find(|m| m["type"] == "box-2D" && m["region"] == region);
-    match front {
-        Some(m) => media_url(
-            m["url"]
-                .as_str()
-                .ok_or("Missing ScreenScraper media address")?,
-        )
-        .map(Lookup::Image),
-        None => Ok(Lookup::Missing),
+    let rom_regions = rom_field("romregions");
+    let disc_only = matches!(region, "NTSC-U" | "NTSC-J" | "PAL");
+    let mut front = None;
+    for item in media.iter().filter(|m| m["type"] == "box-2D") {
+        let Some(code) = item["region"].as_str() else {
+            continue;
+        };
+        let Some(market) = MARKETS.iter().find(|m| m.screenscraper == Some(code)) else {
+            continue;
+        };
+        let rom_match = rom_regions.map(|codes| codes.split(',').any(|part| part.trim() == code));
+        // Game-wide media may include a sibling release in the same licensing territory.
+        let matches = if disc_only {
+            rom_match == Some(true) && metadata::region_matches(region, market.name)
+        } else {
+            market.requested(region) && rom_match != Some(false)
+        };
+        if matches {
+            let url = media_url(
+                item["url"]
+                    .as_str()
+                    .ok_or("Missing ScreenScraper media address")?,
+            )?;
+            if front.as_ref().is_some_and(|existing| *existing != url) {
+                return Ok(Lookup::Missing);
+            }
+            front = Some(url);
+        }
     }
+    Ok(front.map_or(Lookup::Missing, Lookup::Image))
 }
 
 pub(super) fn resolve(
@@ -93,9 +108,13 @@ pub(super) fn resolve(
     region: &str,
     cancel: &AtomicBool,
 ) -> Result<Lookup, String> {
-    let Some(code) = region_code(region) else {
+    if !matches!(region, "NTSC-U" | "NTSC-J" | "PAL")
+        && !MARKETS
+            .iter()
+            .any(|m| m.screenscraper.is_some() && m.requested(region))
+    {
         return Ok(Lookup::Missing);
-    };
+    }
     let valid = serial.split_once('-').is_some_and(|(prefix, digits)| {
         prefix.len() == 4
             && prefix.bytes().all(|b| b.is_ascii_uppercase())
@@ -105,6 +124,19 @@ pub(super) fn resolve(
     if !valid {
         return Err("Expected a PS1 disc serial for ScreenScraper".into());
     }
+    let request = lookup_request(client, serial, setting)?;
+    let response = transport::request(request, MAX_RESPONSE, cancel).map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Ok(Lookup::Http(response));
+    }
+    parse(response.body(), serial, region)
+}
+
+fn lookup_request(
+    client: &Client,
+    serial: &str,
+    setting: impl Fn(&str) -> Option<String>,
+) -> Result<RequestBuilder, String> {
     let dev_id = setting("DEV_ID").ok_or("ScreenScraper requires EIDORYN_SCREENSCRAPER_DEV_ID")?;
     let dev_password = setting("DEV_PASSWORD")
         .ok_or("ScreenScraper requires EIDORYN_SCREENSCRAPER_DEV_PASSWORD")?;
@@ -124,12 +156,7 @@ pub(super) fn resolve(
         (None, None) => {}
         _ => return Err("Set both ScreenScraper user and password to use a player account".into()),
     }
-    let response = transport::request(request, MAX_RESPONSE, cancel).map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Ok(Lookup::Http(response));
-    }
-    let bytes = response.into_body();
-    parse(&bytes, serial, code)
+    Ok(request)
 }
 
 /// ScreenScraper documents a successful text response containing NOMEDIA for absent art.
@@ -182,18 +209,145 @@ mod tests {
         let run = |data: &Value, region| {
             parse(&serde_json::to_vec(data).unwrap(), "TEST-10001", region).unwrap()
         };
+        assert!(matches!(run(&data, "USA"), Lookup::Image(_)));
         assert!(matches!(run(&data, "us"), Lookup::Image(_)));
-        assert!(matches!(run(&data, "eu"), Lookup::Missing));
+        assert!(matches!(run(&data, "Europe"), Lookup::Missing));
         data["response"]["jeu"]["rom"]["romserial"] = json!("TEST-10002");
-        assert!(matches!(run(&data, "us"), Lookup::Missing));
+        assert!(matches!(run(&data, "USA"), Lookup::Missing));
         data["response"]["jeu"]["rom"]["romserial"] = json!("TEST-10001");
         data["response"]["jeu"]["systeme"]["id"] = json!("58");
-        assert!(matches!(run(&data, "us"), Lookup::Missing));
-        assert!(region_code("Unknown").is_none());
+        assert!(matches!(run(&data, "USA"), Lookup::Missing));
+    }
+
+    fn fronts(codes: &[&str], rom_regions: Option<&str>) -> Value {
+        let media: Vec<_> = codes.iter().map(|code| json!({
+            "type": "box-2D", "region": code,
+            "url": format!("https://api.screenscraper.fr/api2/mediaJeu.php?media=box-2D({code})"),
+        })).collect();
+        json!({"response":{"jeu":{"systeme":{"id":57},
+            "rom":{"romid":{"romserial":"SLPM-86023","romregions":rom_regions}},
+            "medias": media}}})
+    }
+
+    fn selected(data: &Value, requested: &str) -> Option<String> {
+        match parse(&serde_json::to_vec(data).unwrap(), "SLPM-86023", requested).unwrap() {
+            Lookup::Image(url) => Some(
+                url.query_pairs()
+                    .find(|(k, _)| k == "media")
+                    .unwrap()
+                    .1
+                    .into_owned(),
+            ),
+            Lookup::NeedsChoice | Lookup::Missing => None,
+            Lookup::Http(_) => panic!("unexpected HTTP response"),
+        }
+    }
+
+    #[test]
+    fn selects_only_the_requested_front_across_screenscraper_markets() {
+        let markets = [
+            ("Asia", "asi"),
+            ("Australia", "au"),
+            ("Canada", "ca"),
+            ("China", "cn"),
+            ("Denmark", "dk"),
+            ("Europe", "eu"),
+            ("Finland", "fi"),
+            ("France", "fr"),
+            ("Germany", "de"),
+            ("Greece", "gr"),
+            ("Israel", "il"),
+            ("Italy", "it"),
+            ("Japan", "jp"),
+            ("Korea", "kr"),
+            ("Netherlands", "nl"),
+            ("Norway", "no"),
+            ("Poland", "pl"),
+            ("Portugal", "pt"),
+            ("Russia", "ru"),
+            ("Spain", "sp"),
+            ("Sweden", "se"),
+            ("Taiwan", "tw"),
+            ("UK", "uk"),
+            ("USA", "us"),
+            ("World", "wor"),
+        ];
+        let codes: Vec<_> = markets.iter().map(|(_, code)| *code).collect();
+        let data = fronts(&codes, None);
+        for (market, expected) in markets {
+            assert_eq!(
+                selected(&data, market),
+                Some(format!("box-2D({expected})")),
+                "{market}"
+            );
+        }
+        for unavailable in [
+            "Austria",
+            "Belgium",
+            "Ireland",
+            "Scandinavia",
+            "Singapore",
+            "",
+            "Unknown",
+        ] {
+            assert_eq!(selected(&data, unavailable), None, "{unavailable}");
+        }
+    }
+
+    #[test]
+    fn intersects_territory_with_the_identified_rom_and_rejects_ambiguous_media() {
+        for (license, code) in [("NTSC-U", "ca"), ("NTSC-J", "kr"), ("PAL", "au")] {
+            let codes = ["us", "jp", "eu", "ca", "kr", "au"];
+            let data = fronts(&codes, Some(code));
+            assert_eq!(
+                selected(&data, license),
+                Some(format!("box-2D({code})")),
+                "{license}"
+            );
+            assert_eq!(selected(&fronts(&codes, None), license), None);
+        }
+        let codes = ["us", "ca", "jp"];
+        let data = fronts(&codes, Some("ca, us"));
+        assert_eq!(selected(&data, "NTSC-U"), None);
+        assert_eq!(selected(&data, "Japan"), None);
+        assert_eq!(selected(&data, "USA / Canada"), None);
+        let shared = fronts(&["ca", "ca"], Some("us,ca"));
+        assert_eq!(
+            selected(&shared, "USA, Canada").as_deref(),
+            Some("box-2D(ca)")
+        );
+        let mut conflict = shared;
+        conflict["response"]["jeu"]["medias"][0]["url"] =
+            json!("https://api.screenscraper.fr/api2/mediaJeu.php?media=different");
+        assert_eq!(selected(&conflict, "Canada"), None);
     }
 
     #[test]
     fn service_errors_and_untrusted_media_never_echo_secrets() {
+        let client = Client::new();
+        for (missing, expected) in [
+            (
+                "DEV_ID",
+                "ScreenScraper requires EIDORYN_SCREENSCRAPER_DEV_ID",
+            ),
+            (
+                "DEV_PASSWORD",
+                "ScreenScraper requires EIDORYN_SCREENSCRAPER_DEV_PASSWORD",
+            ),
+            (
+                "USER",
+                "Set both ScreenScraper user and password to use a player account",
+            ),
+            (
+                "PASSWORD",
+                "Set both ScreenScraper user and password to use a player account",
+            ),
+        ] {
+            let result = lookup_request(&client, "SLPM-86023", |key| {
+                (key != missing).then(|| "test-value".to_owned())
+            });
+            assert_eq!(result.err().as_deref(), Some(expected));
+        }
         for raw in [
             "http://api.screenscraper.fr/api2/mediaJeu.php",
             "https://api.screenscraper.fr.evil.test/api2/mediaJeu.php",

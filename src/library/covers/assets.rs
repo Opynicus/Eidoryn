@@ -163,9 +163,9 @@ fn still_selected(
                 _ => None,
             };
             db.query_row(
-                "SELECT cache_generation=?2 AND (?5 IS NULL OR release_id IS NULL OR release_id=?5)
-                 AND CASE WHEN ?3 IS NULL THEN
-                    COALESCE(release_serial,disc_serial) IS ?4 ELSE cover_revision=?3 END
+                "SELECT cache_generation=?2 AND CASE WHEN ?3 IS NULL THEN
+                    release_id IS ?5 AND COALESCE(release_serial,disc_serial) IS ?4
+                    ELSE cover_revision=?3 END
                  FROM game_metadata WHERE game_id=?1",
                 params![id, art.generation, revision, art.serial, art.release],
                 |r| r.get(0),

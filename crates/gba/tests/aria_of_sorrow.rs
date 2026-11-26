@@ -2,7 +2,11 @@
 #[path = "support/local_roms.rs"]
 mod local_roms;
 
-use eidoryn_gba::{Machine, WIDTH};
+#[path = "support/screen.rs"]
+mod screen;
+
+use eidoryn_gba::Machine;
+use screen::region_signature;
 use sha2::{Digest, Sha256};
 use std::{env, ops::RangeInclusive};
 
@@ -98,22 +102,6 @@ fn buttons(frame: u32) -> u16 {
         2950.. => RIGHT,
         _ => 0,
     }
-}
-
-/// FNV-1a over an RGB rectangle. Compare static UI elements so guest animation
-/// and small differences in the number of instructions per field can vary.
-fn region_signature(machine: &Machine, x: usize, y: usize, w: usize, h: usize) -> u32 {
-    machine
-        .pixels()
-        .as_chunks::<{ WIDTH * 3 }>()
-        .0
-        .iter()
-        .skip(y)
-        .take(h)
-        .flat_map(|row| &row[x * 3..(x + w) * 3])
-        .fold(0x811c_9dc5, |hash, &byte| {
-            (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-        })
 }
 
 fn check_editions(run: impl Fn(Vec<u8>, Option<&Reference>) -> Result<(), String>) {
@@ -253,7 +241,7 @@ fn game_initialized_battery_survives_cold_boot() {
         if battery.len() != 32 * 1024 || !battery.iter().any(|&b| b != 0xff) {
             return Err("game did not initialize its 32 KiB SRAM".into());
         }
-        let mut restarted = Machine::from_rom(rom).map_err(|e| e.to_string())?;
+        let mut restarted = Machine::from_rom(rom.clone()).map_err(|e| e.to_string())?;
         restarted
             .restore_battery_save(battery)
             .map_err(|e| e.to_string())?;
@@ -263,6 +251,61 @@ fn game_initialized_battery_survives_cold_boot() {
         if restarted.battery_save() != battery {
             return Err("cold boot changed the previously initialized SRAM".into());
         }
+        if reference.is_some() {
+            save_in_castle_corridor_and_reload(cart, rom)?;
+        }
         Ok(())
     });
+}
+
+fn save_in_castle_corridor_and_reload(mut cart: Machine, rom: Vec<u8>) -> Result<(), String> {
+    const RIGHT: u16 = 1 << 4;
+    const LEFT: u16 = 1 << 5;
+    const UP: u16 = 1 << 6;
+    const A: u16 = 1;
+    // A static section of the save sanctuary wall, clear of the animated statue and Soma.
+    let in_sanctuary = |machine: &Machine| region_signature(machine, 32, 92, 24, 16) == 0x6c43_98fb;
+
+    let mut frame = 600;
+    for f in frame + 1..=3300 {
+        advance(&mut cart, f, buttons(f))?;
+    }
+    frame = 3300;
+    for (count, keys) in [
+        (1630, RIGHT), // Cross the zombie corridor and collect the Short Sword.
+        (100, LEFT),   // Drop from the central platform to the flooded floor.
+        (60, 0),
+        (345, RIGHT),
+        (24, RIGHT | A), // Jump out of the water and enter the lower right door.
+        (145, RIGHT),
+    ] {
+        for _ in 0..count {
+            frame += 1;
+            advance(&mut cart, frame, keys)?;
+        }
+    }
+    if !in_sanctuary(&cart) {
+        return Err("did not reach the Castle Corridor save room".into());
+    }
+    let before = cart.battery_save().to_vec();
+    for (count, keys) in [(4, UP), (36, 0), (3, UP), (4, 0), (3, A), (60, 0)] {
+        for _ in 0..count {
+            frame += 1;
+            advance(&mut cart, frame, keys)?;
+        }
+    }
+    if cart.battery_save() == before {
+        return Err("confirming the save statue prompt did not update SRAM".into());
+    }
+    let mut restarted = Machine::from_rom(rom).map_err(|e| e.to_string())?;
+    restarted
+        .restore_battery_save(cart.battery_save())
+        .map_err(|e| e.to_string())?;
+    for f in 1..=720 {
+        advance(&mut restarted, f, buttons(f))?;
+        if f >= 300 && in_sanctuary(&restarted) {
+            return Ok(());
+        }
+    }
+    Err("loading the slot after a cold boot did not return Soma to the save room".into())
 }

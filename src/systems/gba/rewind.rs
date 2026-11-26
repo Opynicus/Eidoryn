@@ -116,6 +116,9 @@ impl Worker {
         self.rewind.resume = self.snapshot.running;
         self.snapshot.running = false;
         self.snapshot.rewinding = true;
+        if let Some(audio) = &self.audio {
+            audio.set_playing(false);
+        }
         self.reset_frame_rate();
         if let Some(tracker) = &mut self.tracker {
             tracker.sample(false);

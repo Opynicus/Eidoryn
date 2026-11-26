@@ -19,6 +19,7 @@ fn queued_job_kinds_keep_their_persisted_stage_and_provider() {
     for (stage, provider, kind) in [
         (Stage::Metadata, "wikidata", JobKind::Metadata),
         (Stage::Metadata, "libretro-gba", JobKind::GbaMetadata),
+        (Stage::Metadata, "libretro-nds", JobKind::NdsMetadata),
         (Stage::Cover, "libretro", JobKind::Cover(Provider::Libretro)),
         (
             Stage::Cover,

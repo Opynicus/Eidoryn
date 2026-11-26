@@ -97,11 +97,48 @@ enum Hit {
     Fetched(Arc<Fetched>),
 }
 
+impl Hit {
+    fn match_cartridge(
+        &self,
+        conn: &Connection,
+        id: i64,
+        key: &str,
+        region: Option<&str>,
+        cancel: &AtomicBool,
+    ) -> Result<CartridgeMatch, ProviderError> {
+        let raw = match self {
+            Self::Fetched(fetched)
+                if fetched.download.source.payload_version == super::no_intro::PAYLOAD_VERSION =>
+            {
+                Some(Cow::Borrowed(fetched.download.raw.as_slice()))
+            }
+            Self::Cached => super::no_intro::cached_editions(conn, key)?.map(Cow::Owned),
+            _ => None,
+        };
+        let Some(raw) = raw else {
+            return Ok(CartridgeMatch::Unchecked);
+        };
+        Ok(
+            super::no_intro::matching_title(conn, id, key, region, &raw, cancel)?
+                .map_or(CartridgeMatch::NeedsChoice, |name| {
+                    CartridgeMatch::Edition(super::no_intro::edition_id(key, &name))
+                }),
+        )
+    }
+}
+
 pub(in crate::library) struct Prepared {
     cache_generation: i64,
     serial: Option<String>,
-    gba_edition: Option<String>,
+    lookup_key: Option<String>,
+    cartridge: CartridgeMatch,
     hit: Hit,
+}
+
+enum CartridgeMatch {
+    Unchecked,
+    NeedsChoice,
+    Edition(String),
 }
 
 impl Batch {
@@ -112,19 +149,49 @@ impl Batch {
         mode: Mode,
         cancel: &AtomicBool,
     ) -> Result<Prepared, ProviderError> {
-        let gba = super::is_gba(
+        let platform = super::game_platform(
             &*lib.worker_connection().map_err(ProviderError::Database)?,
             id,
         )?;
-        self.prepare_with(lib, id, mode, cancel, |serial| {
-            if gba {
-                return super::gba::lookup(lib, serial, cancel);
+        let first = self.prepare_with(lib, id, mode, cancel, |serial| {
+            if platform.cartridge() {
+                return super::no_intro::lookup(lib, serial, cancel);
             }
             #[cfg(feature = "ui-tests")]
             if let Some(responses) = &lib.scrape_responses {
                 return super::wikidata::recorded_response(responses.metadata.clone(), serial);
             }
             super::lookup_release(serial, cancel)
+        })?;
+        if !platform.cartridge()
+            || matches!(first.cartridge, CartridgeMatch::Edition(_))
+            || first
+                .serial
+                .as_deref()
+                .is_some_and(super::no_intro::is_signature)
+        {
+            return Ok(first);
+        }
+        let conn = lib.worker_connection().map_err(ProviderError::Database)?;
+        let ev = evidence(&conn, id)?;
+        if ev.selected.is_some() {
+            return Ok(first);
+        }
+        let Some(key) = super::no_intro::unnumbered_key(&conn, id, platform, cancel)? else {
+            return Ok(first);
+        };
+        // The DAT has no cartridge code for some regional releases. Only the
+        // size and SHA-1 of a local file may identify one of these editions.
+        let by_rom = self.prepare_with_key(lib, id, mode, cancel, Some(&key), |s| {
+            super::no_intro::lookup(lib, s, cancel)
+        })?;
+        if first.serial != by_rom.serial || first.cache_generation != by_rom.cache_generation {
+            return Err(ProviderError::Cancelled);
+        }
+        Ok(if matches!(by_rom.hit, Hit::Missing) {
+            first
+        } else {
+            by_rom
         })
     }
 
@@ -153,16 +220,29 @@ impl Batch {
         cancel: &AtomicBool,
         fetch: impl FnOnce(&str) -> Result<SourceResponse, ProviderError>,
     ) -> Result<Prepared, ProviderError> {
+        self.prepare_with_key(lib, id, mode, cancel, None, fetch)
+    }
+
+    fn prepare_with_key(
+        &self,
+        lib: &Library,
+        id: i64,
+        mode: Mode,
+        cancel: &AtomicBool,
+        lookup_key: Option<&str>,
+        fetch: impl FnOnce(&str) -> Result<SourceResponse, ProviderError>,
+    ) -> Result<Prepared, ProviderError> {
         let conn = lib.worker_connection().map_err(ProviderError::Database)?;
         let evidence = evidence(&conn, id)?;
         if mode == Mode::Incremental && evidence.cache_cleared {
             return Err(ProviderError::Cancelled);
         }
-        let Some(key) = evidence.serial.as_deref() else {
+        let Some(key) = lookup_key.or(evidence.serial.as_deref()) else {
             return Ok(Prepared {
                 cache_generation: evidence.cache_generation,
                 serial: None,
-                gba_edition: None,
+                lookup_key: None,
+                cartridge: CartridgeMatch::Unchecked,
                 hit: Hit::Missing,
             });
         };
@@ -176,9 +256,7 @@ impl Batch {
         let mut current = entry
             .lock()
             .map_err(|e| ProviderError::Database(e.to_string()))?;
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ProviderError::Cancelled);
-        }
+        check_cancel(cancel)?;
         let hit = match &*current {
             SerialLookup::New => None,
             SerialLookup::Retained => Some(Hit::Cached),
@@ -201,9 +279,7 @@ impl Batch {
         } else {
             let revision = reserve(&conn, key)?;
             let result = fetch(key);
-            if cancel.load(Ordering::Relaxed) {
-                return Err(ProviderError::Cancelled);
-            }
+            check_cancel(cancel)?;
             match result {
                 Ok(download) if download.releases.is_empty() => {
                     *current = SerialLookup::Missing;
@@ -229,32 +305,63 @@ impl Batch {
         drop(current);
         // Only the provider response is shared by serial. Two ROMs with the same
         // header code can be different revisions and must be matched separately.
-        let gba_edition = if evidence.gba && evidence.selected.is_none() {
-            let raw = match &hit {
-                Hit::Fetched(fetched)
-                    if fetched.download.source.payload_version == super::gba::PAYLOAD_VERSION =>
-                {
-                    Some(Cow::Borrowed(fetched.download.raw.as_slice()))
-                }
-                Hit::Cached => super::gba::cached_editions(&conn, key)?.map(Cow::Owned),
-                _ => None,
-            };
-            raw.map(|raw| {
-                super::gba::matching_title(&conn, id, key, evidence.region.as_deref(), &raw, cancel)
-            })
-            .transpose()?
-            .flatten()
-            .map(|name| super::gba::edition_id(key, &name))
+        let cartridge = if evidence.platform.cartridge() && evidence.selected.is_none() {
+            // An incremental cache hit reuses the identity already verified for this
+            // imported cartridge. A fresh source response can also verify a present ROM.
+            if super::no_intro::is_signature(key)
+                && lookup_key.is_none()
+                && !matches!(hit, Hit::Cached)
+                && let Some(observed) =
+                    super::no_intro::unnumbered_key(&conn, id, evidence.platform, cancel)?
+                && observed != key
+            {
+                return Err(ProviderError::Invalid(
+                    "The cartridge no longer matches its catalog digest".into(),
+                ));
+            }
+            hit.match_cartridge(&conn, id, key, evidence.region.as_deref(), cancel)?
         } else {
-            None
+            CartridgeMatch::Unchecked
         };
         Ok(Prepared {
             cache_generation: evidence.cache_generation,
             serial: evidence.serial,
-            gba_edition,
+            lookup_key: lookup_key.map(str::to_owned),
+            cartridge,
             hit,
         })
     }
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<(), ProviderError> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(ProviderError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// Direct artwork requests identify an unselected cartridge the same way as a batch job.
+pub(in crate::library) fn identify_cartridge_for_art(
+    lib: &Library,
+    id: i64,
+    mode: Mode,
+    cancel: &AtomicBool,
+) -> Result<bool, String> {
+    let db = lib.worker_connection()?;
+    let needs_lookup: bool = db.query_row(
+        "SELECT release_id IS NULL AND (NOT cache_cleared OR ?2) FROM game_metadata WHERE game_id=?1",
+        params![id, mode == Mode::Full],
+        |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    if !needs_lookup {
+        return Ok(true);
+    }
+    let prepared = Batch::default()
+        .prepare(lib, id, mode, cancel)
+        .map_err(|e| e.to_string())?;
+    check_cancel(cancel).map_err(|e| e.to_string())?;
+    Ok(commit_one(lib, id, prepared)? == RefreshOutcome::Updated)
 }
 
 // A cached work date or a candidate from a different region cannot complete a
@@ -264,13 +371,13 @@ fn complete_cached_edition(
     serial: &str,
     evidence: &Evidence,
 ) -> rusqlite::Result<bool> {
-    if evidence.gba
+    if evidence.platform.cartridge()
         && evidence.selected.is_none()
-        && super::gba::cached_editions(conn, serial)?.is_some()
+        && super::no_intro::cached_editions(conn, serial)?.is_some()
     {
         return Ok(true);
     }
-    let releases = cached_for(conn, serial, evidence.gba)?;
+    let releases = cached_for(conn, serial, evidence.platform)?;
     let edition = if let Some(id) = &evidence.selected {
         releases.iter().find(|r| &r.id == id)
     } else {
@@ -278,11 +385,11 @@ fn complete_cached_edition(
             &releases,
             Some(serial),
             evidence.region.as_deref(),
-            evidence.gba,
+            evidence.platform.cartridge(),
         )
     };
-    let Some(edition) =
-        edition.filter(|r| (evidence.gba || !r.date.is_empty()) && !r.title.is_empty())
+    let Some(edition) = edition
+        .filter(|r| (evidence.platform.cartridge() || !r.date.is_empty()) && !r.title.is_empty())
     else {
         return Ok(false);
     };
@@ -381,7 +488,7 @@ impl Prepared {
         if ev.serial != self.serial || ev.cache_generation != self.cache_generation {
             return Ok(None);
         }
-        let Some(serial) = self.serial else {
+        let Some(serial) = self.lookup_key.or(self.serial) else {
             return Ok(Some(RefreshOutcome::NoSerial));
         };
         match self.hit {
@@ -393,11 +500,20 @@ impl Prepared {
                 }
             }
         }
-        let releases = cached_for(tx, &serial, ev.gba).map_err(|e| e.to_string())?;
-        let release = if let Some(key) = ev.selected.as_ref().or(self.gba_edition.as_ref()) {
+        let releases = cached_for(tx, &serial, ev.platform).map_err(|e| e.to_string())?;
+        let release = if let Some(key) = ev.selected.as_ref() {
             releases.iter().find(|r| &r.id == key)
         } else {
-            matching_serial(&releases, Some(&serial), ev.region.as_deref(), ev.gba)
+            match self.cartridge {
+                CartridgeMatch::Edition(key) => releases.iter().find(|r| r.id == key),
+                CartridgeMatch::NeedsChoice => None,
+                CartridgeMatch::Unchecked => matching_serial(
+                    &releases,
+                    Some(&serial),
+                    ev.region.as_deref(),
+                    ev.platform.cartridge(),
+                ),
+            }
         };
         if let Some(release) = release {
             assign(tx, id, &release.id, ev.selected.is_some()).map_err(|e| e.to_string())?;
@@ -410,8 +526,23 @@ impl Prepared {
             // fields and source revision, even if the serial now yields another edition.
             Ok(Some(RefreshOutcome::NotFound))
         } else {
-            tx.execute("UPDATE game_metadata SET pending=1 WHERE game_id=?", [id])
-                .map_err(|e| e.to_string())?;
+            if tx
+                .prepare_cached(
+                    "SELECT 1 FROM game_metadata WHERE game_id=? AND release_id IS NOT NULL",
+                )
+                .and_then(|mut q| q.exists([id]))
+                .map_err(|e| e.to_string())?
+            {
+                super::detach_edition_art(tx, id).map_err(|e| e.to_string())?;
+            }
+            tx.execute(
+                "UPDATE game_metadata SET pending=1,release_id=NULL,
+                   release_serial=CASE WHEN ?2 GLOB 'gba-rom:*' OR ?2 GLOB 'nds-rom:*' THEN ?2 END,
+                   auto_title=NULL,auto_region=NULL,auto_date=NULL,aliases=NULL,work_date=NULL,
+                   source=NULL,refreshed=NULL,source_revision=NULL WHERE game_id=?1",
+                params![id, serial],
+            )
+            .map_err(|e| e.to_string())?;
             Ok(Some(RefreshOutcome::Candidates))
         }
     }

@@ -1,6 +1,6 @@
 # Eidoryn
 
-[![平台：PS1 和 GBA](https://img.shields.io/badge/Platforms-PS1%20%7C%20GBA-6750A4?style=flat-square)](#当前状态)
+[![平台：PS1、GBA 和 NDS](https://img.shields.io/badge/Platforms-PS1%20%7C%20GBA%20%7C%20NDS-6750A4?style=flat-square)](#当前状态)
 [![Rust: 1.95+](https://img.shields.io/badge/Rust-1.95%2B-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![UI: GPUI](https://img.shields.io/badge/UI-GPUI-7C4DFF?style=flat-square)](https://www.gpui.rs/)
 [![Status: Experimental](https://img.shields.io/badge/Status-Experimental-E9A23B?style=flat-square)](#当前状态)
@@ -10,11 +10,11 @@
 
 [English](README.md) | **简体中文**
 
-[项目概览](#项目概览) · [功能](#功能) · [当前状态](#当前状态) · [快速开始](#快速开始) · [按键](#按键) · [架构](#架构) · [文档](#文档) · [路线图](#路线图) · [许可证与致谢](#许可证与致谢)
+[项目概览](#项目概览) · [功能](#功能) · [当前状态](#当前状态) · [快速开始](#快速开始) · [按键](#按键) · [架构](#架构) · [路线图](#路线图) · [许可证与致谢](#许可证与致谢)
 
 ## 项目概览
 
-Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面。项目自主开发的 PlayStation（PS1）与 Game Boy Advance（GBA）核心各自独立，共用桌面游戏库。
+Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面。PlayStation（PS1）、Game Boy Advance（GBA）和 Nintendo DS（NDS）各有独立的核心，共用桌面游戏库。GBA 和 NDS 内置 BIOS 服务的高层模拟（HLE）。
 
 ## 功能
 
@@ -29,7 +29,7 @@ Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面
 
 | 项目 | 状态 |
 | --- | --- |
-| 模拟主机 | PlayStation，以及面向自制程序的首版 Game Boy Advance 核心 |
+| 模拟主机 | PlayStation、Game Boy Advance 和实验性 Nintendo DS 核心 |
 | 宿主平台 | Linux x86-64 已用于开发和测试；Windows、macOS 无窗口 CLI 已通过 CI 冒烟测试，桌面版仍需实际运行验证 |
 | PS1 渲染 | 默认软件绘图；在 **设置 → 图形 / F8** 中启用硬件加速并检测可用后端。Windows 自动选择优先 DirectX 12，其次 Vulkan、OpenGL |
 | PS1 CPU JIT | 实验性功能，默认关闭，仅支持 Linux x86-64 的部分整数指令 |
@@ -60,7 +60,9 @@ Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面
 
 在**刮削设置 → 元数据缓存**中，**清空元数据缓存**默认清理整个游戏库已下载的封面和发行资料，包括手动选过的版本及其候选记录。卡片随后显示占位图和本地镜像名称，详情页的发行资料也会清空，重启后仍然如此。右键选择**刮削元数据**或刷新整个游戏库都会重新获取发行资料和封面，即使已关闭**浏览时补齐封面**。如果曾手动选过版本，重新刮削时会按该选择匹配。选择**仅已移除的游戏**可保留在库游戏的资料。**移除游戏时清理元数据缓存**默认关闭。清理会保留手工修改、自选封面、镜像、存档和游玩记录。
 
-用户数据目录下的 `library.sqlite3` 保存游戏库索引、发行资料和成功匹配版本的来源记录，`covers/` 按内容哈希共享封面原图和 PNG 缩略图。Linux 的数据目录为 `$XDG_DATA_HOME/eidoryn`（默认 `~/.local/share/eidoryn`），Windows 为 `%LOCALAPPDATA%\eidoryn`，macOS 为 `~/Library/Application Support/eidoryn`。过场和等待输入期间，只要模拟器仍在向前运行，就会累计时长。正常退出会保存最后一段时间。 [游戏库迁移、恢复与性能验收](tests/library-optimization-validation.md)
+用户数据目录下的 `library.sqlite3` 保存游戏库索引、发行资料和成功匹配版本的来源记录，`covers/` 按内容哈希共享封面原图和 PNG 缩略图。Linux 的数据目录为 `$XDG_DATA_HOME/eidoryn`（默认 `~/.local/share/eidoryn`），Windows 为 `%LOCALAPPDATA%\eidoryn`，macOS 为 `~/Library/Application Support/eidoryn`。过场和等待输入期间，只要模拟器仍在向前运行，就会累计时长。正常退出会保存最后一段时间。
+
+升级已有游戏库前，Eidoryn 会创建 `library.sqlite3.vN.bak` 备份，N 为旧库的结构版本号。如需用旧版模拟器恢复游戏库，先退出所有 Eidoryn 实例，将当前数据库和同目录中已有的 `library.sqlite3-wal`、`library.sqlite3-shm` 一起移入备份目录。再将对应版本的备份复制回用户数据目录，命名为 `library.sqlite3`，并保留原有的 `covers/` 目录。
 
 ### 运行 GBA 卡带
 
@@ -72,15 +74,27 @@ Eidoryn 是一个用 Rust 编写的实验性模拟器，配备原生 GPUI 界面
 
 按 **F8** 打开设置，在**控制器**中修改当前核心的键盘映射。在**图形**中可以启用 GBA 硬件加速，让 GPU 处理图层混合和颜色效果。调试器显示 ARM/Thumb 反汇编、寄存器、栈与 LCD 状态。**F10** 单步执行，**F9** 推进一帧。
 
-在游戏菜单中存档后，模拟器会自动更新原始 `.sav` 文件。支持 SRAM（32 KiB）、Flash（64 或 128 KiB）和 EEPROM（512 字节或 8 KiB）。存档位于用户数据目录的 `saves/gba/<ROM SHA-256>.sav`，移动或重命名 ROM 后仍可读取。游戏视图的**卡带存档**面板支持立即同步、导出和导入。导入会重启当前卡带并清空倒带历史。
+在游戏菜单中存档后，模拟器会自动更新原始 `.sav` 文件。支持 SRAM（32 KiB）、Flash（64 或 128 KiB）和 EEPROM（512 字节或 8 KiB）。存档位于用户数据目录的 `saves/gba/<ROM SHA-256>.sav`，移动或重命名 ROM 后仍可读取。《宝可梦 绿宝石》等游戏的卡带实时时钟随主机 UTC 时间走时，关闭模拟器后也会推进。游戏写入的时钟设置保存在同目录的 `.rtc` 文件中。游戏视图的**卡带存档**面板支持立即同步、导出和导入。导入会重启当前卡带并清空倒带历史。
 
 GBA 与 PS1 共用**即时存档**下拉菜单、快速槽、快照管理页和倒带控件。GBA 的快照保存在用户数据目录的 `saves/gba/states/<ROM SHA-256>/`。加载快照或松开倒带后，游戏保持之前的运行或暂停状态。卡带存档内容也会回到所选时刻。如果要保留当前游戏进度，可先**导出 .sav**。
 
-首版以 240 × 160 绘制画面，支持图块背景、位图模式 3–5、精灵、马赛克效果、显示窗口、颜色混合和垂直消隐中断。CPU 与 DMA 采用近似时序。音频和联机尚待实现。兼容性测试使用原创自制卡带，其中一个切换 ARM/Thumb 模式并通过按键改变画面颜色，另一个用中断逐帧计数。运行 `cargo test --locked -p eidoryn-gba` 可以复现。
+首版以 240 × 160 绘制画面，支持图块背景、位图模式 3–5、精灵、马赛克效果、显示窗口、颜色混合和垂直消隐中断。CPU 与 DMA 采用近似时序。GBA 将两路方波、波表、噪声和两路定时器驱动的 Direct Sound FIFO 混合为立体声。在游戏视图中可以调节音量或静音。联机尚待实现。兼容性测试使用原创自制卡带，其中一个切换 ARM/Thumb 模式并通过按键改变画面颜色，另一个用中断逐帧计数。运行 `cargo test --locked -p eidoryn-gba` 可以复现。
 
 运行 `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture`，可通过内置 HLE 逐个启动本地卡带，并在无按键输入下执行 1800 帧。测试默认读取仓库的 `tests/` 目录。可以设置 `EIDORYN_GBA_TEST_ROMS` 选择单个 ROM 或目录，设置 `EIDORYN_GBA_BOOT_FRAMES` 调整帧数。
 
 《恶魔城：晓月圆舞曲》的地区版本还有专门的测试。对同一目录运行 `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored --nocapture`，也可通过 `EIDORYN_ARIA_ROM` 指定一份镜像。对已核实的日版和美版实体卡镜像，测试会分别比对相应版本的标题、选档和城堡走廊画面。对其他版本，测试会检查启动后是否出现画面，并将按键操作与同一镜像的无按键运行对照，验证游戏响应。每次运行都使用独立的内存存档。
+
+将 `EIDORYN_GBA_TEST_ROMS` 指向含英文版《宝可梦 绿宝石》和美版《恶魔城：白夜协奏曲》的目录，运行 `cargo test --release --locked -p eidoryn-gba --test emerald --test harmony_of_dissonance -- --ignored --nocapture`。绿宝石测试会新建游戏、在未白镇存档并冷启动续玩。白夜协奏曲测试会将标题、主角进入可操作状态以及城堡吊桥的画面与 mGBA 对照。
+
+### 运行 Nintendo DS 卡带
+
+将本地 `.nds` 文件添加到**游戏库**并点击**开始游戏**，或者在顶栏选择 **NDS**，从控制台打开卡带。核心直接加载卡带中的 ARM9 和 ARM7 程序，首次启动只需游戏文件。
+
+游戏视图上下排列两块 256 × 192 的屏幕。在下屏点击或拖动即可使用触控笔。**设置 → 控制器**可以修改键盘映射，包括 X 和 Y。调试器显示两颗 CPU 的程序计数器。**F10** 前进一个双 CPU 调度步，**F9** 前进一帧。快速存档按卡带分别保存在 `saves/nds/states/<ROM SHA-256>/`。
+
+NDS 核心以软件绘制图块、位图、精灵和带纹理的 3D 多边形，CPU 与外设采用近似时序。使用双字节地址 EEPROM 的卡带可自动保存至用户数据目录的 `saves/nds/<ROM SHA-256>.sav`。内置无线控制器支持开机自检和离线扫描，扫描结果为空。ARM7 声音单元提供 16 个声道，支持 PCM、IMA-ADPCM、方波和噪声，可逐声道调节音量与声像。游戏视图与其他核心共用音量和静音控件。多人联机和其他卡带存档芯片尚待实现。运行 `cargo test --locked -p eidoryn-nds` 可以复测核心。也可以将 `EIDORYN_NDS_TEST_ROM` 指向一份启动后会绘图的自制卡带，运行 `cargo test --release --locked -p eidoryn-nds --test local_boot -- --ignored --nocapture` 验证实际输出。
+
+美版《恶魔城：被夺走的刻印》的本地回归会从空白存档启动卡带、操作语言菜单、新建存档，并验证方向键能让夏诺雅在首个房间里移动。将 ROM 放在仓库的 `tests/` 目录，或通过 `EIDORYN_ECCLESIA_ROM` 指定路径，运行 `cargo test --release --locked -p eidoryn-nds --test order_of_ecclesia -- --ignored`。
 
 ### 构建与启动
 
@@ -113,11 +127,11 @@ Windows 包不启用仅支持 Linux 的实验性 JIT。
 
 在 **画面选项 → 渲染色深** 中选择 **真彩色（RGB888）**，可在各档硬件渲染倍率下获得更平滑的着色与半透明混合。默认使用 **原色（RGB555）**，切换色深后从下一次绘制开始生效。游戏读回 VRAM 和采样画面反馈纹理时仍使用 RGB555。软件渲染使用原色，切回硬件时会恢复已保存的色深偏好。
 
-在 **画面选项 → 抗锯齿** 中选择 **FXAA**，可在当前硬件渲染倍率下平滑边缘。此项默认关闭。游戏内的像素文字和细线可能变软。切换后会在下一帧生效，暂停时可通过单步查看。游戏使用 RGB24 显示的过场保持原始画面。 [FXAA 实机验证与帧时间](tests/fxaa-validation.md)
+在 **画面选项 → 抗锯齿** 中选择 **FXAA**，可在当前硬件渲染倍率下平滑边缘。此项默认关闭。游戏内的像素文字和细线可能变软。切换后会在下一帧生效，暂停时可通过单步查看。游戏使用 RGB24 显示的过场保持原始画面。
 
 在 PowerShell 中运行 `./target/release/eidoryn.exe --list-renderers | Out-Host` 可查看检测到的后端及不可用原因。
 
-`hardware` 构建特性包含四种 wgpu 后端，也可单独启用 `dx12`、`vulkan`、`opengl`、`metal`；运行时仍受平台和驱动能力限制。它们共用整数计算光栅器，绘图、纹理采样、混合及显示转换在 GPU 上执行，再读回画面供桌面显示。性能取决于游戏和驱动。wgpu 30 不提供原生 DirectX 11 后端；老旧 Windows 显卡可尝试支持计算着色器的 OpenGL，或使用软件绘图。真彩色已在 Linux 的 Vulkan 和 OpenGL 后端完成实机验证。[像素验收与帧时间报告](tests/true-color-validation.md)
+`hardware` 构建特性包含四种 wgpu 后端，也可单独启用 `dx12`、`vulkan`、`opengl`、`metal`；运行时仍受平台和驱动能力限制。它们共用整数计算光栅器，绘图、纹理采样、混合及显示转换在 GPU 上执行，再读回画面供桌面显示。性能取决于游戏和驱动。wgpu 30 不提供原生 DirectX 11 后端；老旧 Windows 显卡可尝试支持计算着色器的 OpenGL，或使用软件绘图。真彩色已在 Linux 的 Vulkan 和 OpenGL 后端完成实机验证。
 
 Windows 桌面使用系统原生标题栏管理窗口。工作区顶栏显示当前页面、运行状态和设置入口。桌面 release 构建启动时不再弹出控制台；调试构建和未启用 `desktop` 的构建仍保留控制台。需要交互式命令行输出时，请使用无窗口构建（`--no-default-features`）。在 PowerShell 中读取桌面发行版的输出并等待其结束，可通过管道连接 `Out-Host`，例如 `./target/release/eidoryn.exe --help | Out-Host`。
 
@@ -182,7 +196,11 @@ cargo test --locked --workspace
 
 关闭默认特性后，核心与命令行不依赖桌面界面、音频输出或 GPU 库。`--frames` 表示执行切片数，而不是视频帧数。
 
-GPUI 跟随官方 `main` 分支，由 `Cargo.lock` 锁定已验证的提交，详见[依赖来源说明](THIRD_PARTY.md)。
+运行 `cargo test --locked --all-features --lib library::` 可验证游戏库索引、元数据、封面和恢复流程。如需连接源站验证各地区的刮削结果，运行 `cargo test --locked --all-features --lib live_regional_scrape_matrix -- --ignored`。
+
+在支持 Vulkan 的实体显卡上运行 `cargo test --release --locked --no-default-features --features vulkan --test vulkan_gpu -- --ignored --test-threads=1`，可验证 PS1 绘图，包括 FXAA 和真彩色。测量帧时间时，基准程序会从同一份本地 PS1 即时存档回放相同输入，对比两种设置。[FXAA 基准](examples/fxaa_bench.rs) · [真彩色基准](examples/true_color_bench.rs)
+
+GPUI 跟随官方 `main` 分支，由 `Cargo.lock` 锁定已验证的提交。[依赖与硬件参考资料](docs/ARCHITECTURE.md#依赖与参考资料)
 
 </details>
 
@@ -226,31 +244,25 @@ CLI / GPUI
     ├── systems::ps1 ──→ eidoryn-ps1 ──→ 可选 JIT runtime
     │     媒体、存档、运行线程       PS1 硬件核心
     │
-    ├── systems::gba ──→ eidoryn-gba
+    ├── systems::gba ──→ eidoryn-gba ──→ eidoryn-arm
     │     卡带、SRAM、运行线程     GBA 硬件核心
     │
+    ├── systems::nds ──→ eidoryn-nds ──→ eidoryn-arm
     └── eidoryn-host
           音频、CRT 滤镜与主题
 ```
 
-每个核心的运行线程持有自己的机器状态，界面通过命令和快照与其交互。硬件核心分别位于 `crates/ps1` 和 `crates/gba`，`src/systems` 下的适配代码将它们接入桌面，`crates/host` 提供可复用的宿主服务。设计边界与数据流见[架构文档](docs/ARCHITECTURE.md)。
-
-## 文档
-
-| 文档 | 内容 |
-| --- | --- |
-| [架构](docs/ARCHITECTURE.md) | 模块边界、线程与数据流 |
-| [第三方资料](THIRD_PARTY.md) | 依赖与硬件参考 |
+每个核心的运行线程持有自己的机器状态，界面通过命令和快照与其交互。硬件核心分别位于 `crates/ps1`、`crates/gba` 和 `crates/nds`。GBA 和 NDS 共享 `crates/arm` 中的指令解释器。`src/systems` 下的适配代码将核心接入桌面，`crates/host` 提供可复用的宿主服务。设计边界与数据流见[架构文档](docs/ARCHITECTURE.md)。
 
 ## 路线图
 
 - 提升 PS1 设备时序、音频精度和游戏兼容性，扩大回归测试范围。
 - 继续测量帧时间、音频延迟和 Vulkan 读回开销，按证据优化性能。
 - 验证并完善 Windows、macOS 的构建、运行及发布流程。
-- 扩展 GBA 兼容性，支持更多卡带存储类型、更精确的硬件时序和音频。
+- 扩展 GBA 兼容性，支持更多卡带存储类型和更精确的硬件时序。
 
 ## 许可证与致谢
 
-项目采用 [GPL-3.0-only](LICENSE)；[LICENSE-MIT](LICENSE-MIT) 保留原始自研原型的许可声明。第三方依赖及其说明见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+项目采用 [GPL-3.0-only](LICENSE)。[LICENSE-MIT](LICENSE-MIT) 保留原始自研原型的许可声明。发行包附有[第三方许可声明](LICENSE-THIRD-PARTY)。
 
 硬件行为参考 [PSX-SPX](https://psx-spx.consoledev.net/)；桌面界面使用 [GPUI](https://www.gpui.rs/)。本项目在开发过程中广泛使用 AI 辅助，硬件实现和兼容性仍在持续验证。

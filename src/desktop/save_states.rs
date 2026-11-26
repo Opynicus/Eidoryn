@@ -29,7 +29,9 @@ pub(super) struct RenameState {
 
 impl Desktop {
     fn state_history(&self) -> &[SaveStateInfo] {
-        if self.is_gba() {
+        if self.is_nds() {
+            &[]
+        } else if self.is_gba() {
             &self.gba.snapshot.save_states
         } else {
             &self.snapshot.save_states
@@ -37,7 +39,12 @@ impl Desktop {
     }
 
     fn quick_slot(&self) -> (QuickSlot, u64) {
-        if self.is_gba() {
+        if self.is_nds() {
+            (
+                self.nds.snapshot.quick_slot,
+                self.nds.snapshot.quick_slot_revision,
+            )
+        } else if self.is_gba() {
             (
                 self.gba.snapshot.quick_slot,
                 self.gba.snapshot.quick_slot_revision,
@@ -49,6 +56,11 @@ impl Desktop {
 
     pub(super) fn save_states_page(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
+        if self.is_nds() {
+            return div()
+                .debug_selector(|| "save-states-page".into())
+                .child(self.quick_slot_card().child(self.quick_state_controls(cx)));
+        }
         let stacked = self.content_width(window) < px(740.);
         let header = div()
             .flex()

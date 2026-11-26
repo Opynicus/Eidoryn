@@ -126,7 +126,10 @@ impl Entry {
     }
 
     fn is_cartridge(&self) -> bool {
-        self.game.platform_kind() == Some(GamePlatform::Gba)
+        matches!(
+            self.game.platform_kind(),
+            Some(GamePlatform::Gba | GamePlatform::Nds)
+        )
     }
 
     fn publication_date(&self) -> (Text, Option<&str>) {

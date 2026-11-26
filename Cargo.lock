@@ -1526,6 +1526,7 @@ dependencies = [
  "crc32fast",
  "eidoryn-gba",
  "eidoryn-host",
+ "eidoryn-nds",
  "eidoryn-ps1",
  "gpui",
  "gpui_platform",
@@ -1536,6 +1537,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha1_smol",
  "sha2",
  "sqlx",
  "tempfile",
@@ -1545,18 +1547,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "eidoryn-arm"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "eidoryn-gba"
 version = "0.1.0"
 dependencies = [
  "bincode",
  "bytemuck",
  "crc32fast",
+ "eidoryn-arm",
  "eidoryn-host",
  "memchr",
  "pollster 1.0.1",
  "serde",
  "serde_bytes",
  "sha2",
+ "time",
  "unarm",
  "wgpu 30.0.2",
 ]
@@ -1576,6 +1587,18 @@ name = "eidoryn-jit-runtime"
 version = "0.1.0"
 dependencies = [
  "memmap2",
+]
+
+[[package]]
+name = "eidoryn-nds"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "crc32fast",
+ "eidoryn-arm",
+ "serde",
+ "serde_bytes",
+ "sha2",
 ]
 
 [[package]]

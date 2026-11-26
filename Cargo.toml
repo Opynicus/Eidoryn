@@ -3,14 +3,14 @@ name = "eidoryn"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Eidoryn — a PlayStation and Game Boy Advance emulator with a native GPUI interface"
+description = "Eidoryn — a PlayStation, Game Boy Advance and Nintendo DS emulator with a native GPUI interface"
 license = "GPL-3.0-only"
 
 [lib]
 name = "eidoryn_psx"
 
 [workspace]
-members = ["crates/gba", "crates/ps1", "crates/host", "crates/jit-runtime"]
+members = ["crates/arm", "crates/gba", "crates/nds", "crates/ps1", "crates/host", "crates/jit-runtime"]
 default-members = ["."]
 resolver = "3"
 
@@ -18,12 +18,14 @@ resolver = "3"
 default = ["desktop", "wayland", "x11", "hardware", "jit"]
 desktop = [
     "dep:eidoryn-gba",
+    "dep:eidoryn-nds",
     "dep:chrono",
     "dep:crc32fast",
     "dep:gpui",
     "dep:gpui_platform",
     "dep:httpdate",
     "dep:http",
+    "dep:sha1_smol",
     "dep:sha2",
     "dep:sqlx",
     "dep:tokio",
@@ -51,6 +53,7 @@ ui-tests = ["desktop", "gpui/test-support"]
 [dependencies]
 crc32fast = { version = "1.5", optional = true }
 eidoryn-gba = { path = "crates/gba", optional = true }
+eidoryn-nds = { path = "crates/nds", optional = true }
 eidoryn-ps1 = { path = "crates/ps1", default-features = false }
 eidoryn-host = { path = "crates/host", default-features = false }
 # Follow official main; Cargo.lock pins the exact tested revision for both crates.
@@ -61,6 +64,7 @@ rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 http = { version = "1", optional = true }
 httpdate = { version = "1", optional = true }
+sha1_smol = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "macros"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"], optional = true }

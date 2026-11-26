@@ -5,7 +5,7 @@ use super::{
 };
 use eidoryn_psx::{
     i18n::Text,
-    keybindings::{ControllerBindings, ControllerButton, GbaButton, PadButton},
+    keybindings::{ControllerBindings, ControllerButton, GbaButton, NdsButton, PadButton},
     shortcuts::{ShortcutAction, ShortcutBindings},
     systems::ps1::{
         input::{TURBO_RATES, TurboConfig},
@@ -44,10 +44,26 @@ const GBA_BINDINGS: [(GbaButton, &str); 10] = [
     (GbaButton::R, "gba-binding-r"),
 ];
 
+const NDS_BINDINGS: [(NdsButton, &str); 12] = [
+    (NdsButton::Up, "nds-binding-up"),
+    (NdsButton::Down, "nds-binding-down"),
+    (NdsButton::Left, "nds-binding-left"),
+    (NdsButton::Right, "nds-binding-right"),
+    (NdsButton::A, "nds-binding-a"),
+    (NdsButton::B, "nds-binding-b"),
+    (NdsButton::X, "nds-binding-x"),
+    (NdsButton::Y, "nds-binding-y"),
+    (NdsButton::Start, "nds-binding-start"),
+    (NdsButton::Select, "nds-binding-select"),
+    (NdsButton::L, "nds-binding-l"),
+    (NdsButton::R, "nds-binding-r"),
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RecordingButton {
     Ps1(PadButton),
     Gba(GbaButton),
+    Nds(NdsButton),
 }
 
 impl From<PadButton> for RecordingButton {
@@ -59,6 +75,12 @@ impl From<PadButton> for RecordingButton {
 impl From<GbaButton> for RecordingButton {
     fn from(button: GbaButton) -> Self {
         Self::Gba(button)
+    }
+}
+
+impl From<NdsButton> for RecordingButton {
+    fn from(button: NdsButton) -> Self {
+        Self::Nds(button)
     }
 }
 
@@ -109,6 +131,11 @@ impl Desktop {
                     .keybindings_draft
                     .get_or_insert_with(|| self.preferences.gba_keybindings.clone())
                     .rebind(button, &key),
+                RecordingButton::Nds(button) => self
+                    .nds
+                    .keybindings_draft
+                    .get_or_insert_with(|| self.preferences.nds_keybindings.clone())
+                    .rebind(button, &key),
             }
             .is_err()
         {
@@ -123,7 +150,13 @@ impl Desktop {
     fn apply_bindings(&mut self, cx: &mut Context<Self>) {
         self.rebinding = None;
         let shortcuts = &self.preferences.shortcuts;
-        let applied = if self.is_gba() {
+        let applied = if self.is_nds() {
+            apply_draft(
+                &mut self.nds.keybindings_draft,
+                &mut self.preferences.nds_keybindings,
+                |pad| shortcuts.validate(pad).is_ok(),
+            )
+        } else if self.is_gba() {
             apply_draft(
                 &mut self.gba.keybindings_draft,
                 &mut self.preferences.gba_keybindings,
@@ -164,7 +197,14 @@ impl Desktop {
     }
 
     fn keybindings_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
-        if self.is_gba() {
+        if self.is_nds() {
+            self.binding_grid(
+                &self.preferences.nds_keybindings,
+                self.nds.keybindings_draft.as_ref(),
+                &NDS_BINDINGS,
+                cx,
+            )
+        } else if self.is_gba() {
             self.binding_grid(
                 &self.preferences.gba_keybindings,
                 self.gba.keybindings_draft.as_ref(),
@@ -341,6 +381,12 @@ impl Desktop {
                         (false, BindingAction::Cancel) if view.is_gba() => {
                             view.gba.keybindings_draft = None;
                         }
+                        (false, BindingAction::Reset) if view.is_nds() => {
+                            view.nds.keybindings_draft = Some(ControllerBindings::default());
+                        }
+                        (false, BindingAction::Cancel) if view.is_nds() => {
+                            view.nds.keybindings_draft = None;
+                        }
                         (false, BindingAction::Reset) => {
                             view.keybindings_draft = Some(ControllerBindings::default());
                         }
@@ -358,49 +404,58 @@ impl Desktop {
             .flex_col()
             .gap_4()
             .child(self.setting_group(Text::KeyBindings, cx, |cx| self.keybindings_panel(cx)))
-            .when(!self.is_gba(), |panel| {
+            .when(self.is_ps1(), |panel| {
                 panel.child(self.setting_group(Text::Turbo, cx, |cx| self.turbo_settings(cx)))
             })
     }
 
-    pub(super) fn gba_controller_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+    pub(super) fn handheld_controller_card<B: ControllerButton>(
+        &self,
+        bindings: &ControllerBindings<B>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         let p = &self.themes.active().palette;
+        let id = if self.is_nds() {
+            "edit-nds-controls"
+        } else {
+            "edit-gba-controls"
+        };
         card(p)
             .p_4()
             .gap_3()
-            .child(heading(&self.fonts, p, self.tr(Text::Controller), "GBA"))
+            .child(heading(
+                &self.fonts,
+                p,
+                self.tr(Text::Controller),
+                self.active_core.as_str(),
+            ))
             .child(
                 div()
                     .grid()
                     .grid_cols(2)
                     .gap_2()
-                    .children(GBA_BINDINGS.map(|(button, _)| {
+                    .children(B::BUTTONS.iter().copied().map(|button| {
                         div()
                             .flex()
                             .justify_between()
                             .gap_1()
                             .child(label(p, button.name()))
                             .child(
-                                div().text_xs().font(self.fonts.mono()).child(
-                                    self.preferences.gba_keybindings.key(button).to_uppercase(),
-                                ),
+                                div()
+                                    .text_xs()
+                                    .font(self.fonts.mono())
+                                    .child(bindings.key(button).to_uppercase()),
                             )
                     })),
             )
             .child(
-                button(
-                    &self.fonts,
-                    p,
-                    "edit-gba-controls",
-                    self.tr(Text::KeyBindings),
-                    false,
-                )
-                .debug_selector(|| "edit-gba-controls".into())
-                .on_click(cx.listener(|view, _, window, cx| {
-                    view.open_settings(cx);
-                    view.settings_tab = SettingsTab::Controller;
-                    window.focus(&view.settings_focus, cx);
-                })),
+                button(&self.fonts, p, id, self.tr(Text::KeyBindings), false)
+                    .debug_selector(move || id.into())
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.open_settings(cx);
+                        view.settings_tab = SettingsTab::Controller;
+                        window.focus(&view.settings_focus, cx);
+                    })),
             )
     }
 

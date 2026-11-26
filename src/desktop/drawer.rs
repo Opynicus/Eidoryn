@@ -135,6 +135,7 @@ impl Desktop {
                     ("tab-shortcuts", Text::Shortcuts, SettingsTab::Shortcuts),
                 ]
                 .into_iter()
+                .filter(|(_, _, tab)| !self.is_nds() || *tab != SettingsTab::Rewind)
                 .map(|(id, title, tab)| {
                     let active = self.settings_tab == tab;
                     div()

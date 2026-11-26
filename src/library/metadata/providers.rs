@@ -1,12 +1,13 @@
 //! Resolve editions by disc serial. Work publication dates never fill edition dates.
 use super::{
-    MetadataProvider, Provenance, ProviderError, SourceResponse, gamedb, matching::region_matches,
+    MetadataProvider, Provenance, ProviderError, SourceResponse, gamedb,
+    matching::{disc_market_filter, region_matches},
     wikidata,
 };
 use serde_json::value::RawValue;
 use std::sync::atomic::AtomicBool;
 
-pub(super) fn is_release_serial(serial: &str) -> bool {
+pub(in crate::library) fn is_release_serial(serial: &str) -> bool {
     wikidata::serial_region(serial).is_some() || gamedb::is_supported_serial(serial)
 }
 
@@ -43,10 +44,10 @@ fn resolve(
     let [release] = primary.releases.as_mut_slice() else {
         return Ok(primary); // Let the user choose between conflicting editions.
     };
-    if !release.date.is_empty() {
-        return Ok(primary);
-    }
-
+    // Wikidata's edition region comes from the serial prefix. Even a dated
+    // European or US entry can identify a disc sold specifically in Australia
+    // or Canada. Consult the serial-indexed catalog before assigning its market.
+    let license = disc_market_filter(&release.region);
     let fallback = match secondary() {
         Ok(response) => response,
         Err(ProviderError::Cancelled) => return Err(ProviderError::Cancelled),
@@ -58,21 +59,25 @@ fn resolve(
             && fallback
                 .releases
                 .iter()
-                .any(|r| r.serial == release.serial && region_matches(&release.region, &r.region))
+                .any(|r| r.serial == release.serial && region_matches(license, &r.region))
         {
             return Ok(fallback);
         }
         return Ok(primary);
     };
     if extra.serial == release.serial
-        && !extra.date.is_empty()
         && release.region != extra.region
-        && region_matches(&release.region, &extra.region)
+        && region_matches(license, &extra.region)
     {
-        // A country-specific date should be displayed with its original market.
+        // The catalog identifies the market of this exact serial. Retain
+        // that edition's own date precision, including a missing date.
         return Ok(fallback);
     }
-    if extra.serial == release.serial && extra.region == release.region && !extra.date.is_empty() {
+    if extra.serial == release.serial
+        && extra.region == release.region
+        && release.date.is_empty()
+        && !extra.date.is_empty()
+    {
         // Keep the Wikidata ID so a previously confirmed edition can gain a date.
         primary.raw = combined_evidence(&primary.raw, &fallback.raw)
             .map_err(|err| ProviderError::Invalid(err.to_string()))?;
@@ -124,16 +129,47 @@ mod tests {
     }
 
     #[test]
-    fn complete_and_ambiguous_primary_editions_do_not_query_a_second_catalog() {
-        for editions in [
-            vec![("Q1/disc", "USA", "1996")],
-            vec![("Q1/rev1", "USA", ""), ("Q1/rev2", "USA", "")],
+    fn ambiguous_primary_editions_stay_available_for_selection() {
+        let primary = response(
+            wikidata::Wikidata::SOURCE,
+            &[("Q1/rev1", "USA", ""), ("Q1/rev2", "USA", "")],
+        );
+        let result = resolve(Ok(primary), || panic!("secondary lookup")).unwrap();
+        assert_eq!(result.releases.len(), 2);
+        assert_eq!(result.source.provider, wikidata::Wikidata::SOURCE.provider);
+    }
+
+    #[test]
+    fn territory_date_never_becomes_a_different_markets_publication_date() {
+        for (prefix_region, catalog_market) in [
+            ("USA", "Canada"),
+            ("USA", "USA, Canada"),
+            ("Europe", "Australia"),
+            ("Europe", "Israel"),
+            ("Japan", "Asia"),
+            ("Japan", "Japan, Asia"),
         ] {
-            let primary = response(wikidata::Wikidata::SOURCE, &editions);
-            let result = resolve(Ok(primary), || panic!("secondary lookup")).unwrap();
-            assert_eq!(result.releases.len(), editions.len());
-            assert_eq!(result.source.provider, wikidata::Wikidata::SOURCE.provider);
+            let primary = response(
+                wikidata::Wikidata::SOURCE,
+                &[("Q1/disc", prefix_region, "1997-03-12")],
+            );
+            let fallback = response(
+                gamedb::GameDb::SOURCE,
+                &[("gamedb/disc", catalog_market, "")],
+            );
+            let result = resolve(Ok(primary), || Ok(fallback)).unwrap();
+            assert_eq!(result.source.provider, gamedb::GameDb::SOURCE.provider);
+            assert_eq!(result.releases[0].region, catalog_market);
+            assert_eq!(result.releases[0].date, "");
         }
+        let primary = response(
+            wikidata::Wikidata::SOURCE,
+            &[("Q1/disc", "USA", "1997-03-12")],
+        );
+        let fallback = response(gamedb::GameDb::SOURCE, &[("gamedb/disc", "USA", "1997")]);
+        let result = resolve(Ok(primary), || Ok(fallback)).unwrap();
+        assert_eq!(result.source.provider, wikidata::Wikidata::SOURCE.provider);
+        assert_eq!(result.releases[0].date, "1997-03-12");
     }
 
     #[test]

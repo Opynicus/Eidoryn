@@ -1,18 +1,21 @@
 //! A Game Boy Advance core with built-in BIOS services. The host supplies cartridge
 //! bytes, pressed keys and frame pacing, and owns persistence of the cartridge save chip.
+mod audio;
 mod backup;
 mod bios_affine;
 mod bios_math;
 mod bus;
 mod compression;
-mod cpu;
+use eidoryn_arm as cpu;
 pub mod debug;
 mod hle;
+mod rtc;
 mod state;
 mod video;
 
 use std::fmt;
 
+pub use audio::AUDIO_SAMPLE_RATE;
 use bus::{LINES, Memory, SCANLINE};
 use cpu::{Bus, Cpu, Step};
 use sha2::{Digest, Sha256};
@@ -24,17 +27,14 @@ pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 160;
 pub const HEADER_LEN: usize = 0xc0;
 pub const MAX_BATTERY_LEN: usize = backup::MAX_SIZE;
+/// Bytes in a GBA RTC sidecar (clock offset, status, and weekday offset).
+pub const RTC_BATTERY_LEN: usize = 10;
 pub const MAX_ROM_LEN: usize = 32 * 1024 * 1024;
 /// Size in bytes of the GBA boot ROM mapped at address zero.
 pub const BIOS_LEN: usize = 16 * 1024;
 pub const FRAME_RATE: f64 = 16_777_216.0 / (SCANLINE as f64 * LINES as f64);
 
-/// Guest instruction encoding at the point of a CPU fault.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstructionSet {
-    Arm,
-    Thumb,
-}
+pub use eidoryn_arm::InstructionSet;
 
 #[derive(Debug)]
 pub enum Error {
@@ -42,6 +42,7 @@ pub enum Error {
     BlankBios,
     InvalidRomSize(usize),
     InvalidSramSize(usize),
+    InvalidRtcBattery,
     InvalidBatterySize {
         size: usize,
         expected: &'static str,
@@ -67,6 +68,7 @@ impl fmt::Display for Error {
                 formatter,
                 "Invalid GBA ROM length ({size} bytes, expected 192 bytes through 32 MiB)"
             ),
+            Self::InvalidRtcBattery => formatter.write_str("Invalid GBA RTC battery state"),
             Self::InvalidSramSize(size) => write!(
                 formatter,
                 "Invalid GBA SRAM length ({size} bytes, expected 32 KiB)"
@@ -119,6 +121,10 @@ pub struct Machine {
     bios_wait: Option<u16>,
 }
 
+fn direct_boot_cpu() -> Cpu {
+    Cpu::direct_boot(0x0800_0000, 0x0300_7f00, 0x0300_7fa0, 0x0300_7fe0)
+}
+
 impl Machine {
     /// Starts at the ARM reset vector with the supplied 16 KiB BIOS mapped at address zero.
     pub fn with_bios(rom: Vec<u8>, bios: Vec<u8>) -> Result<Self, Error> {
@@ -138,7 +144,7 @@ impl Machine {
         Ok(Self {
             rom_digest: Sha256::digest(&rom).into(),
             bios_digest: None,
-            cpu: Cpu::default(),
+            cpu: direct_boot_cpu(),
             memory: Memory::new(rom),
             bios_wait: None,
         })
@@ -149,7 +155,7 @@ impl Machine {
         self.cpu = if self.memory.has_bios() {
             Cpu::power_on()
         } else {
-            Cpu::default()
+            direct_boot_cpu()
         };
         self.memory.reset();
         self.bios_wait = None;
@@ -173,6 +179,11 @@ impl Machine {
     /// Packed RGB888 rows in display order. GPU composition publishes at the end of a visible field.
     pub fn pixels(&self) -> &[u8] {
         &self.memory.video.pixels
+    }
+
+    /// Drains interleaved left/right PCM frames at [`AUDIO_SAMPLE_RATE`] from this timeline.
+    pub fn take_audio_samples(&mut self) -> Vec<[i16; 2]> {
+        self.memory.audio.drain()
     }
 
     /// SHA-256 of the loaded cartridge, shared by snapshot checks and host storage paths.
@@ -210,6 +221,20 @@ impl Machine {
         self.memory.backup.take_dirty()
     }
 
+    /// Battery-backed clock settings, separate from the interoperable raw game save.
+    pub fn rtc_battery(&self) -> Option<[u8; RTC_BATTERY_LEN]> {
+        self.memory.rtc.as_ref().map(rtc::Rtc::battery)
+    }
+
+    /// Restore an RTC sidecar from the same cartridge before executing it.
+    pub fn restore_rtc_battery(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.memory
+            .rtc
+            .as_mut()
+            .ok_or(Error::InvalidRtcBattery)?
+            .restore_battery(bytes)
+    }
+
     /// Compatibility accessor for hosts using the original SRAM-only interface.
     pub fn sram(&self) -> &[u8] {
         self.battery_save()
@@ -244,7 +269,7 @@ impl Machine {
             if self.memory.has_bios() {
                 self.cpu.hardware_irq();
             } else {
-                self.cpu.service_irq(&mut self.memory);
+                self.cpu.service_irq(&mut self.memory, 0x0300_7ffc);
             }
         }
         let cycles = if self.waiting() {

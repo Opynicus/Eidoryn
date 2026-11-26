@@ -15,6 +15,7 @@ pub enum GamePlatform {
     #[default]
     Ps1,
     Gba,
+    Nds,
 }
 
 impl GamePlatform {
@@ -22,7 +23,18 @@ impl GamePlatform {
         match self {
             Self::Ps1 => "PS1",
             Self::Gba => "GBA",
+            Self::Nds => "NDS",
         }
+    }
+
+    pub(super) fn from_id(name: &str) -> Option<Self> {
+        [Self::Ps1, Self::Gba, Self::Nds]
+            .into_iter()
+            .find(|platform| platform.as_str() == name)
+    }
+
+    pub(super) const fn cartridge(self) -> bool {
+        matches!(self, Self::Gba | Self::Nds)
     }
 
     pub fn from_path(path: &Path) -> Option<Self> {
@@ -31,6 +43,11 @@ impl GamePlatform {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gba"))
         {
             Some(Self::Gba)
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("nds"))
+        {
+            Some(Self::Nds)
         } else if DiscImage::supports_path(path) {
             Some(Self::Ps1)
         } else {
@@ -61,14 +78,15 @@ impl GamePlatform {
                     dependencies: disc.dependencies,
                 })
             }
-            Self::Gba => probe_cartridge(path),
+            Self::Gba => probe_gba(path),
+            Self::Nds => probe_nds(path),
         }
     }
 
     pub(super) fn identity(self, path: &Path) -> IndexResult<String> {
         match self {
             Self::Ps1 => Ok(DiscImage::open(path)?.identity().to_owned()),
-            Self::Gba => {
+            Self::Gba | Self::Nds => {
                 let mut rom = File::open(path)?;
                 let mut hash = Sha256::new();
                 std::io::copy(&mut rom, &mut hash)?;
@@ -88,7 +106,7 @@ pub(super) struct MediaProbe {
     pub dependencies: Vec<PathBuf>,
 }
 
-fn probe_cartridge(path: &Path) -> IndexResult<MediaProbe> {
+fn probe_gba(path: &Path) -> IndexResult<MediaProbe> {
     let mut rom = File::open(path)?;
     let len = rom.metadata()?.len();
     if !(HEADER_LEN as u64..=MAX_ROM_LEN as u64).contains(&len) {
@@ -114,13 +132,71 @@ fn probe_cartridge(path: &Path) -> IndexResult<MediaProbe> {
     let region = serial.as_ref().and_then(|_| match code[3] {
         b'E' => Some("USA"),
         b'J' => Some("Japan"),
-        b'P' => Some("Europe"),
+        b'P' | b'X' | b'Y' | b'Z' => Some("Europe"),
+        b'K' => Some("Korea"),
+        b'C' => Some("China"),
+        b'U' => Some("Australia"),
+        b'H' => Some("Netherlands"),
+        b'Q' => Some("Denmark"),
         b'D' => Some("Germany"),
         b'F' => Some("France"),
         b'I' => Some("Italy"),
         b'S' => Some("Spain"),
         _ => None,
     });
+    let sample = sample_cartridge(&mut rom, len)?;
+    Ok(MediaProbe {
+        platform: GamePlatform::Gba,
+        title,
+        serial,
+        region,
+        boot_value: None,
+        dependencies: Vec::new(),
+        sample,
+    })
+}
+
+fn probe_nds(path: &Path) -> IndexResult<MediaProbe> {
+    let mut rom = File::open(path)?;
+    let len = rom.metadata()?.len();
+    let mut prefix = [0; eidoryn_nds::HEADER_LEN];
+    rom.read_exact(&mut prefix)?;
+    let header = eidoryn_nds::Header::parse(&prefix, len)?;
+    let serial = header.game_code().map(str::to_owned);
+    // DS codes X, Y and Z occur in several continents. Keep ambiguous suffixes
+    // unset until the catalog or ROM fingerprint identifies a specific edition.
+    let region = serial
+        .as_ref()
+        .and_then(|code| match code.as_bytes().last()? {
+            b'E' => Some("USA"),
+            b'J' => Some("Japan"),
+            b'K' => Some("Korea"),
+            b'C' => Some("China"),
+            b'F' => Some("France"),
+            b'D' => Some("Germany"),
+            b'I' => Some("Italy"),
+            b'S' => Some("Spain"),
+            b'L' => Some("Canada"),
+            b'H' => Some("Netherlands"),
+            b'Q' => Some("Denmark"),
+            b'G' => Some("Greece"),
+            b'U' => Some("Australia"),
+            _ => None,
+        });
+    Ok(MediaProbe {
+        platform: GamePlatform::Nds,
+        title: Some(header.title())
+            .filter(|title| !title.is_empty())
+            .map(str::to_owned),
+        serial,
+        region,
+        boot_value: None,
+        dependencies: Vec::new(),
+        sample: sample_cartridge(&mut rom, len)?,
+    })
+}
+
+fn sample_cartridge(rom: &mut File, len: u64) -> std::io::Result<String> {
     let mut sample = Sha256::new();
     sample.update(len.to_le_bytes());
     let mut page = [0u8; 4096];
@@ -131,13 +207,5 @@ fn probe_cartridge(path: &Path) -> IndexResult<MediaProbe> {
         rom.read_exact(&mut page[..count])?;
         sample.update(&page[..count]);
     }
-    Ok(MediaProbe {
-        platform: GamePlatform::Gba,
-        title,
-        serial,
-        region,
-        boot_value: None,
-        dependencies: Vec::new(),
-        sample: format!("{:x}", sample.finalize()),
-    })
+    Ok(format!("{:x}", sample.finalize()))
 }

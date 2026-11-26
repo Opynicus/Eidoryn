@@ -1,6 +1,6 @@
 //! Volume control shared by the inspector and game views.
 use super::{
-    Desktop,
+    Desktop, GamePlatform,
     components::{button, icon_button, tooltip},
 };
 use eidoryn_psx::audio::{AudioBuffer, output::AudioOutput};
@@ -11,11 +11,58 @@ use gpui::{
 };
 
 pub(super) struct AudioControls {
-    pub buffer: AudioBuffer,
+    ps1: AudioBuffer,
+    gba: AudioBuffer,
+    nds: AudioBuffer,
     pub output: Option<AudioOutput>,
     pub volume: u8,
     pub muted: bool,
     pub dragging: bool,
+}
+
+impl AudioControls {
+    pub(super) fn new(volume: u8, muted: bool) -> Self {
+        use std::num::NonZeroU32;
+        let controls = Self {
+            ps1: AudioBuffer::default(),
+            gba: AudioBuffer::with_sample_rate(
+                NonZeroU32::new(eidoryn_gba::AUDIO_SAMPLE_RATE)
+                    .expect("GBA sample rate is positive"),
+            ),
+            nds: AudioBuffer::with_sample_rate(
+                NonZeroU32::new(eidoryn_nds::AUDIO_SAMPLE_RATE)
+                    .expect("DS sample rate is positive"),
+            ),
+            output: None,
+            volume,
+            muted,
+            dragging: false,
+        };
+        controls.apply_volume();
+        controls
+    }
+
+    pub(super) fn buffer(&self, core: GamePlatform) -> &AudioBuffer {
+        match core {
+            GamePlatform::Ps1 => &self.ps1,
+            GamePlatform::Gba => &self.gba,
+            GamePlatform::Nds => &self.nds,
+        }
+    }
+
+    pub(super) fn apply_volume(&self) {
+        for buffer in [&self.ps1, &self.gba, &self.nds] {
+            buffer.set_volume(if self.muted { 0 } else { self.volume });
+        }
+    }
+
+    pub(super) fn select(&self, core: GamePlatform) {
+        let buffer = self.buffer(core);
+        buffer.clear();
+        if let Some(output) = &self.output {
+            output.select_buffer(buffer.clone());
+        }
+    }
 }
 
 impl Desktop {
@@ -61,7 +108,7 @@ impl Desktop {
                         };
                         view.audio.volume = volume;
                         view.audio.muted = false;
-                        view.audio.buffer.set_volume(volume);
+                        view.audio.apply_volume();
                         cx.stop_propagation();
                         cx.notify();
                     }))
@@ -172,7 +219,7 @@ impl Desktop {
         let fraction = ((x - track.left()) / track.size.width).clamp(0., 1.);
         self.audio.volume = (fraction * 100.).round() as u8;
         self.audio.muted = false;
-        self.audio.buffer.set_volume(self.audio.volume);
+        self.audio.apply_volume();
         cx.notify();
     }
 }

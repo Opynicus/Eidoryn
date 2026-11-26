@@ -79,6 +79,9 @@ impl Worker {
             .map_err(|e| format!("Cannot restore {}: {e}", path.display()))?;
         cart.machine.set_buttons(keys);
         self.snapshot.rgb = Arc::from(cart.machine.pixels());
+        if let Some(audio) = &self.audio {
+            audio.clear();
+        }
         self.reset_frame_rate();
         self.reset_rewind()?;
         self.snapshot.success_message = Some(format!("Loaded state: {}", path.display()));
@@ -130,6 +133,9 @@ impl Worker {
         cart.machine.reset();
         cart.machine.set_buttons(keys);
         self.snapshot.rgb = Arc::from(cart.machine.pixels());
+        if let Some(audio) = &self.audio {
+            audio.clear();
+        }
         self.reset_rewind()?;
         self.reset_frame_rate();
         self.snapshot.success_message = Some(format!("Imported battery save: {}", path.display()));

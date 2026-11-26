@@ -17,7 +17,7 @@ AND NOT EXISTS (SELECT 1 FROM game_metadata m WHERE m.release_serial=h.serial
 DELETE FROM clear_serials WHERE serial IN (
     SELECT disc_serial FROM game_metadata WHERE game_id NOT IN clear_games AND (NOT cache_cleared OR pending)
     UNION SELECT release_serial FROM game_metadata WHERE game_id NOT IN clear_games AND (NOT cache_cleared OR pending)
-    UNION SELECT d.serial FROM discs d LEFT JOIN game_metadata m ON m.game_id=d.game_id
+    UNION SELECT CASE d.platform WHEN 'NDS' THEN 'NDS:' || d.serial ELSE d.serial END FROM discs d LEFT JOIN game_metadata m ON m.game_id=d.game_id
           WHERE d.game_id NOT IN clear_games AND (NOT COALESCE(m.cache_cleared,0) OR m.pending)
 );
 

@@ -634,6 +634,14 @@ fn normalize_boot_serial(boot: &str) -> Option<String> {
         .split(';')
         .next()?;
     let bytes = filename.as_bytes();
+    // Net Yaroze boot discs use the development-tool product code, with
+    // the final four digits split across the ISO filename and extension.
+    if let [prefix @ .., a, b, b'.', c, d] = bytes
+        && prefix.eq_ignore_ascii_case(b"DTL_S")
+        && [a, b, c, d].iter().all(|n| n.is_ascii_digit())
+    {
+        return Some(format!("DTL-S{}{}", &filename[5..7], &filename[8..]));
+    }
     if bytes.len() != 11
         || !bytes[..4].iter().all(u8::is_ascii_alphabetic)
         || !matches!(bytes[4], b'_' | b'-')
@@ -819,5 +827,17 @@ mod library_probe_tests {
         assert_eq!(normalize_boot_serial(r"cdrom:\HOMEBREW.EXE;1"), None);
         assert_eq!(normalize_boot_serial(r"host:\SLUS_000.67;1"), None);
         assert_eq!(normalize_boot_serial(r"cdrom:\SLUS_000.670;1"), None);
+    }
+
+    #[test]
+    fn net_yaroze_identifies_both_boot_discs_from_their_executable() {
+        for (boot, serial) in [
+            (r"cdrom:\DTL_S30.35;1", "DTL-S3035"),
+            (r"cdrom:\dtl_s30.30;1", "DTL-S3030"),
+        ] {
+            assert_eq!(normalize_boot_serial(boot).as_deref(), Some(serial));
+        }
+        assert_eq!(normalize_boot_serial(r"cdrom:\DTL_S3A.35;1"), None);
+        assert_eq!(normalize_boot_serial(r"cdrom:\CDMENU.EXE;1"), None);
     }
 }

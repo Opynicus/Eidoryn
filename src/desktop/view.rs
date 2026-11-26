@@ -9,10 +9,7 @@ use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px, rgb, rgba}
 
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.gba.focus_game)
-            && self.is_gba()
-            && self.page == WorkspacePage::Game
-        {
+        if std::mem::take(&mut self.focus_game) && self.page == WorkspacePage::Game {
             window.focus(&self.focus, cx);
         }
         self.sync_save_state_selection();
@@ -48,7 +45,9 @@ impl Render for Desktop {
                     || self.graphics.open
                     || self.renaming_state.is_some()
                     || self.notice.is_some()
-                    || if self.is_gba() {
+                    || if self.is_nds() {
+                        self.nds.snapshot.error.is_some()
+                    } else if self.is_gba() {
                         self.gba.snapshot.error.is_some()
                             || self.gba.snapshot.success_message.is_some()
                     } else {
@@ -62,6 +61,10 @@ impl Render for Desktop {
                         view.drop_discs(paths, window, cx);
                     }
                 }),
+            )
+            .when(
+                self.is_nds() && (self.page == WorkspacePage::Game || video_only),
+                |root| root.on_mouse_move(cx.listener(Self::move_nds_pen)),
             )
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::capture_binding))
@@ -187,8 +190,8 @@ impl Desktop {
             .child(self.play_button(cx))
             .when(!self.is_gba(), |bar| {
                 bar.child(self.quick_state_controls(cx))
-                    .child(self.audio_controls(cx))
             })
+            .child(self.audio_controls(cx))
             .child(
                 ghost_icon_button(
                     p,
@@ -216,7 +219,7 @@ impl Desktop {
                 .into()
             })
             .bg(rgb(p.video_background))
-            .child(self.video())
+            .child(self.video(cx))
             .when(fullscreen && !self.clean_fullscreen, |stage| {
                 stage.child(
                     div()
@@ -246,6 +249,15 @@ impl Desktop {
     }
 
     pub(super) fn playback_label(&self) -> &'static str {
+        if self.is_nds() {
+            return self.tr(if self.running() {
+                Text::Running
+            } else if self.nds.snapshot.path.is_some() {
+                Text::Paused
+            } else {
+                Text::Stopped
+            });
+        }
         if self.is_gba() {
             return self.tr(if self.gba.snapshot.rewinding {
                 Text::Rewinding
@@ -360,7 +372,13 @@ impl Desktop {
 
     fn emulation_status(&self, window: &Window) -> gpui::Div {
         let p = self.themes.active().palette;
-        let (fps, target, renderer) = if self.is_gba() {
+        let (fps, target, renderer) = if self.is_nds() {
+            (
+                self.nds.snapshot.video_fps,
+                eidoryn_nds::FRAME_RATE,
+                self.tr(Text::SerialRenderer),
+            )
+        } else if self.is_gba() {
             (
                 self.gba.snapshot.video_fps,
                 eidoryn_gba::FRAME_RATE,
@@ -382,7 +400,9 @@ impl Desktop {
             "{fps:.1} / {target:.1} FPS  ·  {speed:.0}% {}",
             self.tr(Text::Speed)
         );
-        let status = if self.is_gba() {
+        let status = if self.is_nds() {
+            format!("{metrics}  ·  2 × 256 × 192  ·  {renderer}")
+        } else if self.is_gba() {
             format!(
                 "{metrics}  ·  {} × {}  ·  {renderer}",
                 eidoryn_gba::WIDTH,
@@ -505,7 +525,9 @@ impl Desktop {
         let p = &self.themes.active().palette;
         self.notice
             .as_ref()
-            .or(if self.is_gba() {
+            .or(if self.is_nds() {
+                self.nds.snapshot.error.as_ref()
+            } else if self.is_gba() {
                 self.gba.snapshot.error.as_ref()
             } else {
                 self.snapshot.message.as_ref()
@@ -520,7 +542,9 @@ impl Desktop {
                 )
             })
             .or_else(|| {
-                (if self.is_gba() {
+                (if self.is_nds() {
+                    None
+                } else if self.is_gba() {
                     self.gba.snapshot.success_message.as_ref()
                 } else {
                     self.snapshot.success_message.as_ref()

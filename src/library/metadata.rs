@@ -2,20 +2,22 @@
 use super::transport;
 mod cache;
 mod gamedb;
-pub(super) mod gba;
 mod matching;
+pub(super) mod no_intro;
 mod providers;
 mod refresh;
 mod wikidata;
 pub(crate) use super::transport::ProviderError;
 pub use cache::CacheScope;
 pub(super) use cache::{clear_in_transaction, migrate_release_preferences};
+pub(super) use gamedb::{license_matches_market, named_markets};
 pub use matching::candidates;
 pub(super) use matching::{disc_market_filter, region_matches};
 use matching::{has_title_candidate, index_names, matching_serial, title_hint};
-use providers::{is_release_serial, lookup_release};
+pub(super) use providers::is_release_serial;
+use providers::lookup_release;
 use refresh::download_serial;
-pub(super) use refresh::{Batch, Prepared};
+pub(super) use refresh::{Batch, Prepared, identify_cartridge_for_art};
 pub use refresh::{RefreshOutcome, refresh_online, refresh_online_cancellable};
 pub(super) use wikidata::serial_region;
 
@@ -25,7 +27,7 @@ use std::sync::atomic::AtomicBool;
 
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
-use super::Library;
+use super::{GamePlatform, Library};
 
 pub(super) const SCHEMA: &str = include_str!("metadata/schema.sql");
 
@@ -101,6 +103,16 @@ pub enum Field {
 }
 
 impl Release {
+    /// GameDB provides the edition's original playlist name as its single alias.
+    pub(in crate::library) fn gamedb_release_name(&self) -> Option<&str> {
+        (self.id.starts_with("gamedb/") && !self.aliases.is_empty()).then_some(&self.aliases)
+    }
+
+    /// Cartridge dumps identified by a DAT digest have no catalog product code.
+    pub fn product_code(&self) -> Option<&str> {
+        no_intro::product_code(&self.serial)
+    }
+
     fn names(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.title.as_str())
             .chain(self.aliases.split('|').filter(|name| !name.is_empty()))
@@ -119,25 +131,37 @@ impl Release {
     }
 }
 
-fn cached_for(conn: &Connection, serial: &str, gba: bool) -> rusqlite::Result<Vec<Release>> {
+fn cached_for(
+    conn: &Connection,
+    serial: &str,
+    platform: GamePlatform,
+) -> rusqlite::Result<Vec<Release>> {
     conn.prepare_cached(
         "SELECT f.id,f.serial,f.region,f.title,f.date,f.aliases,f.work_date
          FROM fetched_releases f LEFT JOIN metadata_responses r ON r.serial=f.serial
-         WHERE f.serial=?1 AND (f.id GLOB 'libretro-gba/*')=?2 AND (r.provider IS NULL OR f.source=r.provider) ORDER BY f.id",
+         WHERE f.serial=?1 AND (f.id GLOB 'libretro-gba/*')=(?2='GBA') AND (f.id GLOB 'libretro-nds/*')=(?2='NDS') AND (r.provider IS NULL OR f.source=r.provider) ORDER BY f.id",
     )?
-    .query_map(params![serial, gba], Release::from_row)?
+    .query_map(params![serial, platform.as_str()], Release::from_row)?
     .collect()
 }
 
-pub(super) fn is_gba(db: &Connection, game: i64) -> rusqlite::Result<bool> {
-    db.query_row("SELECT platform='GBA' FROM games WHERE id=?", [game], |r| {
-        r.get(0)
+pub(super) fn game_platform(db: &Connection, game: i64) -> rusqlite::Result<GamePlatform> {
+    db.query_row("SELECT platform FROM games WHERE id=?", [game], |row| {
+        GamePlatform::from_id(row.get_ref(0)?.as_str()?).ok_or(rusqlite::Error::InvalidQuery)
     })
+}
+
+pub(super) fn release_platform(id: &str) -> GamePlatform {
+    match id.split('/').next() {
+        Some("libretro-gba") => GamePlatform::Gba,
+        Some("libretro-nds") => GamePlatform::Nds,
+        _ => GamePlatform::Ps1,
+    }
 }
 
 pub(super) fn catalog_available(db: &Connection, game: i64) -> rusqlite::Result<bool> {
     db.query_row(
-        "SELECT platform IN ('PS1','GBA') FROM games WHERE id=?",
+        "SELECT platform IN ('PS1','GBA','NDS') FROM games WHERE id=?",
         [game],
         |r| r.get(0),
     )
@@ -152,34 +176,45 @@ pub(super) fn identify(
     region: Option<&str>,
     title: &str,
 ) -> rusqlite::Result<()> {
+    let supported = catalog_available(tx, game_id)?;
+    let platform = if supported {
+        Some(game_platform(tx, game_id)?)
+    } else {
+        None
+    };
+    let serial = serial.map(|code| no_intro::cache_key(platform, code));
+    let serial = serial.as_deref();
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO game_metadata(game_id,disc_serial,disc_region,filename)
          VALUES(?1,?2,?3,?4)",
         params![game_id, serial, region, title],
     )?;
-    if inserted != 0 && catalog_available(tx, game_id)? {
-        match_evidence(tx, game_id, serial, region, title, is_gba(tx, game_id)?)?;
+    if inserted != 0
+        && let Some(platform) = platform
+    {
+        match_evidence(tx, game_id, serial, region, title, platform)?;
     }
     Ok(())
 }
 
 fn match_evidence(
-    conn: &Connection,
+    conn: &Transaction<'_>,
     id: i64,
     serial: Option<&str>,
     region: Option<&str>,
     title: &str,
-    gba: bool,
+    platform: GamePlatform,
 ) -> rusqlite::Result<()> {
     let cached = serial
-        .map(|s| cached_for(conn, s, gba))
+        .map(|s| cached_for(conn, s, platform))
         .transpose()?
         .unwrap_or_default();
-    if let Some(release) = matching_serial(&cached, serial, region, gba) {
+    if let Some(release) = matching_serial(&cached, serial, region, platform.cartridge()) {
         assign(conn, id, &release.id, false)?;
     } else {
         // A title or alias is only a suggestion. Never assign an edition from a filename.
-        let pending = !cached.is_empty() || has_title_candidate(conn, &title_hint(title), gba)?;
+        let pending =
+            !cached.is_empty() || has_title_candidate(conn, &title_hint(title), platform)?;
         conn.execute(
             "UPDATE game_metadata SET pending=? WHERE game_id=?",
             params![pending, id],
@@ -217,7 +252,14 @@ pub(super) fn migrate_provenance(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     // Version 3 libraries predate GBA and the games.platform column.
     for (id, serial, region, title) in pending {
-        match_evidence(tx, id, serial.as_deref(), region.as_deref(), &title, false)?;
+        match_evidence(
+            tx,
+            id,
+            serial.as_deref(),
+            region.as_deref(),
+            &title,
+            GamePlatform::Ps1,
+        )?;
     }
     Ok(())
 }
@@ -231,11 +273,20 @@ pub(super) fn needs_match(conn: &Connection, id: i64) -> rusqlite::Result<bool> 
 }
 
 fn assign(
-    conn: &Connection,
+    conn: &Transaction<'_>,
     id: i64,
     release_id: &str,
     confirmed: bool,
 ) -> rusqlite::Result<usize> {
+    let changed = conn
+        .prepare_cached(
+            "SELECT 1 FROM game_metadata m JOIN fetched_releases r ON r.id=?2
+         WHERE m.game_id=?1 AND (m.release_id IS NOT r.id OR m.auto_region IS NOT r.region)",
+        )?
+        .exists(params![id, release_id])?;
+    if changed {
+        detach_edition_art(conn, id)?;
+    }
     conn.execute(
         "UPDATE game_metadata SET release_id=r.id, release_serial=r.serial,
             auto_title=r.title, auto_region=r.region, auto_date=NULLIF(r.date,''),
@@ -253,8 +304,24 @@ fn assign(
     )
 }
 
+fn detach_edition_art(tx: &Transaction<'_>, id: i64) -> rusqlite::Result<()> {
+    // The object collector checks every other card before deleting a shared file.
+    tx.execute(
+        "DELETE FROM cover_assets WHERE game_id=? AND kind='download'",
+        [id],
+    )?;
+    // Before a first match, misses are already keyed by the source URL and remain
+    // valid when the newly identified release resolves to the same request.
+    tx.execute(
+        "DELETE FROM cover_attempts WHERE game_id=?1 AND (state='ready' OR
+         EXISTS(SELECT 1 FROM game_metadata WHERE game_id=?1 AND release_id IS NOT NULL))",
+        [id],
+    )?;
+    Ok(())
+}
+
 struct Evidence {
-    gba: bool,
+    platform: GamePlatform,
     cache_generation: i64,
     cache_cleared: bool,
     serial: Option<String>,
@@ -265,14 +332,14 @@ struct Evidence {
 
 fn evidence(conn: &Connection, id: i64) -> rusqlite::Result<Evidence> {
     conn.query_row(
-        "SELECT CASE WHEN preferred_release_id IS NOT NULL THEN release_serial ELSE disc_serial END,
+        "SELECT CASE WHEN preferred_release_id IS NOT NULL OR (release_serial GLOB 'gba-rom:*' OR release_serial GLOB 'nds-rom:*') THEN release_serial ELSE disc_serial END,
                 CASE WHEN confirmed THEN auto_region ELSE disc_region END,
-                preferred_release_id, filename, cache_generation, cache_cleared, platform='GBA'
+                preferred_release_id, filename, cache_generation, cache_cleared, platform
          FROM game_metadata JOIN games ON games.id=game_id WHERE game_id=?",
         [id],
         |r| {
             Ok(Evidence {
-                gba: r.get(6)?,
+                platform: GamePlatform::from_id(r.get_ref(6)?.as_str()?).ok_or(rusqlite::Error::InvalidQuery)?,
                 serial: r.get(0)?,
                 region: r.get(1)?,
                 selected: r.get(2)?,
@@ -305,7 +372,7 @@ pub fn refresh(lib: &Library, id: i64) -> Result<(), String> {
             evidence.serial.as_deref(),
             evidence.region.as_deref(),
             &evidence.filename,
-            evidence.gba,
+            evidence.platform,
         )
         .map_err(|e| e.to_string())?;
     }
@@ -341,26 +408,27 @@ fn search_with(
     }
     let serial = query.trim().to_ascii_uppercase();
     let mut conn = lib.connect()?;
-    let gba = is_gba(&conn, id).map_err(|e| e.to_string())?;
-    let valid_serial = if gba {
-        gba::is_code(&serial)
+    if !catalog_available(&conn, id).map_err(|e| e.to_string())? {
+        return Ok(Vec::new());
+    }
+    let platform = game_platform(&conn, id).map_err(|e| e.to_string())?;
+    let valid_serial = if platform.cartridge() {
+        no_intro::is_code(&serial)
     } else {
         is_release_serial(&serial)
     };
     if valid_serial {
-        if !catalog_available(&conn, id).map_err(|e| e.to_string())? {
-            return Ok(Vec::new());
-        }
+        let serial = no_intro::cache_key(Some(platform), &serial);
         let cached = conn
             .prepare_cached(
-                "SELECT 1 FROM fetched_releases WHERE serial=?1 AND (id GLOB 'libretro-gba/*')=?2",
+                "SELECT 1 FROM fetched_releases WHERE serial=?1 AND (id GLOB 'libretro-gba/*')=(?2='GBA') AND (id GLOB 'libretro-nds/*')=(?2='NDS')",
             )
-            .and_then(|mut stmt| stmt.exists(params![serial, gba]))
+            .and_then(|mut stmt| stmt.exists(params![serial, platform.as_str()]))
             .map_err(|e| e.to_string())?;
         if !cached {
             download_serial(&mut conn, id, &serial, cancel, |s| {
-                if gba {
-                    gba::lookup(lib, s, cancel).map_err(|err| err.to_string())
+                if platform.cartridge() {
+                    no_intro::lookup(lib, s, cancel).map_err(|err| err.to_string())
                 } else {
                     fetch(s)
                 }
@@ -389,7 +457,7 @@ pub fn select_cancellable(
         return Err(ProviderError::Cancelled.to_string());
     }
     if !catalog_available(&tx, id).map_err(|e| e.to_string())?
-        || is_gba(&tx, id).map_err(|e| e.to_string())? != release_id.starts_with("libretro-gba/")
+        || game_platform(&tx, id).map_err(|e| e.to_string())? != release_platform(release_id)
     {
         return Err("Release lookup is unavailable for this platform".into());
     }
@@ -511,7 +579,7 @@ fn read_metadata(lib: &Library, ids: Option<&str>) -> Result<HashMap<i64, Metada
         ""
     };
     let mut stmt=conn.prepare(&format!("SELECT m.game_id, COALESCE(user_title,auto_title), COALESCE(user_region,auto_region,disc_region), COALESCE(user_date,auto_date),
-        release_id,COALESCE(release_serial,disc_serial),auto_title,aliases,COALESCE(u.thumb,c.thumb),COALESCE(u.source,c.source),
+        release_id,CASE WHEN (release_serial GLOB 'gba-rom:*' OR release_serial GLOB 'nds-rom:*') THEN disc_serial ELSE COALESCE(release_serial,disc_serial) END,auto_title,aliases,COALESCE(u.thumb,c.thumb),COALESCE(u.source,c.source),
         COALESCE(a.state,CASE WHEN c.thumb IS NOT NULL THEN 'ready' END),m.source,m.refreshed,m.pending,m.work_date,
         EXISTS(SELECT 1 FROM scrape_jobs j WHERE j.game_id=m.game_id AND j.status IN ('pending','running','retry_wait')),
         CASE WHEN release_id IS NOT NULL THEN auto_title || COALESCE(' · ' || NULLIF(auto_region,''),'') END,
@@ -542,7 +610,11 @@ fn read_metadata(lib: &Library, ids: Option<&str>) -> Result<HashMap<i64, Metada
                 region: r.get(2)?,
                 date: r.get(3)?,
                 release_id: r.get(4)?,
-                serial: r.get(5)?,
+                serial: r
+                    .get::<_, Option<String>>(5)?
+                    .as_deref()
+                    .and_then(no_intro::product_code)
+                    .map(str::to_owned),
                 aliases,
                 thumbnail: r
                     .get::<_, Option<String>>(8)?

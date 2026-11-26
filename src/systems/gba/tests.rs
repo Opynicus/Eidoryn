@@ -1,5 +1,6 @@
 use super::{Command, Runner, Snapshot};
 use crate::library::{GamePlatform, Library};
+use crate::systems::handheld_tone as tone;
 use std::{
     thread,
     time::{Duration, Instant},
@@ -86,7 +87,7 @@ fn closing_retries_a_failed_battery_save_with_the_same_cartridge() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("probe.gba");
     fixture::write_cartridge(&path);
-    let mut worker = super::Worker::new(dir.path(), None);
+    let mut worker = super::Worker::new(dir.path(), None, None);
     worker
         .apply(Command::Load {
             path,
@@ -239,7 +240,7 @@ fn quick_slot_and_history_round_trip_across_sessions_and_cartridge_moves() {
         path,
         title: "Probe".into(),
     };
-    let mut worker = super::Worker::new(temp.path(), None);
+    let mut worker = super::Worker::new(temp.path(), None, None);
     worker.apply(load(rom.clone())).unwrap();
     worker.frame().unwrap();
     let initial = worker.snapshot.rgb.clone();
@@ -280,7 +281,7 @@ fn quick_slot_and_history_round_trip_across_sessions_and_cartridge_moves() {
     let mut modified = fs::read(&moved).unwrap();
     modified[0xad] ^= 1;
     fs::write(&other, modified).unwrap();
-    let mut worker = super::Worker::new(temp.path(), None);
+    let mut worker = super::Worker::new(temp.path(), None, None);
     worker.apply(load(other)).unwrap();
     assert!(worker.snapshot.save_states.is_empty());
     assert_eq!(worker.snapshot.quick_slot, QuickSlot::Empty);
@@ -327,7 +328,7 @@ fn held_rewind_restores_live_input_and_paused_rewind_stays_paused() {
     let temp = tempfile::tempdir().unwrap();
     let rom = temp.path().join("rewind.gba");
     fixture::write_cartridge(&rom);
-    let mut worker = super::Worker::new(temp.path(), None);
+    let mut worker = super::Worker::new(temp.path(), None, None);
     worker
         .apply(Command::Load {
             path: rom,
@@ -373,7 +374,7 @@ fn sav_import_and_export_require_the_original_session_and_restart_after_import()
     let temp = tempfile::tempdir().unwrap();
     let rom = temp.path().join("probe.gba");
     fixture::write_cartridge(&rom);
-    let mut worker = super::Worker::new(temp.path(), None);
+    let mut worker = super::Worker::new(temp.path(), None, None);
     worker
         .apply(Command::Load {
             path: rom,
@@ -426,7 +427,7 @@ fn rewind_defers_battery_writes_and_only_persists_the_resumed_timeline() {
     let temp = tempfile::tempdir().unwrap();
     let rom = temp.path().join("rewind.gba");
     fixture::write_cartridge(&rom);
-    let mut worker = super::Worker::new(temp.path(), None);
+    let mut worker = super::Worker::new(temp.path(), None, None);
     worker
         .apply(Command::Load {
             path: rom,
@@ -456,4 +457,52 @@ fn rewind_defers_battery_writes_and_only_persists_the_resumed_timeline() {
     worker.apply(Command::SetRewinding(false)).unwrap();
     worker.apply(Command::Pause).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), oldest);
+}
+
+#[test]
+fn game_audio_reaches_the_device_and_drops_old_pcm_on_timeline_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tone.gba");
+    fixture::write_cartridge(&path);
+    let mut rom = std::fs::read(&path).unwrap();
+    rom.truncate(eidoryn_gba::HEADER_LEN);
+    rom.extend(tone::register_program(&[
+        (0x0400_0084, 0x0080), // Master power
+        (0x0400_0080, 0x1177), // Square 1 to both speakers
+        (0x0400_0082, 2),
+        (0x0400_0062, 0xf080),
+        (0x0400_0064, 0x8700), // Trigger square wave
+    ]));
+    std::fs::write(&path, rom).unwrap();
+    let audio = eidoryn_host::audio::AudioBuffer::with_sample_rate(
+        std::num::NonZeroU32::new(eidoryn_gba::AUDIO_SAMPLE_RATE).unwrap(),
+    );
+    let mut worker = super::Worker::new(dir.path(), None, Some(audio.clone()));
+    worker
+        .apply(Command::Load {
+            path,
+            title: "Tone".into(),
+        })
+        .unwrap();
+    worker.apply(Command::SetRewindEnabled(true)).unwrap();
+    for _ in 0..4 {
+        worker.frame().unwrap();
+    }
+    tone::assert_audible(&audio);
+    worker.apply(Command::QuickSave).unwrap();
+    worker.apply(Command::QuickLoad).unwrap();
+    assert_eq!(audio.stats().queued_frames, 0);
+    for _ in 0..4 {
+        worker.frame().unwrap();
+    }
+    worker.begin_rewind().unwrap();
+    assert_eq!(audio.stats().queued_frames, 0);
+    worker.end_rewind();
+    for _ in 0..4 {
+        worker.frame().unwrap();
+    }
+    tone::assert_audible(&audio);
+    worker.apply(Command::Pause).unwrap();
+    worker.apply(Command::Slice).unwrap();
+    assert_eq!(audio.stats().queued_frames, 0);
 }

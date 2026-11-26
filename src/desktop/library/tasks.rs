@@ -81,13 +81,19 @@ impl Desktop {
         recent: bool,
         cx: &mut Context<Self>,
     ) {
-        if GamePlatform::from_path(&path) == Some(GamePlatform::Gba) {
+        if let Some(platform @ (GamePlatform::Gba | GamePlatform::Nds)) =
+            GamePlatform::from_path(&path)
+        {
             let title = path
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            self.open_gba(path, title, cx);
+            if platform == GamePlatform::Nds {
+                self.open_nds(path, title, cx);
+            } else {
+                self.open_gba(path, title, cx);
+            }
             return;
         }
         self.switch_core(GamePlatform::Ps1, cx);
@@ -107,7 +113,7 @@ impl Desktop {
                     })
                     .await;
                 let _ = this.update(cx, |v, cx| {
-                    if v.library.launch_generation != generation || v.is_gba() {
+                    if v.library.launch_generation != generation || !v.is_ps1() {
                         return;
                     }
                     match result {
@@ -200,21 +206,26 @@ impl Desktop {
     }
 
     pub(super) fn clear_playtime(&mut self, id: i64, cx: &mut Context<Self>) {
-        let cartridge = self.library.entry(id).is_some_and(Entry::is_cartridge);
-        if cartridge && self.gba.runner.is_none() {
-            self.library_write(cx, move |store| store.clear_statistics(id));
-            return;
-        }
+        let platform = self
+            .library
+            .entry(id)
+            .and_then(|entry| entry.game.platform_kind());
         let (completed, rx) = mpsc::channel();
-        let sent = if cartridge && let Some(runner) = &self.gba.runner {
-            runner.send(eidoryn_psx::systems::gba::Command::ClearStatistics(
-                id, completed,
-            ))
-        } else {
-            self.runner.send(Command::ClearLibraryStatistics {
+        let sent = match platform {
+            Some(GamePlatform::Nds) if let Some(runner) = &self.nds.runner => runner.send(
+                eidoryn_psx::systems::nds::Command::ClearStatistics(id, completed),
+            ),
+            Some(GamePlatform::Gba) if let Some(runner) = &self.gba.runner => runner.send(
+                eidoryn_psx::systems::gba::Command::ClearStatistics(id, completed),
+            ),
+            Some(GamePlatform::Ps1) => self.runner.send(Command::ClearLibraryStatistics {
                 game_id: id,
                 completed,
-            })
+            }),
+            _ => {
+                self.library_write(cx, move |store| store.clear_statistics(id));
+                return;
+            }
         };
         if let Err(error) = sent {
             self.notice = Some(error);
@@ -238,7 +249,9 @@ impl Desktop {
     }
 
     pub(in crate::desktop) fn refresh_playing_library(&mut self, cx: &mut Context<Self>) {
-        let current = if self.is_gba() {
+        let current = if self.is_nds() {
+            self.nds.snapshot.path.as_ref()
+        } else if self.is_gba() {
             self.gba.snapshot.path.as_ref()
         } else {
             self.snapshot.disc_path.as_ref()
@@ -662,7 +675,9 @@ impl Desktop {
                 if v.active_core != platform || v.closing() {
                     return;
                 }
-                if platform == GamePlatform::Gba {
+                if platform == GamePlatform::Nds {
+                    v.open_nds(path, title, cx);
+                } else if platform == GamePlatform::Gba {
                     v.open_gba(path, title, cx);
                 } else if bios.is_some() && choice.is_none() {
                     v.bios = None;

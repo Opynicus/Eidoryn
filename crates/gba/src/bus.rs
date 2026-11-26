@@ -1,3 +1,4 @@
+use crate::audio::Audio;
 use crate::backup::Backup;
 use crate::cpu::Bus;
 use crate::video::{Video, half};
@@ -46,6 +47,10 @@ pub(super) struct Memory {
     #[serde(with = "serde_bytes")]
     io: [u8; 1024],
     pub(super) backup: Backup,
+    #[serde(skip)] // Version 3 appends guest audio state after the cartridge clock.
+    pub(super) audio: Audio,
+    #[serde(skip)]
+    pub(super) rtc: Option<crate::rtc::Rtc>,
     pub line: u16,
     pub cycle: u32,
     pub halted: bool,
@@ -73,6 +78,21 @@ impl Memory {
             && self.backup.valid_for(&live.backup)
     }
 
+    /// Older snapshots stored sound register writes, but had no timed sound engine.
+    pub(super) fn restore_legacy_audio(&mut self) {
+        if half(&self.io, 0x88) == 0 {
+            self.io[0x89] = 2;
+        }
+        for offset in 0x90..0xa0 {
+            let byte = self.io[offset];
+            self.audio.write(&mut self.io, offset, byte);
+        }
+        for offset in [0x65, 0x6d, 0x75, 0x7d] {
+            let byte = self.io[offset];
+            self.audio.write(&mut self.io, offset, byte);
+        }
+    }
+
     /// Attach the live cartridge, firmware and presentation backend after validation.
     pub(super) fn attach_session(&mut self, live: &mut Self) {
         self.rom = std::mem::take(&mut live.rom);
@@ -86,6 +106,7 @@ impl Memory {
     pub fn new(rom: Vec<u8>) -> Self {
         let mut io = [0; 1024];
         io[0] = 0x80;
+        io[0x89] = 2; // BIOS default PWM bias 0x200.
         io[4] = 4; // VCOUNT matches zero at startup.
         for addr in [0x20, 0x26, 0x30, 0x36] {
             io[addr + 1] = 1;
@@ -93,6 +114,7 @@ impl Memory {
         io[0x130..0x132].copy_from_slice(&0x3ff_u16.to_le_bytes());
         io[0x300] = 1; // Direct cartridge entry occurs after POST.
         let backup = Backup::detect(&rom);
+        let rtc = crate::rtc::Rtc::detect(&rom);
         Self {
             rom,
             bios: None,
@@ -102,6 +124,8 @@ impl Memory {
             video: Video::new(),
             io,
             backup,
+            audio: Audio::default(),
+            rtc,
             line: 0,
             cycle: 0,
             halted: false,
@@ -149,6 +173,10 @@ impl Memory {
         if let Some(bios) = self.bios.take() {
             fresh.install_bios(bios);
         }
+        if let Some(rtc) = &mut self.rtc {
+            rtc.reset_bus();
+        }
+        std::mem::swap(&mut self.rtc, &mut fresh.rtc);
         self.backup.reset_protocol();
         std::mem::swap(&mut self.backup, &mut fresh.backup);
         #[cfg(feature = "gpu")]
@@ -205,8 +233,18 @@ impl Memory {
 
     pub fn tick(&mut self, cycles: u32) {
         self.backup.tick(cycles);
-        if self.enabled_timers != 0 {
-            self.tick_timers(cycles);
+        if self.enabled_timers == 0 {
+            self.audio.advance(&mut self.io, cycles);
+        } else {
+            // A halted CPU may skip across several samples. Latch FIFO data at each
+            // timer overflow before mixing the sample on a coincident PWM edge.
+            let mut remaining = cycles;
+            while remaining != 0 {
+                let span = remaining.min(self.audio.until_pwm(&self.io));
+                self.tick_timers(span);
+                self.audio.advance(&mut self.io, span);
+                remaining -= span;
+            }
         }
         let previous = self.cycle;
         self.cycle += cycles;
@@ -283,11 +321,35 @@ impl Memory {
                 let period = 0x10000 - reload;
                 overflows = 1 + (next - 0x10000) / period;
                 timer.count = (reload + (next - 0x10000) % period) as u16;
+                if index < 2 {
+                    for _ in 0..overflows {
+                        let requests = self.audio.timer_overflow(&self.io, index);
+                        if requests != 0 {
+                            self.fifo_dma(requests);
+                        }
+                    }
+                }
                 if control & 0x40 != 0 {
                     self.interrupt(3 + index as u8);
                 }
             } else {
                 timer.count = next as u16;
+            }
+        }
+    }
+
+    fn fifo_dma(&mut self, requests: u8) {
+        for channel in 1..=2 {
+            if self.io[DMA_BASE + channel * 12 + 11] & 0xb0 != 0xb0 {
+                continue;
+            }
+            let fifo = match self.dma[channel].dst & !3 {
+                0x0400_00a0 => 1,
+                0x0400_00a4 => 2,
+                _ => continue,
+            };
+            if requests & fifo != 0 {
+                self.transfer_dma(channel);
             }
         }
     }
@@ -309,8 +371,17 @@ impl Memory {
         let base = DMA_BASE + channel * 12;
         let control = half(&self.io, base + 10);
         let mask = if channel == 3 { 0xffff } else { 0x3fff };
-        let count = u32::from(half(&self.io, base + 8)) & mask;
-        let width = if control & (1 << 10) == 0 { 2 } else { 4 };
+        let fifo = matches!(channel, 1 | 2) && control & 0x3000 == 0x3000;
+        let count = if fifo {
+            4
+        } else {
+            u32::from(half(&self.io, base + 8)) & mask
+        };
+        let width = if fifo || control & (1 << 10) != 0 {
+            4
+        } else {
+            2
+        };
         let step = |mode| match mode {
             1 => 0u32.wrapping_sub(width),
             2 => 0,
@@ -318,7 +389,7 @@ impl Memory {
         };
         let src_step = step((control >> 7) & 3);
         let dst_mode = (control >> 5) & 3;
-        let dst_step = step(dst_mode);
+        let dst_step = if fifo { 0 } else { step(dst_mode) };
         let mut latch = self.dma[channel];
         if channel == 3
             && width == 2
@@ -374,6 +445,7 @@ impl Memory {
                 self.io[offset] = value;
                 self.video.reload_reference(&self.io, offset);
             }
+            0x60..=0xa7 => self.audio.write(&mut self.io, offset, value),
             0x202 | 0x203 => self.io[offset] &= !value,
             0x300 | 0x301 if self.has_bios() && (!self.fetch.in_bios || self.dma_busy) => {}
             0x300 => self.io[0x300] = value & 1,
@@ -453,6 +525,8 @@ impl Memory {
         }
         if flags & 0x40 != 0 {
             self.io[0x60..0xb0].fill(0);
+            self.io[0x89] = 2;
+            self.audio.reset_registers();
         }
         if flags & 0x80 != 0 {
             self.io[1..4].fill(0);
@@ -537,7 +611,9 @@ impl Bus for Memory {
             3 => self.iwram[addr & 0x7fff],
             4 if addr & 0xff_ffff < self.io.len() => {
                 let offset = addr & 1023;
-                if (TIMER_BASE..TIMER_BASE + 16).contains(&offset) && offset & 2 == 0 {
+                if (0x60..=0xa7).contains(&offset) {
+                    self.audio.read(&self.io, offset)
+                } else if (TIMER_BASE..TIMER_BASE + 16).contains(&offset) && offset & 2 == 0 {
                     self.timers[(offset - TIMER_BASE) / 4].count.to_le_bytes()[offset & 1]
                 } else {
                     self.io[offset]
@@ -549,11 +625,19 @@ impl Bus for Memory {
             13 if self.eeprom_port(address) => {
                 (self.backup.peek_eeprom_bit() >> ((addr & 1) * 8)) as u8
             }
-            8..=13 => self
-                .rom
-                .get(addr & 0x01ff_ffff)
-                .copied()
-                .unwrap_or_else(|| ((addr >> 1) as u16).to_le_bytes()[addr & 1]),
+            8..=13 => {
+                let offset = addr & 0x01ff_ffff;
+                if (0xc4..=0xc9).contains(&offset)
+                    && let Some(rtc) = &self.rtc
+                    && rtc.read_enabled()
+                {
+                    return rtc.read(offset);
+                }
+                self.rom
+                    .get(offset)
+                    .copied()
+                    .unwrap_or_else(|| ((addr >> 1) as u16).to_le_bytes()[addr & 1])
+            }
             14 | 15 => self.backup.read_parallel(address as u16),
             _ => 0,
         }
@@ -586,7 +670,11 @@ impl Bus for Memory {
     }
 
     fn write16(&mut self, addr: u32, value: u16) {
-        if addr & !1 == 0x0400_0300 && self.has_bios() {
+        if matches!(addr >> 24, 8..=13) && (0xc4..=0xc9).contains(&(addr & 0x01ff_ffff)) {
+            if let Some(rtc) = &mut self.rtc {
+                rtc.write(addr as usize & 0x01ff_fffe, value as u8);
+            }
+        } else if addr & !1 == 0x0400_0300 && self.has_bios() {
             // A wide write setting POSTFLG on cold boot does not also enter HALT.
             if self.fetch.in_bios && !self.dma_busy {
                 self.halted |= self.io[0x300] != 0;

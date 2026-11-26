@@ -13,10 +13,12 @@ mod icons;
 mod inspector;
 mod library;
 mod library_ui;
+mod nds;
 mod probe;
 mod recent_games;
 mod rewind;
 mod save_states;
+mod session;
 mod settings;
 mod shortcuts;
 mod sidebar;
@@ -30,7 +32,7 @@ use audio_controls::AudioControls;
 use eidoryn_psx::library::GamePlatform;
 use eidoryn_psx::{
     app,
-    audio::{AudioBuffer, output::AudioOutput},
+    audio::output::AudioOutput,
     systems::ps1::{
         card_file::CardStore,
         machine::Machine,
@@ -89,15 +91,12 @@ pub fn run_with_probe(
 ) -> Result<(), String> {
     let probe = probe.map(probe::Probe::new).transpose()?;
     let mut startup = settings::load(&mut machine, &options)?;
-    let audio_buffer = AudioBuffer::default();
-    audio_buffer.set_volume(if startup.muted { 0 } else { startup.volume });
-    let audio_output = match AudioOutput::open(audio_buffer.clone()) {
-        Ok(output) => Some(output),
-        Err(error) => {
-            append_notice(&mut startup.notice, error);
-            None
-        }
-    };
+    let mut audio = AudioControls::new(startup.volume, startup.muted);
+    let queue = audio.buffer(GamePlatform::Ps1).clone();
+    match AudioOutput::open(queue.clone()) {
+        Ok(output) => audio.output = Some(output),
+        Err(error) => append_notice(&mut startup.notice, error),
+    }
     let mode = if options.debugger {
         SnapshotMode::Debug
     } else {
@@ -120,14 +119,8 @@ pub fn run_with_probe(
     } else {
         None
     };
-    let runner = Runner::with_snapshot_mode(
-        machine,
-        options.auto_run,
-        store,
-        Some(audio_buffer.clone()),
-        mode,
-    )
-    .map_err(|e| e.to_string())?;
+    let runner = Runner::with_snapshot_mode(machine, options.auto_run, store, Some(queue), mode)
+        .map_err(|e| e.to_string())?;
     let mut snapshot = runner
         .take_snapshot()
         .ok_or("Missing initial emulator snapshot")?;
@@ -148,13 +141,6 @@ pub fn run_with_probe(
     runner.send(Command::SetRewindEnabled(
         startup.preferences.rewind_enabled,
     ))?;
-    let audio = AudioControls {
-        buffer: audio_buffer,
-        output: audio_output,
-        muted: startup.muted,
-        volume: startup.volume,
-        dragging: false,
-    };
     open_window(runner, snapshot, options, startup, audio, probe, library)
 }
 
@@ -229,7 +215,9 @@ fn open_window(
                         }
                         Desktop {
                             active_core: GamePlatform::Ps1,
+                            close: session::CloseState::Open,
                             gba: gba::Session::default(),
+                            nds: nds::Session::default(),
                             library,
                             sidebar: None,
                             navigation: sidebar::Navigation::default(),
@@ -255,6 +243,7 @@ fn open_window(
                             debugger_enabled: options.debugger,
                             crt: CrtState::new(startup.crt),
                             last_redraw: Instant::now(),
+                            focus_game: false,
                             focus,
                             notice: startup.notice,
                             audio,
@@ -303,7 +292,9 @@ fn open_window(
 #[allow(clippy::struct_excessive_bools)] // Independent view, debugger, and appearance preferences.
 struct Desktop {
     active_core: GamePlatform,
+    close: session::CloseState,
     gba: gba::Session,
+    nds: nds::Session,
     library: library::Workspace,
     sidebar: Option<gpui::Entity<sidebar::Sidebar>>,
     navigation: sidebar::Navigation,
@@ -325,6 +316,7 @@ struct Desktop {
     snapshot_mode: SnapshotMode,
     crt: CrtState,
     last_redraw: Instant,
+    focus_game: bool,
     focus: FocusHandle,
     notice: Option<String>,
     audio: AudioControls,
@@ -506,6 +498,7 @@ impl Desktop {
 
     fn receive_snapshot(&mut self, cx: &mut gpui::Context<Self>) {
         self.receive_gba(cx);
+        self.receive_nds(cx);
         self.tick_library_scrape(cx);
         self.refresh_playing_library(cx);
         if let Some(command) = self.probe.as_mut().and_then(probe::Probe::input) {
@@ -513,7 +506,7 @@ impl Desktop {
         }
         if let Some(error) = self.audio.output.as_ref().and_then(AudioOutput::take_error) {
             self.audio.output = None;
-            self.audio.buffer.clear();
+            self.audio.buffer(self.active_core).clear();
             self.notice = Some(error);
             cx.notify();
         }
@@ -535,10 +528,10 @@ impl Desktop {
             if let Some(warning) = snapshot.presentation_warning.take() {
                 append_notice(&mut self.notice, warning);
             }
-            if !self.is_gba() {
+            if self.is_ps1() {
                 self.receive_media_selection(&snapshot, cx);
             }
-            if !self.is_gba()
+            if self.is_ps1()
                 && snapshot.renamed_state != self.snapshot.renamed_state
                 && let Some((old, new)) = &snapshot.renamed_state
                 && self.selected_save_state.as_ref() == Some(old)
@@ -547,7 +540,7 @@ impl Desktop {
             }
             let frame_changed = !snapshot.has_same_frame(&self.snapshot);
             if frame_changed
-                && !self.is_gba()
+                && self.is_ps1()
                 && let Some(image) = &mut self.image
             {
                 // Coalesce pending frames without keeping a second RGB allocation.
@@ -612,6 +605,13 @@ impl Desktop {
     }
 
     fn display_title(&self) -> &str {
+        if self.is_nds() {
+            return if self.nds.snapshot.path.is_some() {
+                &self.nds.snapshot.title
+            } else {
+                "Nintendo DS"
+            };
+        }
         if self.is_gba() {
             return if self.gba.snapshot.path.is_some() {
                 &self.gba.snapshot.title
