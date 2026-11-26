@@ -459,19 +459,12 @@ fn snapshot_rows_load_the_chosen_state(cx: &mut TestAppContext) {
         view.read_with(cx, |view, _| view.selected_save_state.clone()),
         Some(older)
     );
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Some(snapshot) = view.read_with(cx, |v, _| v.runner.take_snapshot())
-            && snapshot.success_message.is_some()
-        {
-            assert_eq!(snapshot.cpu.registers[5], 17);
-            assert!(!snapshot.running);
-            assert!(snapshot.message.is_none());
-            break;
-        }
-        assert!(Instant::now() < deadline, "selected snapshot did not load");
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    wait_for_snapshot(&view, cx, |snapshot| snapshot.success_message.is_some());
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.snapshot.cpu.registers[5], 17);
+        assert!(!view.snapshot.running);
+        assert!(view.snapshot.message.is_none());
+    });
     std::fs::remove_dir_all(root).unwrap();
 }
 
