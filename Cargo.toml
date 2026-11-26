@@ -66,7 +66,7 @@ http = { version = "1", optional = true }
 httpdate = { version = "1", optional = true }
 sha1_smol = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "macros"], optional = true }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "derive"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"], optional = true }
 tempfile = { version = "3", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
