@@ -39,11 +39,12 @@ fn recorded_library(path: &Path, dat: String) -> Library {
 }
 
 fn id_for(lib: &Library, path: &Path) -> i64 {
+    let path = path.canonicalize().unwrap();
     lib.games()
         .unwrap()
         .into_iter()
         .find(|g| g.locations.iter().any(|l| l.path == path))
-        .unwrap()
+        .unwrap_or_else(|| panic!("missing scanned cartridge {}", path.display()))
         .id
 }
 

@@ -40,6 +40,7 @@ fn shared_library_starts_dual_screen_session_with_stylus_and_quick_slot(cx: &mut
     let dir = tempfile::tempdir().unwrap();
     let rom = dir.path().join("Test.nds");
     fixture::write_cartridge(&rom);
+    let expected_path = rom.canonicalize().unwrap();
     let library = Library::open(&dir.path().join("library.db")).unwrap();
     library
         .scan_files(std::slice::from_ref(&rom), &AtomicBool::default(), |_| {})
@@ -62,7 +63,7 @@ fn shared_library_starts_dual_screen_session_with_stylus_and_quick_slot(cx: &mut
     });
     view.read_with(cx, |v, _| {
         assert_eq!(v.page, WorkspacePage::Game);
-        assert_eq!(v.nds.snapshot.path.as_deref(), Some(rom.as_path()));
+        assert_eq!(v.nds.snapshot.path.as_ref(), Some(&expected_path));
         assert_eq!(
             v.image.as_ref().unwrap().image.size(0),
             size(256.into(), 384.into())
