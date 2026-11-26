@@ -9,7 +9,7 @@ use crate::cpu::Cpu;
 use crate::{HEIGHT, Machine, WIDTH};
 
 const MAGIC: [u8; 8] = *b"EIDOGBA\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 3;
 const PIXEL_BYTES: usize = WIDTH * HEIGHT * 3;
 /// Maximum supported encoded size, including RAM, the LCD image and cartridge backup.
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
@@ -73,7 +73,14 @@ impl Machine {
             rom: self.rom_digest,
             bios: self.bios_digest,
         };
-        let state = (header, &self.cpu, self.bios_wait, &self.memory);
+        let state = (
+            header,
+            &self.cpu,
+            self.bios_wait,
+            &self.memory,
+            &self.memory.rtc,
+            &self.memory.audio,
+        );
         let encoded_size = codec().serialized_size(&state).map_err(StateError::Codec)?;
         let size = encoded_size as usize + PIXEL_BYTES + 4;
         if size > MAX_STATE_BYTES {
@@ -106,7 +113,7 @@ impl Machine {
         if header.magic != MAGIC {
             return Err(StateError::Invalid);
         }
-        if header.version != VERSION {
+        if !(1..=VERSION).contains(&header.version) {
             return Err(StateError::UnsupportedVersion(header.version));
         }
         if header.rom != self.rom_digest {
@@ -115,9 +122,34 @@ impl Machine {
         if header.bios != self.bios_digest {
             return Err(StateError::FirmwareMismatch);
         }
-        let (cpu, bios_wait, mut memory): (Cpu, Option<u16>, Memory) =
-            codec().deserialize(encoded).map_err(StateError::Codec)?;
-        if !memory.valid_snapshot_for(&self.memory) {
+        let (cpu, bios_wait, mut memory): (Cpu, Option<u16>, Memory) = codec()
+            .deserialize_from(&mut encoded)
+            .map_err(StateError::Codec)?;
+        memory.rtc = if header.version >= 2 {
+            let rtc: Option<crate::rtc::Rtc> = codec()
+                .deserialize_from(&mut encoded)
+                .map_err(StateError::Codec)?;
+            if rtc.is_some() != self.memory.rtc.is_some()
+                || rtc.as_ref().is_some_and(|rtc| !rtc.valid())
+            {
+                return Err(StateError::Invalid);
+            }
+            rtc
+        } else {
+            self.memory.rtc.clone().map(|mut rtc| {
+                rtc.reset_bus();
+                rtc
+            })
+        };
+        if header.version == VERSION {
+            memory.audio = codec().deserialize(encoded).map_err(StateError::Codec)?;
+        } else {
+            if !encoded.is_empty() {
+                return Err(StateError::Invalid);
+            }
+            memory.restore_legacy_audio();
+        }
+        if !memory.audio.valid() || !memory.valid_snapshot_for(&self.memory) {
             return Err(StateError::Invalid);
         }
         memory.video.pixels = std::mem::take(&mut self.memory.video.pixels);
@@ -221,6 +253,71 @@ mod tests {
             Err(StateError::Invalid)
         ));
         assert_eq!(live.save_state().unwrap(), original);
+    }
+
+    #[test]
+    fn legacy_image_without_rtc_keeps_live_clock_and_clears_gpio_transaction() {
+        let mut rom = cartridge();
+        rom.extend_from_slice(b"SIIRTC_V001");
+        let mut machine = Machine::from_rom(rom).unwrap();
+        let mut settings = machine.rtc_battery().unwrap();
+        settings[0] = 45;
+        machine.restore_rtc_battery(&settings).unwrap();
+        let header = Header {
+            magic: MAGIC,
+            version: 1,
+            rom: machine.rom_digest,
+            bios: None,
+        };
+        let mut bytes = codec()
+            .serialize(&(header, &machine.cpu, machine.bios_wait, &machine.memory))
+            .unwrap();
+        machine.memory.video.append_snapshot_pixels(&mut bytes);
+        bytes.extend_from_slice(&crc32fast::hash(&bytes).to_le_bytes());
+        machine.memory.write16(0x0800_00c8, 1);
+        machine.load_state(&bytes).unwrap();
+        assert_eq!(machine.rtc_battery(), Some(settings));
+        assert_eq!(machine.memory.read16(0x0800_00c8), 0x3030); // Original ROM bytes "00".
+    }
+
+    #[test]
+    fn version_two_keeps_clock_and_accepts_new_audio_writes() {
+        let mut rom = cartridge();
+        rom.extend_from_slice(b"SIIRTC_V001");
+        let mut machine = Machine::from_rom(rom).unwrap();
+        let clock = machine.rtc_battery().unwrap();
+        let header = Header {
+            magic: MAGIC,
+            version: 2,
+            rom: machine.rom_digest,
+            bios: None,
+        };
+        machine.memory.write8(0x0400_0084, 0x80);
+        machine.memory.write16(0x0400_0080, 0x1177);
+        machine.memory.write16(0x0400_0062, 0xf080);
+        let mut image = codec()
+            .serialize(&(
+                header,
+                &machine.cpu,
+                machine.bios_wait,
+                &machine.memory,
+                &machine.memory.rtc,
+            ))
+            .unwrap();
+        machine.memory.video.append_snapshot_pixels(&mut image);
+        image.extend_from_slice(&crc32fast::hash(&image).to_le_bytes());
+        machine.run_frame().unwrap();
+        machine.load_state(&image).unwrap();
+        assert_eq!(machine.rtc_battery(), Some(clock));
+        assert_eq!(machine.take_audio_samples(), [[0; 2]; 0]);
+        machine.memory.write16(0x0400_0064, 0x87e0);
+        machine.run_frame().unwrap();
+        assert!(
+            machine
+                .take_audio_samples()
+                .windows(2)
+                .any(|p| p[0] != p[1])
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ use eidoryn_gba::{InstructionSet, debug::DebugSnapshot};
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::shortcuts::ShortcutAction;
 use eidoryn_psx::systems::gba::Command as GbaCommand;
+use eidoryn_psx::systems::nds::Command as NdsCommand;
 use eidoryn_psx::systems::ps1::{
     cpu::REGISTER_NAMES,
     runner::{Command, Snapshot, SnapshotMode},
@@ -35,7 +36,9 @@ pub(super) enum DebugStep {
 
 impl Desktop {
     fn capture(&self) -> Option<Capture<'_>> {
-        if self.is_gba() {
+        if self.is_nds() {
+            None
+        } else if self.is_gba() {
             self.gba.snapshot.debug.as_deref().map(Capture::Gba)
         } else {
             (self.snapshot.mode == SnapshotMode::Debug).then_some(Capture::Ps1(&self.snapshot))
@@ -43,7 +46,16 @@ impl Desktop {
     }
 
     pub(super) fn step_debugger(&mut self, step: DebugStep, cx: &mut Context<Self>) {
-        if self.is_gba() {
+        if self.is_nds() {
+            self.release_buttons(cx);
+            self.nds_command(
+                match step {
+                    DebugStep::Instruction => NdsCommand::Step,
+                    DebugStep::Slice => NdsCommand::Frame,
+                },
+                cx,
+            );
+        } else if self.is_gba() {
             self.release_buttons(cx);
             self.gba_command(
                 match step {
@@ -77,7 +89,7 @@ impl Desktop {
                 self.gba.snapshot.debug = None;
             }
         }
-        let mode = if enabled && !self.is_gba() {
+        let mode = if enabled && self.is_ps1() {
             SnapshotMode::Debug
         } else {
             SnapshotMode::Display
@@ -120,6 +132,32 @@ impl Desktop {
                     )
                     .child(label(p, self.tr(Text::DebuggerOffHint)).max_w(px(420.))),
             );
+        }
+        if self.is_nds() {
+            let panel = card(p).p_4().gap_3();
+            return page.child(if self.nds.snapshot.path.is_some() {
+                panel
+                    .debug_selector(|| "debug-nds".into())
+                    .child(heading(
+                        &self.fonts,
+                        p,
+                        self.tr(Text::ProgramCounter),
+                        "Nintendo DS",
+                    ))
+                    .child(pair(
+                        p,
+                        "ARM9 PC",
+                        format!("{:08X}", self.nds.snapshot.arm9_pc),
+                    ))
+                    .child(pair(
+                        p,
+                        "ARM7 PC",
+                        format!("{:08X}", self.nds.snapshot.arm7_pc),
+                    ))
+                    .child(self.debug_step_controls(cx))
+            } else {
+                panel.child(label(p, self.tr(Text::OpenNds)))
+            });
         }
         let Some(capture) = self.capture() else {
             return page.child(card(p).px_6().py_12().items_center().child(label(
@@ -199,9 +237,14 @@ impl Desktop {
 
     fn capture_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
         let p = &self.themes.active().palette;
-        let capture = if self.capture().is_some() {
+        let capture = if self.capture().is_some()
+            || self.is_nds() && self.debugger_enabled && self.nds.snapshot.path.is_some()
+        {
             self.tr(Text::CaptureActive)
-        } else if self.debugger_enabled && !(self.is_gba() && self.gba.snapshot.path.is_none()) {
+        } else if self.debugger_enabled
+            && !self.is_nds()
+            && !(self.is_gba() && self.gba.snapshot.path.is_none())
+        {
             self.tr(Text::DebuggerLoading)
         } else {
             self.tr(Text::Paused)
@@ -300,49 +343,58 @@ impl Desktop {
                     .border_color(rgb(p.border)),
             )
             .child(self.instruction_table(capture))
+            .child(self.debug_step_controls(cx))
+    }
+
+    fn debug_step_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = &self.themes.active().palette;
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .p_4()
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .p_4()
-                    .child(
-                        action(
-                            &self.fonts,
-                            p,
-                            "debug-step",
-                            self.shortcut_label(self.tr(Text::Step), ShortcutAction::Step, None)
-                                .hint(),
-                            Some("skip"),
-                            false,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.step_debugger(DebugStep::Instruction, cx);
-                        })),
+                action(
+                    &self.fonts,
+                    p,
+                    "debug-step",
+                    self.shortcut_label(self.tr(Text::Step), ShortcutAction::Step, None)
+                        .hint(),
+                    Some("skip"),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.step_debugger(DebugStep::Instruction, cx);
+                })),
+            )
+            .child(
+                button(
+                    &self.fonts,
+                    p,
+                    "debug-slice",
+                    self.shortcut_label(
+                        self.tr(if self.is_nds() {
+                            Text::StepFrame
+                        } else {
+                            Text::Slice
+                        }),
+                        ShortcutAction::Slice,
+                        None,
                     )
-                    .child(
-                        button(
-                            &self.fonts,
-                            p,
-                            "debug-slice",
-                            self.shortcut_label(self.tr(Text::Slice), ShortcutAction::Slice, None)
-                                .hint(),
-                            false,
-                        )
-                        .on_click(
-                            cx.listener(|view, _, _, cx| view.step_debugger(DebugStep::Slice, cx)),
-                        ),
-                    )
-                    .child(
-                        button(
-                            &self.fonts,
-                            p,
-                            "debug-reset",
-                            self.shortcut_label(self.tr(Text::Reset), ShortcutAction::Reset, None),
-                            false,
-                        )
-                        .on_click(cx.listener(|view, _, _, cx| view.reset_playback(cx))),
-                    ),
+                    .hint(),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.step_debugger(DebugStep::Slice, cx))),
+            )
+            .child(
+                button(
+                    &self.fonts,
+                    p,
+                    "debug-reset",
+                    self.shortcut_label(self.tr(Text::Reset), ShortcutAction::Reset, None),
+                    false,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.reset_playback(cx))),
             )
     }
 

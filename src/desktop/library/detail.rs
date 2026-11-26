@@ -174,6 +174,7 @@ impl Desktop {
                         v.library.auto_attempted.insert((id, serial.clone()));
                     }
                     let message = match cover.as_deref() {
+                        Ok("needs_choice") => Some(v.tr(Text::LibraryPending).to_owned()),
                         Ok("not_found") => Some(v.tr(Text::LibraryNotFound).to_owned()),
                         Ok("retry") => Some(v.tr(Text::LibraryCoverDeferred).to_owned()),
                         Err(error) => Some(format!("{} {error}", v.tr(Text::LibraryCoverError))),
@@ -455,6 +456,7 @@ impl Desktop {
                 Text::LibraryPlatform,
                 Some(match entry.game.platform_kind() {
                     Some(crate::desktop::GamePlatform::Ps1) => "PlayStation",
+                    Some(crate::desktop::GamePlatform::Nds) => "Nintendo DS",
                     Some(crate::desktop::GamePlatform::Gba) => "Game Boy Advance",
                     None => &entry.game.platform,
                 }),
@@ -782,6 +784,7 @@ impl Desktop {
                 s.child(self.cover_progress(cx))
             });
         match entry.cover_status.as_deref() {
+            Some("needs_choice") => panel.child(label(&p, self.tr(Text::LibraryPending))),
             Some("not_found") => panel.child(label(&p, self.tr(Text::LibraryNotFound))),
             Some("retry") => panel.child(label(&p, self.tr(Text::LibraryRetry))),
             Some("failed") => panel.child(label(&p, self.tr(Text::LibraryFailed))),

@@ -93,6 +93,9 @@ impl Desktop {
             return;
         };
         if bindings.validate(&self.preferences.keybindings).is_err()
+            || bindings
+                .validate(&self.preferences.nds_keybindings)
+                .is_err()
             || bindings.gba_controller_conflict(&self.preferences.gba_keybindings)
         {
             self.notice = Some(self.tr(Text::BindingInvalid).into());
@@ -122,6 +125,10 @@ impl Desktop {
             .children(
                 ShortcutAction::ALL
                     .into_iter()
+                    .filter(|action| {
+                        !self.is_nds()
+                            || !matches!(action, ShortcutAction::Snapshot | ShortcutAction::Rewind)
+                    })
                     .map(|action| self.shortcut_row(action, bindings, cx)),
             )
     }
@@ -133,7 +140,11 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> Div {
         let p = &self.themes.active().palette;
-        let field = action_title(action);
+        let field = if self.is_nds() && action == ShortcutAction::Slice {
+            Text::StepFrame
+        } else {
+            action_title(action)
+        };
         let title = self.tr(field);
         let binding = bindings.binding(action);
         let capturing = self.shortcut_editor.recording == Some(action);
@@ -156,6 +167,11 @@ impl Desktop {
                 chord
                     .pad_conflict(&self.preferences.gba_keybindings)
                     .map(|button| format!("GBA · {}", button.name()))
+                    .or_else(|| {
+                        chord
+                            .pad_conflict(&self.preferences.nds_keybindings)
+                            .map(|button| format!("NDS · {}", button.name()))
+                    })
             });
         div()
             .flex()

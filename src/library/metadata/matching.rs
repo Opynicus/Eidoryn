@@ -1,20 +1,48 @@
 //! Exact disc identification and user-confirmed matches from the local release index.
-use super::{Library, Release, evidence, is_release_serial};
+use super::{GamePlatform, Library, Release, evidence, is_release_serial};
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashSet;
 
-pub(super) fn region_matches(disc: &str, release_market: &str) -> bool {
-    release_market.split(',').map(str::trim).any(|market| {
-        disc == market || (disc == "Europe" && crate::library::european_market(market))
-    })
+/// The three values reported by the PS1 license sector each cover multiple markets.
+pub(in crate::library) fn disc_market_filter(region: &str) -> &str {
+    match region {
+        "Europe" => "PAL",
+        "USA" => "NTSC-U",
+        "Japan" => "NTSC-J",
+        other => other,
+    }
+}
+
+pub(in crate::library) fn region_matches(disc: &str, release_market: &str) -> bool {
+    release_market
+        .split([',', '/'])
+        .map(str::trim)
+        .any(|market| {
+            disc == market
+                || (disc == "Europe" && crate::library::european_market(market))
+                || super::gamedb::license_matches_market(disc, market)
+        })
 }
 
 pub(super) fn matching_serial<'a>(
     rows: &'a [Release],
     serial: Option<&str>,
     region: Option<&str>,
+    cartridge: bool,
 ) -> Option<&'a Release> {
     let serial = serial?;
+    if cartridge {
+        if super::no_intro::is_signature(serial) {
+            return None; // Only matching file evidence can assign an unnumbered edition.
+        }
+        // Codes can be reused across markets (including imported Japanese codes in China).
+        let mut candidates = rows.iter().filter(|r| r.serial == serial);
+        let only = candidates.next()?;
+        return (candidates.next().is_none()
+            && super::no_intro::market_compatible(region, &only.region))
+        .then_some(only);
+    }
+    let region = region.map(disc_market_filter);
     let mut exact = rows
         .iter()
         .filter(|r| r.serial == serial && region.is_none_or(|v| region_matches(v, &r.region)));
@@ -81,15 +109,15 @@ pub(super) fn title_hint(title: &str) -> String {
 pub(super) fn has_title_candidate(
     conn: &Connection,
     hint: &str,
-    gba: bool,
+    platform: GamePlatform,
 ) -> rusqlite::Result<bool> {
     if hint.is_empty() {
         return Ok(false);
     }
     conn.prepare_cached(
-        "SELECT 1 FROM release_names WHERE name=?1 AND (release_id GLOB 'libretro-gba/*')=?2",
+        "SELECT 1 FROM release_names WHERE name=?1 AND (release_id GLOB 'libretro-gba/*')=(?2='GBA') AND (release_id GLOB 'libretro-nds/*')=(?2='NDS')",
     )?
-    .exists(params![hint, gba])
+    .exists(params![hint, platform.as_str()])
 }
 
 pub(super) fn index_names(tx: &Transaction<'_>, release: &Release) -> rusqlite::Result<()> {
@@ -115,12 +143,14 @@ pub fn candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, S
     let mut stmt = if needle.is_empty() {
         conn.prepare_cached(
             "SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases
-             WHERE (id GLOB 'libretro-gba/*')=?3 AND (serial=?1 OR id IN (SELECT release_id FROM release_names WHERE name=?2)) ORDER BY id")
+             WHERE (id GLOB 'libretro-gba/*')=(?3='GBA') AND (id GLOB 'libretro-nds/*')=(?3='NDS') AND (serial=?1 OR id IN (SELECT release_id FROM release_names WHERE name=?2)) ORDER BY id")
     } else {
         conn.prepare_cached(
             "SELECT id,serial,region,title,date,aliases,work_date FROM fetched_releases
-             WHERE (id GLOB 'libretro-gba/*')=?3 AND (instr(serial,?1)>0 OR id IN (SELECT release_id FROM release_names WHERE ?2<>'' AND instr(name,?2)>0))
-             ORDER BY (serial=?1) DESC, title, id LIMIT 100")
+             WHERE (id GLOB 'libretro-gba/*')=(?3='GBA') AND (id GLOB 'libretro-nds/*')=(?3='NDS')
+               AND (instr(CASE WHEN serial GLOB 'NDS:*' THEN substr(serial,5) ELSE serial END,?1)>0
+                    OR id IN (SELECT release_id FROM release_names WHERE ?2<>'' AND instr(name,?2)>0))
+             ORDER BY (serial=?1 OR serial='NDS:'||?1) DESC, title, id LIMIT 100")
     }.map_err(|e| e.to_string())?;
     let (serial, name) = if needle.is_empty() {
         (
@@ -131,13 +161,16 @@ pub fn candidates(lib: &Library, id: i64, query: &str) -> Result<Vec<Release>, S
         (needle.to_ascii_uppercase(), normalized_title(needle))
     };
     for row in stmt
-        .query_map(params![serial, name, evidence.gba], Release::from_row)
+        .query_map(
+            params![serial, name, evidence.platform.as_str()],
+            Release::from_row,
+        )
         .map_err(|e| e.to_string())?
     {
         result.push(row.map_err(|e| e.to_string())?);
     }
     if result.is_empty() && !needle.is_empty() && !is_release_serial(&serial) {
-        return fuzzy_suggestions(&conn, &name, evidence.gba).map_err(|e| e.to_string());
+        return fuzzy_suggestions(&conn, &name, evidence.platform).map_err(|e| e.to_string());
     }
     Ok(result)
 }
@@ -158,7 +191,11 @@ fn trigrams(text: &str) -> HashSet<[char; 3]> {
 }
 /// Shortlisted, user-confirmed suggestions only. Character trigrams work with
 /// Japanese titles as well as Latin words and avoid sending local filenames upstream.
-fn fuzzy_suggestions(conn: &Connection, needle: &str, gba: bool) -> rusqlite::Result<Vec<Release>> {
+fn fuzzy_suggestions(
+    conn: &Connection,
+    needle: &str,
+    platform: GamePlatform,
+) -> rusqlite::Result<Vec<Release>> {
     const MAX_SUGGESTIONS: usize = 8;
     let length = needle.chars().count();
     if !(5..=128).contains(&length) {
@@ -167,9 +204,13 @@ fn fuzzy_suggestions(conn: &Connection, needle: &str, gba: bool) -> rusqlite::Re
     let wanted = trigrams(needle);
     let mut best: Vec<(usize, String)> = Vec::new();
     let mut keys = conn.prepare_cached(
-        "SELECT name,release_id FROM release_names WHERE length(name) BETWEEN ?1 AND ?2 AND (release_id GLOB 'libretro-gba/*')=?3",
+        "SELECT name,release_id FROM release_names WHERE length(name) BETWEEN ?1 AND ?2 AND (release_id GLOB 'libretro-gba/*')=(?3='GBA') AND (release_id GLOB 'libretro-nds/*')=(?3='NDS')",
     )?;
-    let mut rows = keys.query(params![length * 3 / 4, length * 5 / 4 + 1, gba])?;
+    let mut rows = keys.query(params![
+        length * 3 / 4,
+        length * 5 / 4 + 1,
+        platform.as_str()
+    ])?;
     while let Some(row) = rows.next()? {
         let key = trigrams(row.get_ref(0)?.as_str()?);
         // Sørensen–Dice similarity of at least 75% is required even for a suggestion.

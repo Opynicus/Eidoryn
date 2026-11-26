@@ -1,5 +1,5 @@
 // FXAA 3.11 PC Quality, preset 12, after the PS1 display conversion.
-// Algorithm by Timothy Lottes, NVIDIA. See THIRD_PARTY.md for the notice.
+// Algorithm by Timothy Lottes, NVIDIA. See LICENSE-THIRD-PARTY for the notice.
 @group(0) @binding(0) var<storage, read> scanout: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> dimensions: vec4<u32>;

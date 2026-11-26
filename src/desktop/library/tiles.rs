@@ -260,7 +260,9 @@ impl Desktop {
                     .text_size(px(9.))
                     .text_color(rgb(0xe3e3dc))
                     .font(self.fonts.medium())
-                    .child(if cartridge {
+                    .child(if entry.game.platform_kind() == Some(GamePlatform::Nds) {
+                        "NINTENDO DS · NDS"
+                    } else if cartridge {
                         "GAME BOY ADVANCE · GBA"
                     } else {
                         "PLAYSTATION · PS1"

@@ -10,6 +10,7 @@ pub(super) enum ImagePicker {
     Bios,
     Exe,
     Gba,
+    Nds,
 }
 
 impl Desktop {
@@ -29,7 +30,9 @@ impl Desktop {
 
     pub(super) fn toggle_audio(&mut self, cx: &mut Context<Self>) {
         if self.audio.output.is_none() {
-            match eidoryn_psx::audio::output::AudioOutput::open(self.audio.buffer.clone()) {
+            match eidoryn_psx::audio::output::AudioOutput::open(
+                self.audio.buffer(self.active_core).clone(),
+            ) {
                 Ok(output) => {
                     self.audio.output = Some(output);
                     self.notice = None;
@@ -44,11 +47,7 @@ impl Desktop {
         } else {
             self.audio.muted = !self.audio.muted;
         }
-        self.audio.buffer.set_volume(if self.audio.muted {
-            0
-        } else {
-            self.audio.volume
-        });
+        self.audio.apply_volume();
         self.preferences.muted = self.audio.muted;
         self.save_preferences();
         cx.notify();
@@ -56,6 +55,21 @@ impl Desktop {
 
     pub(super) fn command(&mut self, command: Command, cx: &mut Context<Self>) {
         if self.closing() {
+            return;
+        }
+        if self.is_nds() && !matches!(command, Command::RequestClose) {
+            use eidoryn_psx::systems::nds::Command as Nds;
+            let action = match command {
+                Command::QuickSave => Nds::QuickSave,
+                Command::QuickSaveIfUnchanged { revision, slot } => {
+                    Nds::QuickSaveIfUnchanged { revision, slot }
+                }
+                Command::QuickLoad => Nds::QuickLoad,
+                _ => return,
+            };
+            self.release_buttons(cx);
+            self.notice = None;
+            self.nds_command(action, cx);
             return;
         }
         if self.is_gba() && !matches!(command, Command::RequestClose) {
@@ -121,9 +135,14 @@ impl Desktop {
         }
     }
     pub(super) fn release_buttons(&mut self, cx: &mut Context<Self>) {
+        if self.is_nds() {
+            self.nds_pen(None, cx);
+        }
         if self.pressed_buttons != 0 {
             self.pressed_buttons = 0;
-            if self.is_gba() {
+            if self.is_nds() {
+                self.nds_command(eidoryn_psx::systems::nds::Command::Buttons(0), cx);
+            } else if self.is_gba() {
                 self.gba_command(eidoryn_psx::systems::gba::Command::Buttons(0), cx);
             } else {
                 self.notice = self.runner.send(Command::SetButtons(0)).err();
@@ -136,8 +155,8 @@ impl Desktop {
             let stroke = shortcut_keystroke(&event.keystroke, cx);
             self.release_rewind_key(Some(&stroke.key), stroke.modifiers, cx);
         }
-        if self.is_gba() {
-            self.gba_key(&event.keystroke.key, false, cx);
+        if !self.is_ps1() {
+            self.handheld_key(&event.keystroke.key, false, cx);
             return;
         }
         if let Some(button) = self.preferences.keybindings.button(&event.keystroke.key)
@@ -172,6 +191,7 @@ impl Desktop {
             ImagePicker::Bios => Text::BiosPicker,
             ImagePicker::Exe => Text::ExePicker,
             ImagePicker::Gba => Text::OpenCartridge,
+            ImagePicker::Nds => Text::OpenNds,
         });
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -203,15 +223,18 @@ impl Desktop {
                             view.bios = Some(path);
                             view.notice = None;
                         }
-                        ImagePicker::Gba if view.is_gba() => {
+                        ImagePicker::Gba | ImagePicker::Nds => {
                             let title = path
                                 .file_stem()
                                 .unwrap_or_default()
                                 .to_string_lossy()
                                 .into_owned();
-                            view.open_gba(path, title, cx);
+                            match kind {
+                                ImagePicker::Gba if view.is_gba() => view.open_gba(path, title, cx),
+                                ImagePicker::Nds if view.is_nds() => view.open_nds(path, title, cx),
+                                _ => {}
+                            }
                         }
-                        ImagePicker::Gba => {}
                         ImagePicker::Exe => view.command(Command::Load { path, bios: false }, cx),
                     },
                     Ok(None) => return,
@@ -222,7 +245,9 @@ impl Desktop {
         });
         match kind {
             // A newer selection cancels the pending picker or validation before it can update the UI.
-            ImagePicker::Bios | ImagePicker::Gba => self.image_picker = Some(task),
+            ImagePicker::Bios | ImagePicker::Gba | ImagePicker::Nds => {
+                self.image_picker = Some(task);
+            }
             ImagePicker::Exe => task.detach(),
         }
     }
@@ -328,8 +353,10 @@ impl Desktop {
         }
         // Preserve the controller binding in profiles created when these shortcuts
         // only applied to PS1. The editor prevents new conflicts on either core.
-        let gba_button = self.accepts_gba_button(key, modifiers);
-        if let Some(action) = action.filter(|a| !(gba_button && a.is_checkpoint())) {
+        let handheld_button = !modifiers.modified()
+            && (self.page == WorkspacePage::Game || self.presentation.shows_video())
+            && self.handheld_button(key).is_some();
+        if let Some(action) = action.filter(|a| !(handheld_button && a.is_checkpoint())) {
             self.run_shortcut(action, window, cx);
             cx.stop_propagation();
             return;
@@ -359,9 +386,9 @@ impl Desktop {
                 _ => return, // Enter/Space activate the focused control on key-up.
             }
         }
-        if self.is_gba() {
-            if gba_button {
-                self.gba_key(key, true, cx);
+        if !self.is_ps1() {
+            if handheld_button {
+                self.handheld_key(key, true, cx);
             }
             return;
         }
@@ -418,6 +445,9 @@ impl Desktop {
         }
     }
     pub(super) fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_nds() {
+            self.nds_pen(None, cx);
+        }
         if window.is_fullscreen() {
             match self.presentation.fullscreen {
                 FullscreenView::Workspace { return_to } => {
@@ -437,6 +467,9 @@ impl Desktop {
     }
 
     pub(super) fn toggle_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_nds() {
+            self.nds_pen(None, cx);
+        }
         self.snapshot_confirmation = None;
         self.dismiss_library_context_menu();
         self.stop_rewind(cx);
@@ -462,7 +495,7 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.is_gba() && self.page != page {
+        if !self.is_ps1() && self.page != page {
             self.image_picker.take();
             self.release_buttons(cx);
         }
@@ -493,6 +526,7 @@ impl Desktop {
         self.rebinding = None;
         self.keybindings_draft = None;
         self.gba.keybindings_draft = None;
+        self.nds.keybindings_draft = None;
         self.shortcut_editor = ShortcutEditor::default();
     }
 

@@ -164,6 +164,7 @@ impl Stage {
 pub(super) enum JobKind {
     Metadata,
     GbaMetadata,
+    NdsMetadata,
     Cover(Provider),
 }
 
@@ -172,6 +173,7 @@ impl JobKind {
         let provider = match self {
             Self::Metadata => "wikidata",
             Self::GbaMetadata => "libretro-gba",
+            Self::NdsMetadata => "libretro-nds",
             Self::Cover(Provider::Libretro) => "libretro",
             Self::Cover(Provider::ScreenScraper) => "screenscraper",
             Self::Cover(Provider::Igdb) => "igdb",
@@ -184,6 +186,7 @@ impl JobKind {
         [
             Self::Metadata,
             Self::GbaMetadata,
+            Self::NdsMetadata,
             Self::Cover(Provider::Libretro),
             Self::Cover(Provider::ScreenScraper),
             Self::Cover(Provider::Igdb),
@@ -196,7 +199,7 @@ impl JobKind {
 
     pub(super) fn stage(self) -> Stage {
         match self {
-            Self::Metadata | Self::GbaMetadata => Stage::Metadata,
+            Self::Metadata | Self::GbaMetadata | Self::NdsMetadata => Stage::Metadata,
             Self::Cover(_) => Stage::Cover,
         }
     }
@@ -510,7 +513,8 @@ pub(super) fn state(db: &Connection, id: i64) -> rusqlite::Result<State> {
             count(*) FILTER(WHERE status IN ('pending','running'))>0,
             count(*) FILTER(WHERE status='retry_wait')>0,
             count(*) FILTER(WHERE status='cancelled')>0,
-            max(CASE WHEN job_type='metadata' THEN outcome END)
+            max(CASE WHEN job_type='metadata' THEN outcome END),
+            count(*) FILTER(WHERE outcome='needs_choice')>0
         FROM scrape_jobs AS j WHERE j.game_id=? AND EXISTS(SELECT 1 FROM target_jobs t WHERE t.id=j.id)"
     )?;
     read.query_row([id], |row| {
@@ -522,7 +526,7 @@ pub(super) fn state(db: &Connection, id: i64) -> rusqlite::Result<State> {
             GameState::Cancelled
         } else {
             match row.get::<_, Option<String>>(5)?.as_deref() {
-                Some("needs_choice") => GameState::NeedsChoice,
+                _ if row.get(6)? => GameState::NeedsChoice,
                 Some("not_found") => GameState::NotFound,
                 _ if row.get(0)? => GameState::Skipped,
                 _ => GameState::Done,

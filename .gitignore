@@ -1,16 +1,35 @@
 /target/
-*.bin
-*.rom
 *.exe
 *.ppm
 
-*.iso
-*.cue
-*.chd
+# Locally supplied firmware, disc images and cartridges.
+*.[bB][iI][nN]
+*.[rR][oO][mM]
+*.[iI][sS][oO]
+*.[cC][uU][eE]
+*.[cC][hH][dD]
+*.[gG][bB][aA]
+*.[nN][dD][sS]
+test-assets/
+
+# Local test media archives and input recordings.
+/tests/**/*.[zZ][iI][pP]
+/tests/**/*.7[zZ]
+*.[bB][kK]2
+
+# User saves, clock calibration, snapshots and library data.
 *.mcd
 saves/
+*.sav
+*.rtc
 *.ps1state
-test-assets/
+*.gbastate
+*.ndsstate
+library.sqlite3
+library.sqlite3-*
+library.sqlite3.*.bak
+/covers/
+/settings.json
 
 # Local captures and diagnostics
 *.wav
@@ -20,6 +39,10 @@ test-assets/
 /dist/
 __pycache__/
 
-# Keep docs/ limited to the architecture document.
+# Keep project documentation in the READMEs and the architecture document.
+*.[mM][dD]
+*.markdown
+!/README.md
+!/README.zh-CN.md
 /docs/*
 !/docs/ARCHITECTURE.md

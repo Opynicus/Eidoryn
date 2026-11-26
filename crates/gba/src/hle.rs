@@ -1,8 +1,5 @@
 //! High-level emulation of GBA BIOS software interrupts at the cartridge ABI.
-use crate::{
-    BIOS_LEN, Error, Machine, compression,
-    cpu::{Bus, Cpu},
-};
+use crate::{BIOS_LEN, Error, Machine, compression, cpu::Bus};
 
 /// Value reported by `GetBiosChecksum` on a Game Boy Advance and Game Boy Advance SP.
 const GBA_BIOS_CHECKSUM: u32 = 0xbaae_187f;
@@ -89,6 +86,12 @@ impl Machine {
                 (self.cpu.regs[0], self.cpu.regs[1]) =
                     compression::unfilter(&mut self.memory, format, src, dst)?;
             }
+            // SoundBias sets the DAC bias to sleep or normal level.
+            0x19 => {
+                let pwm = self.memory.read16(0x0400_0088) & 0xc000;
+                let bias = if self.cpu.regs[0] == 0 { 0 } else { 0x200 };
+                self.memory.write16(0x0400_0088, pwm | bias);
+            }
             _ => {
                 let (address, instruction_set) = self.cpu.swi_location();
                 return Err(Error::UnsupportedBiosCall {
@@ -107,7 +110,7 @@ impl Machine {
         for addr in (0x0300_7e00..0x0300_8000).step_by(4) {
             self.memory.write32(addr, 0);
         }
-        self.cpu = Cpu::default();
+        self.cpu = crate::direct_boot_cpu();
         let entry = if ram_entry { 0x0200_0000 } else { 0x0800_0000 };
         self.cpu.regs[14] = entry;
         self.cpu.regs[15] = entry;

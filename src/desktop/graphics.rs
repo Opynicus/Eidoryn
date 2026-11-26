@@ -129,7 +129,7 @@ impl GraphicsControls {
 
 impl Desktop {
     pub(super) fn detect_hardware(&mut self, cx: &mut Context<Self>) {
-        if self.is_gba() || self.graphics.backends.is_some() || self.graphics.detecting {
+        if !self.is_ps1() || self.graphics.backends.is_some() || self.graphics.detecting {
             return;
         }
         self.graphics.detecting = true;
@@ -513,6 +513,24 @@ impl Desktop {
     }
 
     pub(super) fn graphics_panel(&self, cx: &mut Context<Self>) -> gpui::Div {
+        if self.is_nds() {
+            let p = &self.themes.active().palette;
+            return div().child(self.setting_group(Text::Graphics, cx, |cx| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(pair(
+                        p,
+                        self.tr(Text::Renderer),
+                        self.tr(Text::SerialRenderer),
+                    ))
+                    .child(pair(p, self.tr(Text::Resolution), "2 × 256 × 192"))
+                    .child(label(p, self.tr(Text::NdsTouchHint)))
+                    .child(self.crt_choices(cx))
+                    .child(self.clean_fullscreen_control(cx))
+            }));
+        }
         if self.is_gba() {
             return self.gba_graphics_panel(cx);
         }

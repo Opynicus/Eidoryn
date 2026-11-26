@@ -62,9 +62,7 @@ pub struct Game {
 
 impl Game {
     pub fn platform_kind(&self) -> Option<GamePlatform> {
-        [GamePlatform::Ps1, GamePlatform::Gba]
-            .into_iter()
-            .find(|platform| platform.as_str() == self.platform)
+        GamePlatform::from_id(&self.platform)
     }
 }
 

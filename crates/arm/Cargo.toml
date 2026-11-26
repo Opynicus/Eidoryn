@@ -1,0 +1,13 @@
+[package]
+name = "eidoryn-arm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-only"
+description = "Shared ARM instruction interpreter for Eidoryn"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[lints]
+workspace = true

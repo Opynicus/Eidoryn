@@ -344,7 +344,17 @@ impl Desktop {
                 } else {
                     r.date.as_str()
                 };
-                let summary = format!("{} · {} · {} · {date}", r.title, r.serial, r.region);
+                let summary = [
+                    Some(r.title.as_str()),
+                    r.product_code(),
+                    Some(r.region.as_str()),
+                    Some(date),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|field| !field.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
                 div()
                     .flex()
                     .items_center()

@@ -1,6 +1,6 @@
 # Eidoryn
 
-[![Platforms: PS1 and GBA](https://img.shields.io/badge/Platforms-PS1%20%7C%20GBA-6750A4?style=flat-square)](#current-status)
+[![Platforms: PS1, GBA and NDS](https://img.shields.io/badge/Platforms-PS1%20%7C%20GBA%20%7C%20NDS-6750A4?style=flat-square)](#current-status)
 [![Rust: 1.95+](https://img.shields.io/badge/Rust-1.95%2B-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![UI: GPUI](https://img.shields.io/badge/UI-GPUI-7C4DFF?style=flat-square)](https://www.gpui.rs/)
 [![Status: Experimental](https://img.shields.io/badge/Status-Experimental-E9A23B?style=flat-square)](#current-status)
@@ -10,11 +10,11 @@ Experimental project developed with extensive AI assistance. Hardware accuracy a
 
 **English** | [简体中文](README.zh-CN.md)
 
-[Project Overview](#project-overview) · [Features](#features) · [Current Status](#current-status) · [Getting Started](#getting-started) · [Controls](#controls) · [Architecture](#architecture) · [Documentation](#documentation) · [Roadmap](#roadmap) · [License & Acknowledgments](#license--acknowledgments)
+[Project Overview](#project-overview) · [Features](#features) · [Current Status](#current-status) · [Getting Started](#getting-started) · [Controls](#controls) · [Architecture](#architecture) · [Roadmap](#roadmap) · [License & Acknowledgments](#license--acknowledgments)
 
 ## Project Overview
 
-Eidoryn is an experimental Rust emulator with a native GPUI interface. It includes independent PlayStation (PS1) and Game Boy Advance (GBA) cores developed in this project. Both use the desktop game library. Supply your own game images. The GBA core includes its own high-level emulation (HLE) of BIOS services.
+Eidoryn is an experimental Rust emulator with a native GPUI interface. Its PlayStation (PS1), Game Boy Advance (GBA) and Nintendo DS (NDS) cores use the same desktop game library. Supply your own game images. GBA and NDS include high-level emulation (HLE) of BIOS services.
 
 ## Features
 
@@ -29,7 +29,7 @@ Eidoryn is an experimental Rust emulator with a native GPUI interface. It includ
 
 | Area | Status |
 | --- | --- |
-| Emulated systems | PlayStation and an initial Game Boy Advance core for homebrew. |
+| Emulated systems | PlayStation, Game Boy Advance and an experimental Nintendo DS core. |
 | Host platforms | Linux x86-64 has been used for development and testing. Windows and macOS headless CLI builds have passed CI smoke tests; their desktop interfaces still need hands-on runtime validation. |
 | PS1 rendering | Software rendering is the default. **Settings → Graphics / F8** offers optional hardware acceleration and detects usable backends. Windows automatic selection prefers DirectX 12, then Vulkan, then OpenGL. |
 | PS1 CPU JIT | Experimental and disabled by default; supports a subset of integer instructions on Linux x86-64 only. |
@@ -60,7 +60,9 @@ New discs appear immediately using their filenames or a release already cached o
 
 Under **Scraping settings → Metadata cache**, **Clear metadata cache** defaults to the entire library. This deletes downloaded covers, release details and cached candidate editions, including details for editions you chose. Each card shows a placeholder and its local image name. The release information in Details stays empty after restarting. Use **Scrape metadata** on a game or refresh the whole library to fetch release details and artwork again, even when automatic cover downloads are off. Eidoryn remembers your edition choice for the next scrape. Choose **Removed games only** to keep the data for games still in your library. **Clear metadata when removing a game** is off by default. Cleanup preserves manual edits, custom covers, disc images, saves and play history.
 
-The user data directory contains `library.sqlite3` with the library index, cached release fields and the source records for each matched edition. The `covers/` folder shares original images and PNG thumbnails by content hash. On Linux it is `$XDG_DATA_HOME/eidoryn` (default `~/.local/share/eidoryn`), on Windows `%LOCALAPPDATA%\eidoryn`, and on macOS `~/Library/Application Support/eidoryn`. Playtime counts time spent running forward, including cutscenes and input-free menus. A normal exit saves the final interval. [Library migration, recovery and performance measurements](tests/library-optimization-validation.md)
+The user data directory contains `library.sqlite3` with the library index, cached release fields and the source records for each matched edition. The `covers/` folder shares original images and PNG thumbnails by content hash. On Linux it is `$XDG_DATA_HOME/eidoryn` (default `~/.local/share/eidoryn`), on Windows `%LOCALAPPDATA%\eidoryn`, and on macOS `~/Library/Application Support/eidoryn`. Playtime counts time spent running forward, including cutscenes and input-free menus. A normal exit saves the final interval.
+
+Before upgrading an existing library, Eidoryn saves a copy as `library.sqlite3.vN.bak`, where N is the old schema version. To use it with the earlier release, close all Eidoryn instances and move the current database and any `library.sqlite3-wal` and `library.sqlite3-shm` files together to a backup folder. Copy the matching backup into the user data directory as `library.sqlite3` and keep the existing `covers/` folder.
 
 ### Play a GBA cartridge
 
@@ -72,15 +74,27 @@ In Game view, use the arrow keys for the D-pad, **X / Z** for A / B, **Q / E** f
 
 Press **F8** and open **Controller** to edit keyboard bindings for the selected core. Under **Graphics**, enable GBA hardware acceleration to composite layers and apply LCD color effects on the GPU. The debugger shows ARM/Thumb disassembly, registers, the stack and LCD status. **F10** steps one instruction and **F9** advances one frame.
 
-Save from the game's own menu to update its raw `.sav` file. Eidoryn supports SRAM (32 KiB), Flash (64 or 128 KiB) and EEPROM (512 bytes or 8 KiB). Each save lives under `saves/gba/<ROM SHA-256>.sav` in the user data directory, so moving or renaming the ROM keeps its progress. The **Cartridge save** panel in Game view can sync, export or import a save. Import restarts the cartridge and clears rewind history.
+Save from the game's own menu to update its raw `.sav` file. Eidoryn supports SRAM (32 KiB), Flash (64 or 128 KiB) and EEPROM (512 bytes or 8 KiB). Each save lives under `saves/gba/<ROM SHA-256>.sav` in the user data directory, so moving or renaming the ROM keeps its progress. Games such as *Pokémon Emerald* use the cartridge real-time clock. It follows the host UTC clock, including while the emulator is closed. Game-written clock adjustments are stored beside the save in a separate `.rtc` file. The **Cartridge save** panel in Game view can sync, export or import a save. Import restarts the cartridge and clears rewind history.
 
 GBA uses the same **Snapshots** menu, quick slot, save-state manager and rewind controls as PS1. GBA snapshots are stored in `saves/gba/states/<ROM SHA-256>/` under the user data directory. Loading a snapshot or releasing rewind keeps the previous running or paused state. The restored timeline includes the cartridge save memory. Use **Export .sav** to keep a separate copy of in-game progress before loading an older timeline.
 
-The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending and VBlank interrupts. CPU and DMA timing are approximate. Audio and link cable support remain outside this version. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
+The first version renders at 240 × 160 and supports tiled backgrounds, bitmap modes 3–5, sprites, mosaic, display windows, color blending and VBlank interrupts. CPU and DMA timing are approximate. The GBA core mixes its two square waves, wave channel, noise and both timer-driven Direct Sound FIFOs into stereo. The Game view volume and mute controls also apply to cartridges. Link cable support is pending. Compatibility testing covers original homebrew cartridges, including an ARM/Thumb keypad and color test and an interrupt-driven frame counter. Run `cargo test --locked -p eidoryn-gba` to reproduce them.
 
 Run `cargo test --release --locked -p eidoryn-gba --test local_boot -- --ignored --nocapture` to start each local cartridge with HLE and run 1,800 frames without input. The tests read ROMs from the repository’s `tests/` folder by default. Set `EIDORYN_GBA_TEST_ROMS` to select a specific ROM or directory and `EIDORYN_GBA_BOOT_FRAMES` to change the duration.
 
 For regional editions of *Castlevania: Aria of Sorrow*, run `cargo test --release --locked -p eidoryn-gba --test aria_of_sorrow -- --ignored --nocapture` with the same folder, or use `EIDORYN_ARIA_ROM` to select a single image. The verified Japanese and US retail images have reference checks for their title screens, save slots and the Castle Corridor. Other editions are checked for visible output during boot and compared against an idle run of the same image to detect keypad response. Each run uses a fresh in-memory save.
+
+For English *Pokémon Emerald* and US *Castlevania: Harmony of Dissonance*, point `EIDORYN_GBA_TEST_ROMS` at the folder containing both cartridges and run `cargo test --release --locked -p eidoryn-gba --test emerald --test harmony_of_dissonance -- --ignored --nocapture`. Emerald starts a new game, saves in Littleroot Town and continues after a cold boot. Harmony checks the title, playable character and castle drawbridge against mGBA.
+
+### Play a Nintendo DS cartridge
+
+Add a local `.nds` file to **Game library** and select **Start game**, or choose **NDS** in the top bar and open it from the console. The core loads the cartridge's ARM9 and ARM7 programs directly. A first launch needs only the cartridge.
+
+Game view stacks two 256 × 192 LCDs. Click or drag on the lower screen to use the stylus. Keyboard bindings include X and Y and can be changed in **Settings → Controller**. The debugger shows both program counters. **F10** advances one dual-CPU scheduling step and **F9** advances one frame. The quick slot is stored per cartridge under `saves/nds/states/<ROM SHA-256>/`.
+
+The DS core renders tiles, bitmaps, sprites and textured 3D polygons in software with approximate CPU and device timing. Two-byte-address EEPROM cartridges save automatically to `saves/nds/<ROM SHA-256>.sav` in the user data directory. The emulated wireless controller passes local startup checks and scans with no peers. The ARM7 sound unit mixes 16 channels of PCM, IMA-ADPCM, square waves or noise with per-channel volume and panning. Game view uses the same volume and mute controls as the other cores. Multiplayer and other cartridge backup types are outside its current coverage. Run `cargo test --locked -p eidoryn-nds` for core tests. To test another homebrew that draws during startup, set `EIDORYN_NDS_TEST_ROM` and run `cargo test --release --locked -p eidoryn-nds --test local_boot -- --ignored --nocapture`.
+
+The US *Castlevania: Order of Ecclesia* regression starts the cartridge with erased save memory, operates the language selector, starts a new game, and verifies that pressing Right moves Shanoa in the first room. Put your copy in the repository’s `tests/` directory or set `EIDORYN_ECCLESIA_ROM`, then run `cargo test --release --locked -p eidoryn-nds --test order_of_ecclesia -- --ignored`.
 
 ### Build and launch
 
@@ -113,11 +127,11 @@ Under **Display options → Internal resolution**, select 1×, 2×, or 4× with 
 
 Under **Display options → Rendering color depth**, choose **True color (RGB888)** for smoother shading and blending at any hardware resolution. **Native (RGB555)** is the default. Changes apply to subsequent drawing. The game still reads RGB555 from VRAM and uses it for texture feedback. Software rendering uses native color and keeps your hardware preference for the next switch.
 
-Under **Display options → Anti-aliasing**, choose **FXAA** to smooth edges at the selected hardware resolution. It defaults to **Off**. In-game text and thin lines may look softer. Changes appear on the next frame, including after a debugger step. PS1 RGB24 movies keep their original scanout. [FXAA validation and frame timings](tests/fxaa-validation.md)
+Under **Display options → Anti-aliasing**, choose **FXAA** to smooth edges at the selected hardware resolution. It defaults to **Off**. In-game text and thin lines may look softer. Changes appear on the next frame, including after a debugger step. PS1 RGB24 movies keep their original scanout.
 
 Use `./target/release/eidoryn.exe --list-renderers | Out-Host` in PowerShell to list detected backends and any unavailability reasons.
 
-The `hardware` build feature includes all four wgpu backends; individual `dx12`, `vulkan`, `opengl`, and `metal` features remain available. Backends also require platform and driver support. All share the integer compute rasterizer: drawing, texture lookup, blending and display conversion run on the GPU, then frames are read back for the desktop UI. Performance depends on the game and driver. wgpu 30 has no native DirectX 11 backend; older Windows GPUs can use OpenGL if compute support is available, or software rendering. True color has been tested on Linux with Vulkan and OpenGL. [Pixel tests and frame timings](tests/true-color-validation.md)
+The `hardware` build feature includes all four wgpu backends; individual `dx12`, `vulkan`, `opengl`, and `metal` features remain available. Backends also require platform and driver support. All share the integer compute rasterizer: drawing, texture lookup, blending and display conversion run on the GPU, then frames are read back for the desktop UI. Performance depends on the game and driver. wgpu 30 has no native DirectX 11 backend; older Windows GPUs can use OpenGL if compute support is available, or software rendering. True color has been tested on Linux with Vulkan and OpenGL.
 
 On Windows, the native title bar provides window controls. The workspace bar shows the current page, playback status and settings. Release desktop builds start without a console window; debug builds and builds without `desktop` retain the console. For interactive CLI output, use a headless build (`--no-default-features`). To capture output from the desktop release in PowerShell and wait for it to finish, pipe it to `Out-Host`, for example `./target/release/eidoryn.exe --help | Out-Host`.
 
@@ -182,8 +196,11 @@ cargo test --locked --workspace
 
 With default features disabled, the core and CLI build without desktop, audio-output, or GPU dependencies. `--frames` counts execution slices, not video frames.
 
-GPUI follows the official `main` branch; `Cargo.lock` pins the tested revision.
-See [dependency provenance](THIRD_PARTY.md).
+Run `cargo test --locked --all-features --lib library::` to check indexing, metadata, artwork and recovery. To exercise regional scraping against the live providers, run `cargo test --locked --all-features --lib live_regional_scrape_matrix -- --ignored`.
+
+On a physical Vulkan GPU, run `cargo test --release --locked --no-default-features --features vulkan --test vulkan_gpu -- --ignored --test-threads=1` for the PS1 rendering tests, including FXAA and true color. The frame-time benchmarks replay a local PS1 save state with the same input for both settings. [FXAA benchmark](examples/fxaa_bench.rs) · [True-color benchmark](examples/true_color_bench.rs)
+
+GPUI follows the official `main` branch, and `Cargo.lock` pins the tested revision. [Dependency sources and hardware references](docs/ARCHITECTURE.md#依赖与参考资料)
 
 </details>
 
@@ -227,33 +244,25 @@ CLI / GPUI
     ├── systems::ps1 ──→ eidoryn-ps1 ──→ optional JIT runtime
     │     media, cards,      PS1 hardware core
     │     and worker
-    ├── systems::gba ──→ eidoryn-gba
+    ├── systems::gba ──→ eidoryn-gba ──→ eidoryn-arm
     │     cartridge, SRAM,   GBA hardware core
     │     and worker
+    ├── systems::nds ──→ eidoryn-nds ──→ eidoryn-arm
     └── eidoryn-host
           audio, CRT filters, and themes
 ```
 
-Each emulation worker owns its machine and exchanges commands and snapshots with the interface. The hardware cores live in `crates/ps1` and `crates/gba`. Desktop adapters in `src/systems` connect them to the application, and `crates/host` supplies reusable host services. See [architecture](docs/ARCHITECTURE.md) for boundaries and data flow.
-
-## Documentation
-
-The architecture document is currently in Chinese.
-
-| Document | Contents |
-| --- | --- |
-| [Architecture](docs/ARCHITECTURE.md) | Modules, threads, and data flow |
-| [Third-party information](THIRD_PARTY.md) | Dependencies and hardware references |
+Each emulation worker owns its machine and exchanges commands and snapshots with the interface. The hardware cores live in `crates/ps1`, `crates/gba` and `crates/nds`. GBA and NDS share the ARM interpreter in `crates/arm`. Desktop adapters in `src/systems` connect them to the application, and `crates/host` supplies reusable host services. The architecture guide describes the module boundaries and data flow. [Architecture (Chinese)](docs/ARCHITECTURE.md)
 
 ## Roadmap
 
 - Improve PS1 device timing, audio accuracy, and game compatibility; expand regression coverage.
 - Continue measuring frame time, audio latency, and Vulkan readback costs before optimizing further.
 - Validate and improve Windows and macOS desktop execution and release workflows.
-- Extend GBA compatibility with additional cartridge save types, more accurate hardware timing and audio.
+- Extend GBA compatibility with additional cartridge save types and more accurate hardware timing.
 
 ## License & Acknowledgments
 
-The project is licensed under [GPL-3.0-only](LICENSE). [LICENSE-MIT](LICENSE-MIT) preserves the license notice for the original prototype. See [THIRD_PARTY.md](THIRD_PARTY.md) for dependencies and hardware references.
+The project is licensed under [GPL-3.0-only](LICENSE). [LICENSE-MIT](LICENSE-MIT) preserves the license notice for the original prototype. Third-party license notices are included with each release. [Third-party notices](LICENSE-THIRD-PARTY)
 
 Hardware behavior is informed by [PSX-SPX](https://psx-spx.consoledev.net/); the desktop interface uses [GPUI](https://www.gpui.rs/). Development makes extensive use of AI assistance, and hardware behavior and compatibility remain under active validation.

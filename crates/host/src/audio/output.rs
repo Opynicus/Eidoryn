@@ -1,4 +1,4 @@
-//! Safe CPAL adapter. All PS1 sound generation stays in the original device core.
+//! CPAL output for the currently selected emulation core.
 use super::AudioBuffer;
 use cpal::{
     FromSample, SizedSample,
@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct AudioOutput {
     _stream: cpal::Stream,
+    source: Arc<Mutex<AudioBuffer>>,
     error: Arc<Mutex<Option<String>>>,
     pub sample_rate: u32,
 }
@@ -25,19 +26,20 @@ impl AudioOutput {
             config.buffer_size = cpal::BufferSize::Fixed(512_u32.clamp(*min, *max));
         }
         let error = Arc::new(Mutex::new(None));
+        let source = Arc::new(Mutex::new(buffer));
         let stream = match supported.sample_format() {
-            cpal::SampleFormat::F32 => build::<f32>(&device, &config, buffer, &error),
-            cpal::SampleFormat::F64 => build::<f64>(&device, &config, buffer, &error),
-            cpal::SampleFormat::I8 => build::<i8>(&device, &config, buffer, &error),
-            cpal::SampleFormat::I16 => build::<i16>(&device, &config, buffer, &error),
-            cpal::SampleFormat::I24 => build::<cpal::I24>(&device, &config, buffer, &error),
-            cpal::SampleFormat::I32 => build::<i32>(&device, &config, buffer, &error),
-            cpal::SampleFormat::I64 => build::<i64>(&device, &config, buffer, &error),
-            cpal::SampleFormat::U8 => build::<u8>(&device, &config, buffer, &error),
-            cpal::SampleFormat::U16 => build::<u16>(&device, &config, buffer, &error),
-            cpal::SampleFormat::U24 => build::<cpal::U24>(&device, &config, buffer, &error),
-            cpal::SampleFormat::U32 => build::<u32>(&device, &config, buffer, &error),
-            cpal::SampleFormat::U64 => build::<u64>(&device, &config, buffer, &error),
+            cpal::SampleFormat::F32 => build::<f32>(&device, &config, &source, &error),
+            cpal::SampleFormat::F64 => build::<f64>(&device, &config, &source, &error),
+            cpal::SampleFormat::I8 => build::<i8>(&device, &config, &source, &error),
+            cpal::SampleFormat::I16 => build::<i16>(&device, &config, &source, &error),
+            cpal::SampleFormat::I24 => build::<cpal::I24>(&device, &config, &source, &error),
+            cpal::SampleFormat::I32 => build::<i32>(&device, &config, &source, &error),
+            cpal::SampleFormat::I64 => build::<i64>(&device, &config, &source, &error),
+            cpal::SampleFormat::U8 => build::<u8>(&device, &config, &source, &error),
+            cpal::SampleFormat::U16 => build::<u16>(&device, &config, &source, &error),
+            cpal::SampleFormat::U24 => build::<cpal::U24>(&device, &config, &source, &error),
+            cpal::SampleFormat::U32 => build::<u32>(&device, &config, &source, &error),
+            cpal::SampleFormat::U64 => build::<u64>(&device, &config, &source, &error),
             format => return Err(format!("Unsupported audio output format: {format}")),
         }?;
         stream
@@ -45,9 +47,18 @@ impl AudioOutput {
             .map_err(|e| format!("Cannot start audio: {e}"))?;
         Ok(Self {
             _stream: stream,
+            source,
             error,
             sample_rate: config.sample_rate,
         })
+    }
+
+    /// Route the open device to a different fixed-rate PCM queue.
+    pub fn select_buffer(&self, buffer: AudioBuffer) {
+        *self
+            .source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = buffer;
     }
 
     pub fn take_error(&self) -> Option<String> {
@@ -58,16 +69,24 @@ impl AudioOutput {
 fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    buffer: AudioBuffer,
+    source: &Arc<Mutex<AudioBuffer>>,
     error: &Arc<Mutex<Option<String>>>,
 ) -> Result<cpal::Stream, String> {
+    let source = Arc::clone(source);
     let channels = usize::from(config.channels);
     let rate = config.sample_rate;
     let error = Arc::clone(error);
     device
         .build_output_stream(
             *config,
-            move |samples: &mut [T], _| buffer.render(samples, channels, rate, T::from_sample),
+            move |samples: &mut [T], _| {
+                let buffer = source.try_lock().ok().map(|current| current.clone());
+                if let Some(buffer) = buffer {
+                    buffer.render(samples, channels, rate, T::from_sample);
+                } else {
+                    samples.fill(T::from_sample(0.0));
+                }
+            },
             move |failure| {
                 if let Ok(mut slot) = error.lock() {
                     *slot = Some(format!("Audio output: {failure}"));

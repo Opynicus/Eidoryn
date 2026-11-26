@@ -1,7 +1,8 @@
 //! A small, original x86-64 integer code generator with a safe execution API.
 //! Only this crate crosses the executable-memory/FFI boundary. It does not
 //! accept arbitrary machine code, embed guest addresses or expose code pointers.
-//! See SAFETY.md for the ABI, memory bounds and callback/unwind invariants.
+//! The JIT section of `docs/ARCHITECTURE.md` specifies the ABI, memory bounds,
+//! and callback and unwind invariants.
 use std::io;
 
 #[derive(Clone, Copy, Debug)]

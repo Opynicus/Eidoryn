@@ -242,7 +242,7 @@ fn work(
         return Work::Cancelled;
     }
     match claim.kind {
-        JobKind::Metadata | JobKind::GbaMetadata => {
+        JobKind::Metadata | JobKind::GbaMetadata | JobKind::NdsMetadata => {
             match metadata.prepare(lib, claim.game, claim.mode, cancel) {
                 Ok(prepared) => Work::Metadata(prepared),
                 Err(e) => Work::Failed(Failure {
@@ -462,7 +462,7 @@ fn commit_result(
             }
             Some(metadata::RefreshOutcome::NoSerial) | None => "skip_cover",
             Some(metadata::RefreshOutcome::NotFound) => {
-                if claim.kind == JobKind::GbaMetadata {
+                if matches!(claim.kind, JobKind::GbaMetadata | JobKind::NdsMetadata) {
                     jobs::skip_dependent_covers(tx, claim.id).map_err(|e| e.to_string())?;
                 }
                 "not_found"
@@ -478,6 +478,8 @@ fn commit_result(
         Err("Job lease expired before result publication".into())
     }
 }
+#[cfg(test)]
+mod regional_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

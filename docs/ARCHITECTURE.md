@@ -1,6 +1,6 @@
 # Eidoryn 代码结构
 
-Eidoryn 的桌面应用通过各自的适配层运行 PlayStation 和 Game Boy Advance。两个硬件核心可以独立构建，共用的游戏库在同一个收藏中展示两种平台，按条目的平台选择启动核心。顶栏的核心选择决定键位、图形设置和调试器的数据来源。
+Eidoryn 的桌面应用通过各自的适配层运行 PlayStation、Game Boy Advance 和 Nintendo DS。三个硬件核心可以独立构建，共用的游戏库按条目的平台选择启动核心。顶栏的核心选择决定键位、图形设置和调试器的数据来源。
 
 ```text
 Eidoryn (CLI / GPUI)
@@ -8,7 +8,8 @@ Eidoryn (CLI / GPUI)
 │   ├── eidoryn-ps1              CPU / Bus / GPU / SPU / CD-ROM / SIO 等硬件
 │   │   └── eidoryn-jit-runtime  可选原生执行边界
 │   └── eidoryn-host::audio      有界 PCM 传输
-├── systems::gba ── eidoryn-gba  卡带、运行线程与 SAV 文件 / ARM7TDMI、总线与显示
+├── systems::gba ── eidoryn-gba ── eidoryn-arm  GBA 卡带、ARM7TDMI 与显示
+├── systems::nds ── eidoryn-nds ── eidoryn-arm  DS 卡带、ARM9 / ARM7 与双屏显示
 └── eidoryn-host                 音频输出 / WAV / CRT / 主题插件
 ```
 
@@ -17,7 +18,8 @@ Eidoryn (CLI / GPUI)
 | 位置 | 职责 |
 | --- | --- |
 | `crates/gba/` | 独立 GBA 硬件核心，按扫描线采集图层与窗口状态，可用 GPU 合成 RGB 帧；按需读取 ARM7TDMI、栈和 LCD 调试快照 |
-| `src/systems/gba.rs`、`src/library/playtime.rs` | GBA 运行、卡带存档、快照和倒带，以及两种平台共用的游玩时长记录 |
+| `src/systems/gba.rs`、`src/systems/nds.rs` | 各自负责卡带运行和存档。GBA 适配层也管理倒带历史 |
+| `src/library/playtime.rs` | 游戏库按会话记录各平台的游玩时长 |
 | `crates/ps1/src/{cpu,bus,machine}.rs` | MIPS CPU、总线、机器状态与执行；DMA 位于 `bus/dma.rs` |
 | `crates/ps1/src/cpu_engine.rs`、`cpu/jit.rs` | 解释器/JIT 选择、缓存及逐指令异常/中断/代码失效检查 |
 | `crates/ps1/src/gpu/` | 自主软件光栅器、多线程绘图、共享 wgpu 计算管线与 WGSL；GP0/GP1 和显示时序位于 `gpu.rs` |
@@ -49,9 +51,15 @@ Eidoryn (CLI / GPUI)
 1. 在独立 crate 中实现自身机器、时序、媒体与错误，不让核心反向依赖 GPUI 或应用。
 2. 在 `src/systems/<system>` 中实现加载、持久化、输入映射和调试适配；PS1 的双记忆卡、光驱、MIPS 寄存器与渲染设置不作为共同要求。
 3. 复用 `eidoryn-host` 的音频/主题/显示滤镜。用 `AudioBuffer::with_sample_rate(NonZeroU32)` 和 `WavWriter::with_sample_rate` 指定 PCM 源采样率。现有 `default()` / `create()` 仍保持 44.1 kHz；WAV 不可表示的字节率在创建文件前拒绝。
-4. 有第二个真实核心后，再根据两个实现提炼运行、输入和视频接口。当前 GPUI 的画幅、按键映射与 Inspector 仍是 PS1 适配，需要在接入新核心时扩展；本次没有假装它们已经通用。
+4. 复用现有的游戏视图、快照和倒带控件，并为新平台提供画幅、按键映射和调试数据。
 
 热路径保留静态调用，不引入逐指令虚调用或新的队列。依赖版本未升级，主核心和宿主 crate 共同继承工作区的 unsafe 禁止和 Clippy 规则；JIT crate 保留自己的安全边界约束。应用目录与窗口 application ID 保留原值，避免影响现有启动器和窗口管理规则。
+
+## 掌机音频
+
+GBA 核心随 CPU 时钟推进 PSG 和两路 Direct Sound FIFO。定时器决定 FIFO 的播放速度，音频 DMA 从客体内存补充样本，混音器以 32,768 Hz 输出立体声。NDS 核心随 ARM7 总线时钟推进 16 个声道，从客体内存读取 PCM 或 IMA-ADPCM 数据，或生成方波及噪声。声像与主音量在核心内生效，捕获单元按客体寄存器设置写回内存。
+
+运行线程按帧取走 PCM 并放入各自的定长宿主队列。一个 CPAL 输出流读取当前选中的队列，按该核心的采样率重采样到声卡采样率。切换平台沿用同一设备和音量。暂停、读取快照和 GBA 倒带时清空待播样本，快照保存声道和定时器状态，以便在恢复的位置继续生成声音。
 
 ## PS1 执行与同步
 
@@ -96,7 +104,7 @@ FXAA 在完整的硬件 RGB15 呈现帧上工作。扫描输出完成后，独�
 
 CPU 与设备共用 33,868,800 Hz 的累计周期时间线；指令按当前近似耗时推进设备，JIT 与解释器遵守相同的边界。周期定义与计数 API 位于 `crates/ps1/src/timing.rs` 和 `crates/ps1/src/bus.rs`，时序回归测试见 `tests/cpu_timing.rs`。
 
-`Machine::run_steps` 和 `run_slice` 按所选 CPU 模式执行；`step` 保留解释器调试语义。JIT 仅编译非陷阱整数操作，逐指令回调负责设备时钟、异常边界和代码修改校验。缓存有上限，原生代码只读共享，选择失败不改变原机器。原生执行安全边界见 [JIT runtime 安全约束](../crates/jit-runtime/SAFETY.md)。
+`Machine::run_steps` 和 `run_slice` 按所选 CPU 模式执行；`step` 保留解释器调试语义。JIT 仅编译非陷阱整数操作，逐指令回调负责设备时钟、异常边界和代码修改校验。缓存有上限，原生代码只读共享，选择失败不改变原机器。原生调用的约束见下文。[JIT 原生执行边界](#jit-原生执行边界)
 
 执行块以约 4 ms 宿主时间为限，便于响应命令；一帧完成后才等待相应 NTSC/PAL 截止时间。FPS 由 GPU 完成的视频帧数测量，有限吸收调度抖动，避免旧的固定工作预算降低模拟速度。取指/RAM 字访问走连续区域快路径，越界和镜像交界仍走完整访存；计时器和 GPU 时序优化有逐时钟对照测试。
 
@@ -107,3 +115,21 @@ PCM 按设备时钟在核心生成，工作线程独立排入 `AudioBuffer`，�
 快照中的像素和尺寸未变化时，窗口复用已有纹理，运行中的调试/状态信息最多每 100 ms 触发一次重绘。新的视频帧、暂停和关闭立即刷新，避免静态全屏画面仍被状态计数强制每帧重绘。软件三角形边缘权重按整数增量推进；恒定颜色和原色纹理跳过无效插值，保留逐像素输出等价性。视频转换按行处理，RGB24 直接解包连续 VRAM 半字，RGB15 展开三个颜色通道；没有改动游戏指令、设备时序或绘图命令。相关像素等价性测试位于 `tests/display.rs`，转换基准位于 `examples/display_probe.rs`。
 
 新增 UI 元素使用 `Palette` 语义字段；新增主题无需改硬件核心。`theme` 和 JSON 依赖随 `desktop` 特性启用，关闭所有默认特性后的软件核心保留 smallvec 和即时存档的序列化、校验依赖。原 `runner::load_path/load_disc` 入口继续重导出，新的调用方使用 `systems::ps1::media`。
+
+## JIT 原生执行边界
+
+`eidoryn-jit-runtime` 在 Linux x86-64 上按 SysV AMD64 ABI 执行生成的整数指令。PS1 核心保持 `unsafe_code = "forbid"`。实现和边界测试位于 [JIT crate](../crates/jit-runtime/src/)。
+
+- 编译接口接收 1 至 64 个有类型的整数操作。寄存器编号和移位量均小于 32。生成的寄存器访存使用独占的 `[u32; 32]` 和 0 至 124 的固定字节偏移，零号寄存器只读。宿主地址、跳转目标、回调入口和指令长度都由发射器确定。
+- 发射器在匿名可写映射中生成指令，随后将映射转换为只读可执行。已发布的代码可以共享。每次同步调用独占自己的寄存器和回调上下文，并传入与上下文类型匹配的 Rust 回调入口。这三个参数仅在调用期间有效。
+- 生成的函数在每条退出路径上恢复 `r12` 至 `r14`、栈指针和返回地址。进入函数时 `rsp % 16 == 8`，三次压栈后每个 `CALL` 前均满足 `rsp % 16 == 0`。其他被调用者保存的寄存器、SIMD 寄存器、方向标志和浮点控制状态保持不变。
+- 首条操作前和每条操作完成后（含最后一条）均调用边界回调。PS1 核心在此维护客体 PC、延迟槽、中断和设备时钟，并可停止后续操作。Rust 回调内部捕获 panic，等原生函数返回后再继续展开，避免展开过程穿过缺少展开元数据的生成代码。
+
+调用约定、指令编码和内存保护分别参考 [SysV AMD64 ABI](https://gitlab.com/x86-psABIs/x86-64-ABI)、[Intel 指令手册](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)和 [memmap2 映射接口](https://docs.rs/memmap2/0.9.12/memmap2/struct.MmapMut.html)。
+
+## 依赖与参考资料
+
+- 桌面界面使用 GPUI 和 `gpui_platform`。`Cargo.lock` 锁定 Zed 上游的 Git 修订，其中包含 Windows 拖放修复。工作区同时固定 `async-task`、`calloop` 和 `khronos-egl` 的上游修订。[锁定的 GPUI 修订](https://github.com/zed-industries/zed/commit/0cfc4a483dfab6ca171df0ceedaaa2a9f7954d0e) · [Windows 拖放修复](https://github.com/zed-industries/zed/pull/42227)
+- PS1 光驱使用 chd-rs 解压 CHD，硬件渲染器通过 wgpu 提交计算任务，CPAL 负责宿主音频输出。WGSL 抗锯齿着色器实现了 Timothy Lottes 的 FXAA 3.11 PC Quality preset 12。[chd-rs](https://github.com/SnowflakePowered/chd-rs) · [wgpu API](https://docs.rs/wgpu/30.0.2/wgpu/) · [FXAA 参考实现](https://github.com/hghdev/NVIDIAGameWorks-GraphicsSamples/blob/master/samples/es3-kepler/FXAA/FXAA3_11.h)
+- PS1 寄存器、设备协议、SPU 的 512 项高斯系数和 XA 的七张滤波系数表参考 PSX-SPX 硬件资料。[PSX-SPX](https://psx-spx.consoledev.net/) · [SPU](https://psx-spx.consoledev.net/soundprocessingunitspu/) · [光盘与 XA 格式](https://psx-spx.consoledev.net/cdromformat/)
+- `assets/eidoryn.png` 是为项目生成的图标，测试程序和测试光盘生成脚本由项目实现。发布包随附 NVIDIA 与 Zed 的版权和许可原文。[第三方许可](../LICENSE-THIRD-PARTY)

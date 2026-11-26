@@ -34,8 +34,17 @@ fn wait_for_gba(
     cx: &mut VisualTestContext,
     ready: impl Fn(&Desktop) -> bool,
 ) {
+    wait_for_gba_with_timeout(view, cx, Duration::from_secs(5), ready);
+}
+
+fn wait_for_gba_with_timeout(
+    view: &gpui::Entity<Desktop>,
+    cx: &mut VisualTestContext,
+    timeout: Duration,
+    ready: impl Fn(&Desktop) -> bool,
+) {
     cx.run_until_parked();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + timeout;
     loop {
         view.update(cx, Desktop::receive_snapshot);
         if view.read_with(cx, |v, _| ready(v)) {
@@ -447,4 +456,89 @@ fn switching_cores_while_importing_keeps_the_original_save(cx: &mut TestAppConte
     cx.run_until_parked();
     assert!(!cx.has_pending_prompt());
     assert_eq!(std::fs::read(sav).unwrap(), original);
+}
+
+#[cfg(debug_assertions)] // GPUI records the clickable bounds in debug builds.
+#[gpui::test]
+#[ignore = "requires a local cartridge in EIDORYN_GBA_TEST_ROM"]
+fn local_library_cartridge_supports_rewind_and_quick_load(cx: &mut TestAppContext) {
+    use eidoryn_psx::preferences::GbaRenderer;
+    use eidoryn_psx::systems::checkpoints::QuickSlot;
+    let hardware = std::env::var_os("EIDORYN_GBA_TEST_HARDWARE").is_some();
+    let rom = std::path::PathBuf::from(std::env::var_os("EIDORYN_GBA_TEST_ROM").unwrap())
+        .canonicalize()
+        .unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let library = Library::open(&data.path().join("library.db")).unwrap();
+    library
+        .scan_files(std::slice::from_ref(&rom), &AtomicBool::default(), |_| {})
+        .unwrap();
+    let (view, cx) = cx.add_window_view(desktop);
+    view.update(cx, |v, _| {
+        v.library = Workspace::new(Some(library));
+        v.preferences_path = Some(data.path().join("settings.json"));
+        v.preferences.rewind_enabled = true;
+        v.preferences.gba_renderer = GbaRenderer::from_hardware(hardware);
+    });
+    cx.simulate_resize(size(px(1280.), px(960.)));
+    cx.run_until_parked();
+    click_control(cx, "nav-library");
+    click_control(cx, "library-entry-1");
+    click_control(cx, "lib-start");
+    wait_for_gba_with_timeout(&view, cx, Duration::from_secs(60), |v| {
+        let s = &v.gba.snapshot;
+        assert!(s.error.is_none(), "{}: {:?}", rom.display(), s.error);
+        assert!(
+            s.graphics_error.is_none(),
+            "{}: {:?}",
+            rom.display(),
+            s.graphics_error
+        );
+        let (rgb, _) = s.rgb.as_chunks::<3>();
+        s.rewind_states >= 2
+            && rgb
+                .first()
+                .is_some_and(|first| rgb.iter().filter(|c| *c != first).take(300).count() == 300)
+    });
+    assert!(view.read_with(cx, |v, _| v.is_gba()
+        && v.running()
+        && v.gba.snapshot.graphics_device.is_some() == hardware
+        && v.page == WorkspacePage::Game
+        && v.gba.snapshot.path.as_ref() == Some(&rom)));
+    cx.simulate_keystrokes("ctrl-z");
+    wait_for_gba(&view, cx, |v| v.gba.snapshot.rewinding);
+    cx.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("ctrl-z").unwrap(),
+    });
+    wait_for_gba(&view, cx, |v| v.running() && !v.gba.snapshot.rewinding);
+    press_keys(cx, "f5");
+    wait_for_gba(&view, cx, |v| !v.running());
+    let saved = view.read_with(cx, |v, _| v.gba.snapshot.rgb.clone());
+    click_control(cx, "quick-save");
+    wait_for_gba(&view, cx, |v| {
+        matches!(v.gba.snapshot.quick_slot, QuickSlot::Saved(_))
+    });
+    press_keys(cx, "f5");
+    wait_for_gba(&view, cx, Desktop::running);
+    click_control(cx, "quick-load");
+    wait_for_gba(&view, cx, |v| {
+        v.gba
+            .snapshot
+            .success_message
+            .as_deref()
+            .is_some_and(|s| s.contains("Loaded"))
+    });
+    press_keys(cx, "f5");
+    wait_for_gba(&view, cx, |v| !v.running());
+    click_control(cx, "quick-load");
+    wait_for_gba(&view, cx, |v| {
+        !v.running()
+            && v.gba.snapshot.rgb == saved
+            && v.gba
+                .snapshot
+                .success_message
+                .as_deref()
+                .is_some_and(|s| s.contains("Loaded"))
+    });
+    assert!(!cx.did_prompt_for_paths());
 }

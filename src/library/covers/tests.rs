@@ -3,6 +3,19 @@ use crate::library::metadata;
 use image::{DynamicImage, RgbImage};
 use std::fs;
 
+fn fetch_url(
+    lib: &Library,
+    id: i64,
+    art: Remote<'_>,
+    url: &Url,
+    cancel: &AtomicBool,
+    request: impl FnOnce() -> Result<Option<http::Response<Vec<u8>>>, String>,
+) -> Result<String, String> {
+    super::fetch_url(lib, id, art, url, cancel, || {
+        request().map(|r| r.map_or(CoverResponse::Missing, CoverResponse::Http))
+    })
+}
+
 const SERIAL: &str = "SCUS-94900";
 const MATCHING: Remote<'static> = Remote {
     serial: SERIAL,
@@ -86,6 +99,53 @@ fn explicit_and_missing_gba_art_identify_the_rom_before_any_metadata_refresh() {
                 .ends_with("/Box%20_%20Cart%20(USA).png")
         );
     }
+}
+
+#[cfg(feature = "ui-tests")]
+#[test]
+fn missing_ntsc_j_art_retries_legacy_miss_but_selected_japan_market_remains_exact() {
+    let (_dir, lib) = fixture();
+    let serial = "SCPS-45196";
+    let lib = lib.with_scrape_responses(
+        response(200, vec![]),
+        response(200, encoded(ImageFormat::Png)),
+    );
+    let db = lib.connect().unwrap();
+    db.execute(
+        "UPDATE game_metadata SET disc_serial=?,disc_region='Japan' WHERE game_id=1",
+        [serial],
+    )
+    .unwrap();
+    let old_key = provider_key(Provider::Libretro, "", serial, "", "Japan").unwrap();
+    record(
+        &db,
+        1,
+        Remote { serial, ..MATCHING },
+        old_key.as_str(),
+        "not_found",
+        i64::MAX,
+    )
+    .unwrap();
+    let cancel = AtomicBool::default();
+    assert_eq!(
+        fetch_missing(&lib, 1, Provider::Libretro, "", &cancel).unwrap(),
+        "ready"
+    );
+    assert!(
+        metadata::list(&lib).unwrap()[&1]
+            .thumbnail
+            .as_ref()
+            .is_some_and(|file| file.is_file())
+    );
+    db.execute(
+        "UPDATE game_metadata SET release_serial=?,auto_region='Japan' WHERE game_id=1",
+        [serial],
+    )
+    .unwrap();
+    assert_eq!(
+        fetch_missing(&lib, 1, Provider::Libretro, "", &cancel).unwrap(),
+        "not_found"
+    );
 }
 
 #[test]
@@ -271,6 +331,156 @@ fn explicit_fetch_retries_a_cached_miss_and_observes_provider_backoff() {
         fetch(&lib, 1, Provider::Custom, template, &cancel).unwrap(),
         "retry"
     );
+}
+
+#[cfg(feature = "ui-tests")]
+#[test]
+fn only_a_confirmed_gamedb_edition_resolves_shared_serial_and_market_art() {
+    let (_dir, lib) = fixture();
+    let db = lib.connect().unwrap();
+    let cancel = AtomicBool::default();
+    let id = 1;
+    let choices = [
+        ("gamedb/SCUS-94900", "Example (USA)"),
+        ("gamedb/SCUS-94900-R1", "Example (USA) (Rev 1)"),
+    ];
+    db.execute("UPDATE libretro_catalog SET sync_time=unixepoch()", [])
+        .unwrap();
+    for (key, name) in choices {
+        db.execute(
+            "INSERT INTO libretro_boxart_names(serial,region,name) VALUES (?1,'USA',?2)",
+            params![SERIAL, name],
+        )
+        .unwrap();
+        db.execute("INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date,source) VALUES (?1,?2,'USA','Example','',?3,'','GameDB-PSX')",params![key,SERIAL,name]).unwrap();
+    }
+    // A unique automatic metadata match still isn't proof of the disc revision.
+    db.execute("UPDATE game_metadata SET release_id=?1,aliases=?2,release_serial=disc_serial,auto_region='USA' WHERE game_id=1", params![choices[0].0, choices[0].1]).unwrap();
+    assert_eq!(
+        fetch_missing(&lib, id, Provider::Libretro, "", &cancel).unwrap(),
+        "needs_choice"
+    );
+    let lib = lib.with_scrape_responses(
+        response(200, vec![]),
+        response(200, encoded(ImageFormat::Png)),
+    );
+    for (release, name) in choices {
+        metadata::select(&lib, id, release).unwrap();
+        assert_eq!(
+            fetch_missing(&lib, id, Provider::Libretro, "", &cancel).unwrap(),
+            "ready"
+        );
+        let source = metadata::list(&lib).unwrap()[&id]
+            .cover_source
+            .clone()
+            .unwrap();
+        let url = Url::parse(&source).unwrap();
+        assert!(url.query_pairs().any(|(k, v)| k == "edition" && v == name));
+        let Lookup::Image(asset) = libretro::resolve(
+            &lib,
+            transport::api().unwrap(),
+            SERIAL,
+            "USA",
+            Some(name),
+            &cancel,
+        )
+        .unwrap() else {
+            panic!("confirmed {release} should resolve")
+        };
+        assert_eq!(asset, libretro::image_url(libretro::BOXART, name).unwrap());
+    }
+    let missed = libretro::resolve(
+        &lib,
+        transport::api().unwrap(),
+        SERIAL,
+        "USA",
+        Some("Example (Europe)"),
+        &cancel,
+    )
+    .unwrap();
+    assert!(matches!(missed, Lookup::Missing));
+}
+
+#[cfg(feature = "ui-tests")]
+#[test]
+fn screenscraper_keys_disc_only_lookups_by_license_and_matched_editions_by_market() {
+    let (_dir, lib) = fixture();
+    let lib = lib.with_scrape_responses(response(200, vec![]), response(404, vec![]));
+    let conn = lib.connect().unwrap();
+    let cancel = AtomicBool::default();
+    for (disc, license, edition) in [
+        ("USA", "NTSC-U", "Canada"),
+        ("Japan", "NTSC-J", "Taiwan"),
+        ("Europe", "PAL", "Australia"),
+    ] {
+        conn.execute("UPDATE game_metadata SET disc_region=?,auto_region=NULL,release_serial=NULL WHERE game_id=1", [disc]).unwrap();
+        for region in [license, edition] {
+            if region == edition {
+                conn.execute("UPDATE game_metadata SET auto_region=?,release_serial=disc_serial WHERE game_id=1", [edition]).unwrap();
+            }
+            assert_eq!(
+                fetch_missing(&lib, 1, Provider::ScreenScraper, "", &cancel).unwrap(),
+                "not_found"
+            );
+            let key = provider_key(Provider::ScreenScraper, "", SERIAL, "", region).unwrap();
+            assert!(
+                conn.prepare(
+                    "SELECT 1 FROM cover_attempts WHERE game_id=1 AND url=? AND state='not_found'"
+                )
+                .unwrap()
+                .exists([key.as_str()])
+                .unwrap(),
+                "{region}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "ui-tests")]
+#[test]
+fn custom_cover_fetch_uses_the_selected_regional_editions_serial() {
+    let (_dir, lib) = fixture();
+    let lib = lib.with_scrape_responses(
+        response(200, vec![]),
+        response(200, encoded(ImageFormat::Png)),
+    );
+    let conn = lib.connect().unwrap();
+    let template = "https://covers.example/${serial}.png?signature=test";
+    for (serial, market) in [
+        ("SLPM-86023", "Japan"),
+        ("SCES-00001", "Europe"),
+        ("SCPS-45196", "Asia"),
+        ("SCUS-94900", "USA"),
+        ("SLES-00002", "Europe / Australia"),
+    ] {
+        conn.execute("INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date) VALUES (?1,?1,?2,'Regional game','','','')", [serial, market]).unwrap();
+        let selected = metadata::candidates(&lib, 1, serial).unwrap().remove(0);
+        assert_eq!(
+            fetch_release(
+                &lib,
+                1,
+                Provider::Custom,
+                template,
+                &selected,
+                &AtomicBool::default()
+            )
+            .unwrap(),
+            "ready"
+        );
+        let (stored_serial, key): (String, String) = conn
+            .query_row(
+                "SELECT serial,source FROM cover_assets WHERE game_id=1 AND kind='user'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored_serial, serial);
+        assert_eq!(
+            key,
+            private_key(cover_url(template, serial).unwrap()).as_str()
+        );
+        assert!(!key.contains("signature"));
+    }
 }
 
 #[test]
@@ -528,7 +738,7 @@ fn an_older_gba_response_cannot_overwrite_the_selected_edition_with_the_same_cod
         .unwrap()
         .id;
     let names = ["Box (USA)", "Box (USA) (Rev 1)"];
-    let keys = names.map(|name| metadata::gba::edition_id("TSTE", name));
+    let keys = names.map(|name| metadata::no_intro::edition_id("TSTE", name));
     let db = lib.connect().unwrap();
     for (name, key) in names.iter().zip(&keys) {
         db.execute(
@@ -563,6 +773,123 @@ fn an_older_gba_response_cannot_overwrite_the_selected_edition_with_the_same_cod
             .exists(params![id, url("original").as_str()])
             .unwrap()
     );
+}
+
+#[test]
+fn switching_editions_detaches_only_the_download_and_rejects_late_serial_art() {
+    let (dir, lib) = fixture();
+    let mut db = lib.connect().unwrap();
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO games(id,fallback_title) VALUES(2,'Shared')",
+        [],
+    )
+    .unwrap();
+    metadata::identify(&tx, 2, None, None, "Shared").unwrap();
+    for key in ["gamedb/disc", "gamedb/revision"] {
+        tx.execute(
+            "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date)
+             VALUES(?,?,'USA','Title','','','')",
+            params![key, SERIAL],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    let cancel = AtomicBool::default();
+    // An initial lookup can already be in flight when the user chooses an edition.
+    let state = fetch_url(&lib, 1, REFRESH, &url("before-choice"), &cancel, || {
+        metadata::select(&lib, 1, "gamedb/disc")?;
+        Ok(Some(response(200, encoded(ImageFormat::Jpeg))))
+    })
+    .unwrap();
+    assert_eq!(state, "superseded");
+
+    let original = Remote {
+        release: Some("gamedb/disc"),
+        ..REFRESH
+    };
+    let png = encoded(ImageFormat::Png);
+    fetch_url(&lib, 1, original, &url("original"), &cancel, || {
+        Ok(Some(response(200, png.clone())))
+    })
+    .unwrap();
+    let thumb = metadata::list(&lib).unwrap()[&1].thumbnail.clone().unwrap();
+    let local = dir.path().join("user.png");
+    fs::write(&local, png).unwrap();
+    set_local(&lib, 2, &local).unwrap();
+    let state = fetch_url(&lib, 1, original, &url("late"), &cancel, || {
+        metadata::select(&lib, 1, "gamedb/revision")?;
+        Ok(Some(response(200, encoded(ImageFormat::Jpeg))))
+    })
+    .unwrap();
+    assert_eq!(state, "superseded");
+    let revision = Remote {
+        release: Some("gamedb/revision"),
+        ..REFRESH
+    };
+    fetch_url(&lib, 1, revision, &url("missing"), &cancel, || {
+        Ok(Some(response(404, Vec::new())))
+    })
+    .unwrap();
+    let cards = metadata::list(&Library::open(&dir.path().join("library.db")).unwrap()).unwrap();
+    assert!(cards[&1].thumbnail.is_none());
+    assert_eq!(cards[&1].status.as_deref(), Some("not_found"));
+    assert_eq!(collect_orphans(&lib).unwrap(), 0);
+    assert_eq!(cards[&2].thumbnail.as_ref(), Some(&thumb));
+    assert!(thumb.is_file());
+    // Explicitly chosen art remains with its owner across metadata assignments.
+    set_local(&lib, 1, &local).unwrap();
+    metadata::select(&lib, 1, "gamedb/disc").unwrap();
+    assert!(metadata::list(&lib).unwrap()[&1].manual_cover);
+}
+
+#[cfg(feature = "ui-tests")]
+#[test]
+fn refreshing_a_legacy_aamj_selection_detaches_its_other_markets_cover() {
+    let (dir, lib) = fixture();
+    let db = lib.connect().unwrap();
+    let base = "Akumajou Dracula - Circle of the Moon";
+    db.execute("UPDATE games SET platform='GBA' WHERE id=1", [])
+        .unwrap();
+    db.execute(
+        "UPDATE game_metadata SET disc_serial='AAMJ',disc_region='Japan' WHERE game_id=1",
+        [],
+    )
+    .unwrap();
+    for market in ["Japan", "China"] {
+        let title = format!("{base} ({market})");
+        let key = metadata::no_intro::edition_id("AAMJ", &title);
+        db.execute(
+            "INSERT INTO fetched_releases(id,serial,region,title,date,aliases,work_date)
+             VALUES(?,'AAMJ',?,?,'','','')",
+            params![key, market, title],
+        )
+        .unwrap();
+        if market == "China" {
+            metadata::select(&lib, 1, &key).unwrap();
+        }
+    }
+    let japan =
+        libretro::image_url(metadata::no_intro::COVER_BASE, &format!("{base} (Japan)")).unwrap();
+    // Simulate the pre-fix state on disk: selected China, downloaded art still Japan.
+    db.execute(
+        "INSERT INTO cover_assets(game_id,kind,serial,source,original,thumb)
+        VALUES(1,'download','AAMJ',?,'japan.png','japan.png')",
+        [japan.as_str()],
+    )
+    .unwrap();
+    fs::write(dir.path().join("japan.png"), encoded(ImageFormat::Png)).unwrap();
+    let lib = Library::open(&dir.path().join("library.db"))
+        .unwrap()
+        .with_scrape_responses(response(200, Vec::new()), response(404, Vec::new()));
+    assert!(metadata::list(&lib).unwrap()[&1].thumbnail.is_some());
+    assert_eq!(
+        fetch(&lib, 1, Provider::Libretro, "", &AtomicBool::default()).unwrap(),
+        "not_found"
+    );
+    let cards = metadata::list(&lib).unwrap();
+    assert_eq!(cards[&1].region.as_deref(), Some("China"));
+    assert!(cards[&1].thumbnail.is_none());
 }
 
 #[test]

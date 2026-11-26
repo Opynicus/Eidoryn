@@ -24,7 +24,7 @@ impl Library {
         tx.commit().map_err(|e| e.to_string())?;
         if scope == CacheScope::All {
             gamedb::clear_cache();
-            super::gba::clear_cache();
+            super::no_intro::clear_cache();
         }
         covers::collect_released(self, &mut db, &originals);
         Ok(())
@@ -78,21 +78,25 @@ fn collect_game_serials(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         "INSERT INTO clear_serials
          SELECT disc_serial FROM game_metadata WHERE game_id IN clear_games AND disc_serial IS NOT NULL
          UNION SELECT release_serial FROM game_metadata WHERE game_id IN clear_games AND release_serial IS NOT NULL
-         UNION SELECT serial FROM discs WHERE game_id IN clear_games AND serial IS NOT NULL;",
+         UNION SELECT CASE platform WHEN 'NDS' THEN 'NDS:' || serial ELSE serial END FROM discs WHERE game_id IN clear_games AND serial IS NOT NULL;",
     )?;
     // A still-unmatched image can use the cached edition by title or alias
     // even when its own boot serial is missing or differs.
     let mut filenames = tx.prepare(
-        "SELECT DISTINCT filename FROM game_metadata WHERE pending AND game_id NOT IN clear_games",
+        "SELECT DISTINCT m.filename,g.platform FROM game_metadata m JOIN games g ON g.id=m.game_id
+         WHERE m.pending AND m.game_id NOT IN clear_games",
     )?;
     let mut retain = tx.prepare(
         "DELETE FROM clear_serials WHERE serial IN (
              SELECT f.serial FROM release_names n JOIN fetched_releases f ON f.id=n.release_id
-             WHERE n.name=?)",
+             WHERE n.name=?1 AND (f.id GLOB 'libretro-gba/*')=(?2='GBA') AND (f.id GLOB 'libretro-nds/*')=(?2='NDS'))",
     )?;
     let mut rows = filenames.query([])?;
     while let Some(row) = rows.next()? {
-        retain.execute([title_hint(row.get_ref(0)?.as_str()?)])?;
+        retain.execute(params![
+            title_hint(row.get_ref(0)?.as_str()?),
+            row.get_ref(1)?.as_str()?
+        ])?;
     }
     Ok(())
 }

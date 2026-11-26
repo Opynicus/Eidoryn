@@ -1,7 +1,7 @@
 //! Desktop preferences. CLI overrides are applied in memory, never saved implicitly.
 use crate::{
     i18n::Language,
-    keybindings::{GbaKeyBindings, KeyBindings},
+    keybindings::{GbaKeyBindings, KeyBindings, NdsKeyBindings},
     library::{
         covers::{DEFAULT_TEMPLATE, Provider},
         scrape::WorkerCount,
@@ -148,6 +148,7 @@ pub struct Preferences {
     pub turbo_buttons: u16,
     pub turbo_hz: u8,
     pub keybindings: KeyBindings,
+    pub nds_keybindings: NdsKeyBindings,
     pub gba_keybindings: GbaKeyBindings,
     pub shortcuts: ShortcutBindings,
     pub bios_path: Option<PathBuf>,
@@ -175,6 +176,7 @@ impl Default for Preferences {
             turbo_buttons: 0,
             turbo_hz: TurboConfig::default().hz(),
             keybindings: KeyBindings::default(),
+            nds_keybindings: NdsKeyBindings::default(),
             gba_keybindings: GbaKeyBindings::default(),
             shortcuts: ShortcutBindings::default(),
             bios_path: None,
@@ -232,6 +234,10 @@ impl Preferences {
         self.renderer.parse::<RendererMode>()?;
         self.turbo()?;
         self.keybindings.validate()?;
+        self.nds_keybindings.validate()?;
+        if self.nds_keybindings != NdsKeyBindings::default() {
+            self.shortcuts.validate(&self.nds_keybindings)?;
+        }
         self.gba_keybindings.validate()?;
         self.shortcuts.validate(&self.keybindings)?;
         // Older profiles allowed the fixed GBA layout to overlap any shortcut, and

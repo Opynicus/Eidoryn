@@ -104,6 +104,30 @@ impl GbaButton {
     }
 }
 
+/// Button positions correspond to bits in the packed DS keypad input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NdsButton {
+    A = 0,
+    B = 1,
+    Select = 2,
+    Start = 3,
+    Right = 4,
+    Left = 5,
+    Up = 6,
+    Down = 7,
+    R = 8,
+    L = 9,
+    X = 10,
+    Y = 11,
+}
+
+impl NdsButton {
+    pub const fn mask(self) -> u16 {
+        1 << self as u8
+    }
+}
+
 /// Describes the buttons and factory keyboard layout of one controller.
 pub trait ControllerButton: Copy + Ord + 'static {
     const BUTTONS: &'static [Self];
@@ -168,7 +192,59 @@ impl ControllerButton for GbaButton {
     }
 }
 
+impl ControllerButton for NdsButton {
+    const BUTTONS: &'static [Self] = &[
+        Self::Up,
+        Self::Down,
+        Self::Left,
+        Self::Right,
+        Self::A,
+        Self::B,
+        Self::X,
+        Self::Y,
+        Self::Start,
+        Self::Select,
+        Self::L,
+        Self::R,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Up => "↑",
+            Self::Down => "↓",
+            Self::Left => "←",
+            Self::Right => "→",
+            Self::A => "A",
+            Self::B => "B",
+            Self::X => "X",
+            Self::Y => "Y",
+            Self::Start => "Start",
+            Self::Select => "Select",
+            Self::L => "L",
+            Self::R => "R",
+        }
+    }
+
+    fn default_key(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::A => "x",
+            Self::B => "z",
+            Self::X => "s",
+            Self::Y => "a",
+            Self::Start => "enter",
+            Self::Select => "backspace",
+            Self::L => "q",
+            Self::R => "e",
+        }
+    }
+}
+
 pub type KeyBindings = ControllerBindings<PadButton>;
+pub type NdsKeyBindings = ControllerBindings<NdsButton>;
 pub type GbaKeyBindings = ControllerBindings<GbaButton>;
 
 /// Only overrides are stored; missing entries retain their original defaults.

@@ -1,4 +1,5 @@
 use super::{Desktop, components::button};
+use eidoryn_nds::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use eidoryn_psx::i18n::Text;
 use eidoryn_psx::shortcuts::ShortcutAction;
 use eidoryn_psx::{
@@ -59,7 +60,10 @@ impl Desktop {
     /// Convert only the latest visible frame. Debugger pages do not use video
     /// or CRT textures, so release those images until the display returns.
     pub(super) fn sync_video(&mut self, visible: bool, window: &mut Window) {
-        if !visible || self.is_gba() && self.gba.snapshot.rgb.is_empty() {
+        if !visible
+            || self.is_nds() && self.nds.snapshot.rgb.is_empty()
+            || self.is_gba() && self.gba.snapshot.rgb.is_empty()
+        {
             if let Some(old) = self.image.take() {
                 let _ = window.drop_image(old.image);
             }
@@ -72,7 +76,9 @@ impl Desktop {
             return;
         }
         let next = VideoImage {
-            image: if self.is_gba() {
+            image: if self.is_nds() {
+                rgb_image(&self.nds.snapshot.rgb, SCREEN_WIDTH, 2 * SCREEN_HEIGHT)
+            } else if self.is_gba() {
                 rgb_image(
                     &self.gba.snapshot.rgb,
                     eidoryn_gba::WIDTH,
@@ -119,26 +125,40 @@ impl Desktop {
     }
 
     pub(super) fn video_aspect(&self) -> f32 {
-        if self.is_gba() { 1.5 } else { 4.0 / 3.0 }
+        if self.is_nds() {
+            SCREEN_WIDTH as f32 / (2 * SCREEN_HEIGHT) as f32
+        } else if self.is_gba() {
+            1.5
+        } else {
+            4.0 / 3.0
+        }
     }
 
-    pub(super) fn video(&self) -> impl IntoElement {
+    pub(super) fn video(&self, cx: &Context<Self>) -> impl IntoElement {
         let image = self.image.as_ref().map(|cached| Arc::clone(&cached.image));
         let filter = self.crt.filter;
         let cache = Rc::clone(&self.crt.overlay);
         let aspect = self.video_aspect();
-        let lines = if self.is_gba() {
+        let touchscreen = self.is_nds()
+            && (self.page == super::WorkspacePage::Game || self.presentation.shows_video());
+        let screen = touchscreen.then(|| Rc::clone(&self.nds.screen));
+        let lines = if self.is_nds() {
+            2 * SCREEN_HEIGHT
+        } else if self.is_gba() {
             eidoryn_gba::HEIGHT
         } else {
             self.snapshot.native_dimensions.1
         };
-        canvas(
+        let canvas = canvas(
             |_, _, _| (),
             move |bounds, (), window, _| {
                 let Some(image) = image else {
                     return;
                 };
                 let bounds = fit_video(bounds, aspect);
+                if let Some(screen) = screen {
+                    screen.set(Some(bounds));
+                }
                 let gpui::Size { width, height } = bounds.size;
                 let corners = Corners::all(if filter == CrtFilter::Off {
                     px(0.0)
@@ -184,7 +204,12 @@ impl Desktop {
                 }
             },
         )
-        .size_full()
+        .size_full();
+        if touchscreen {
+            Self::nds_touchscreen(canvas, cx).into_any_element()
+        } else {
+            canvas.into_any_element()
+        }
     }
 }
 
