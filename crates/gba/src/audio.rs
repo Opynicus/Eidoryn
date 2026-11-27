@@ -1,15 +1,18 @@
 //! PSG, timer-driven Direct Sound FIFOs and the stereo PWM mixer on the Game Pak bus.
 mod psg;
+mod pwm;
 #[cfg(test)]
 mod tests;
 
 use psg::Psg;
+use pwm::PwmOutput;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 /// Number of stereo frames per second delivered to the host, independent of PWM resolution.
-pub const AUDIO_SAMPLE_RATE: u32 = 32_768;
+pub const AUDIO_SAMPLE_RATE: u32 = 65_536;
 const CLOCKS_PER_SAMPLE: u32 = 16_777_216 / AUDIO_SAMPLE_RATE;
+const BASE_PWM_PERIOD: u32 = 512;
 const MAX_QUEUED: usize = AUDIO_SAMPLE_RATE as usize / 4;
 
 #[derive(Default, Serialize, Deserialize)]
@@ -44,10 +47,44 @@ pub(super) struct Audio {
     // Oscillators advance lazily to the next PSG access or PWM sampling edge.
     pending_cycles: u32,
     phase: u32,
-    integrated_cycles: u32,
-    sum: [i32; 2],
+    pwm: PwmOutput,
     #[serde(skip)]
     output: VecDeque<[i16; 2]>,
+}
+
+/// Version 3 saved partial 32,768 Hz box-filter accumulators.
+#[derive(Deserialize)]
+pub(super) struct LegacyAudio {
+    psg: Psg,
+    fifo: [Fifo; 2],
+    pending_cycles: u32,
+    phase: u32,
+    integrated_cycles: u32,
+    sum: [i32; 2],
+}
+
+impl LegacyAudio {
+    pub(super) fn restore(self) -> Option<Audio> {
+        if self.phase >= BASE_PWM_PERIOD
+            || self.integrated_cycles > self.phase
+            || self
+                .sum
+                .iter()
+                .any(|s| s.unsigned_abs() > self.integrated_cycles * 32768)
+        {
+            return None;
+        }
+        let mut pwm = PwmOutput::default();
+        pwm.advance((self.phase / 64) as usize, None);
+        Some(Audio {
+            psg: self.psg,
+            fifo: self.fifo,
+            pending_cycles: self.pending_cycles,
+            phase: self.phase,
+            pwm,
+            output: VecDeque::new(),
+        })
+    }
 }
 
 impl Audio {
@@ -57,13 +94,9 @@ impl Audio {
                 .fifo
                 .iter()
                 .all(|fifo| fifo.first < 32 && fifo.count <= 32)
-            && self.phase < CLOCKS_PER_SAMPLE
+            && self.phase < BASE_PWM_PERIOD
             && self.pending_cycles <= self.phase
-            && self.integrated_cycles <= self.phase
-            && self
-                .sum
-                .iter()
-                .all(|s| s.unsigned_abs() <= self.integrated_cycles * 32768)
+            && self.pwm.valid(self.phase)
     }
 
     /// BIOS `RegisterRamReset` clears audio registers inside a running timeline.
@@ -153,7 +186,7 @@ impl Audio {
     }
 
     pub(super) fn until_pwm(&self, io: &[u8]) -> u32 {
-        let period = CLOCKS_PER_SAMPLE >> (io[0x89] >> 6);
+        let period = BASE_PWM_PERIOD >> (io[0x89] >> 6);
         period - (self.phase & (period - 1))
     }
 
@@ -179,39 +212,39 @@ impl Audio {
                     total += i32::from(fifo.sample) << (1 + (io[0x82] >> (2 + i) & 1));
                 }
             }
-            (((total + bias).clamp(0, 1023) & !truncation) - 512) * 64
+            // SOUNDBIAS sets the DAC operating point and its clipping headroom.
+            // Remove the quantized idle level before sending signed PCM to the host.
+            let dac = (total + bias).clamp(0, 1023) & !truncation;
+            let pcm = (dac - (bias & !truncation)) * 64;
+            pcm.clamp(i32::from(i16::MIN), i32::from(i16::MAX))
         })
     }
 
-    /// At each PWM edge, mix the hardware-resolution sample; integrate high PWM rates
-    /// to one stereo pair per 512 master clocks without changing the host rate.
+    /// Latch the DAC on its hardware clock and publish on the independent PCM clock.
     pub(super) fn advance(&mut self, io: &mut [u8], mut cycles: u32) {
         while cycles != 0 {
             let until = self.until_pwm(io);
-            let span = cycles.min(until);
+            let to_output = CLOCKS_PER_SAMPLE - self.phase % CLOCKS_PER_SAMPLE;
+            let span = cycles.min(until).min(to_output);
+            let previous_tick = self.phase / 64;
             self.phase += span;
             self.pending_cycles += span;
             cycles -= span;
-            if span < until {
-                break;
+            let ticks = self.phase / 64 - previous_tick;
+            if ticks != 0 {
+                let edge = (span == until).then(|| {
+                    self.sync_psg(io);
+                    (self.mix(io).map(|s| s as i16), io[0x89] >> 6)
+                });
+                self.pwm.advance(ticks as usize, edge);
             }
-            self.sync_psg(io);
-            let weight = (self.phase - self.integrated_cycles) as i32;
-            let mixed = self.mix(io);
-            for (sum, sample) in self.sum.iter_mut().zip(mixed) {
-                *sum += weight * sample;
-            }
-            self.integrated_cycles = self.phase;
-            if self.phase == CLOCKS_PER_SAMPLE {
+            if span == to_output {
                 if self.output.len() == MAX_QUEUED {
                     self.output.pop_front();
                 }
-                self.output
-                    .push_back(self.sum.map(|v| (v / CLOCKS_PER_SAMPLE as i32) as i16));
-                self.phase = 0;
-                self.integrated_cycles = 0;
-                self.sum = [0; 2];
+                self.output.push_back(self.pwm.sample());
             }
+            self.phase %= BASE_PWM_PERIOD;
         }
     }
 }

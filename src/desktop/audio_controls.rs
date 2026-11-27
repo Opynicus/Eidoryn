@@ -25,9 +25,10 @@ impl AudioControls {
         use std::num::NonZeroU32;
         let controls = Self {
             ps1: AudioBuffer::default(),
-            gba: AudioBuffer::with_sample_rate(
+            gba: AudioBuffer::with_bandlimited_output(
                 NonZeroU32::new(eidoryn_gba::AUDIO_SAMPLE_RATE)
                     .expect("GBA sample rate is positive"),
+                std::time::Duration::from_millis(50),
             ),
             nds: AudioBuffer::with_sample_rate(
                 NonZeroU32::new(eidoryn_nds::AUDIO_SAMPLE_RATE)

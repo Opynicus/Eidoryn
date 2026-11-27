@@ -213,6 +213,17 @@ impl FrameRate {
     }
 }
 
+/// Stay on the guest clock across short stalls so subsequent frames refill the audio queue.
+/// A longer interruption starts a fresh schedule.
+fn next_frame_deadline(previous: Instant, finished: Instant, field: Duration) -> Instant {
+    let next = previous + field;
+    if finished.saturating_duration_since(next) > field * 3 {
+        finished
+    } else {
+        next
+    }
+}
+
 struct Worker {
     audio: Option<AudioBuffer>,
     saves: PathBuf,
@@ -507,7 +518,7 @@ impl Worker {
                     Ok(command) => self.apply(command),
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         let result = self.frame().map(|()| true);
-                        next = (next + field).max(Instant::now());
+                        next = next_frame_deadline(next, Instant::now(), field);
                         result
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
