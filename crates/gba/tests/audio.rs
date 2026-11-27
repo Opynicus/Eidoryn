@@ -28,7 +28,7 @@ fn cartridges_generate_changing_audio_on_both_outputs() {
                     previous = sample;
                 }
             }
-            assert_eq!(frames, 600 * 280_896 / 512);
+            assert_eq!(frames, 600 * 280_896 / 256);
             if changes.iter().any(|&n| n < 1000) {
                 return Err(format!(
                     "too few transitions in title audio: {changes:?}, peaks {peak:?}"

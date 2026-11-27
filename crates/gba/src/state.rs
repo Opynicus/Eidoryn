@@ -9,7 +9,7 @@ use crate::cpu::Cpu;
 use crate::{HEIGHT, Machine, WIDTH};
 
 const MAGIC: [u8; 8] = *b"EIDOGBA\0";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const PIXEL_BYTES: usize = WIDTH * HEIGHT * 3;
 /// Maximum supported encoded size, including RAM, the LCD image and cartridge backup.
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
@@ -141,13 +141,21 @@ impl Machine {
                 rtc
             })
         };
-        if header.version == VERSION {
-            memory.audio = codec().deserialize(encoded).map_err(StateError::Codec)?;
-        } else {
-            if !encoded.is_empty() {
-                return Err(StateError::Invalid);
+        match header.version {
+            1 | 2 => {
+                if !encoded.is_empty() {
+                    return Err(StateError::Invalid);
+                }
+                memory.restore_legacy_audio(&self.memory);
             }
-            memory.restore_legacy_audio();
+            3 => {
+                let audio: crate::audio::LegacyAudio =
+                    codec().deserialize(encoded).map_err(StateError::Codec)?;
+                memory.audio = audio.restore().ok_or(StateError::Invalid)?;
+            }
+            _ => {
+                memory.audio = codec().deserialize(encoded).map_err(StateError::Codec)?;
+            }
         }
         if !memory.audio.valid() || !memory.valid_snapshot_for(&self.memory) {
             return Err(StateError::Invalid);
@@ -281,11 +289,42 @@ mod tests {
     }
 
     #[test]
+    fn legacy_direct_boot_restores_missing_bias_and_retains_pwm_resolution() {
+        const BIAS: u32 = 0x0400_0088;
+        let mut hle = Machine::from_rom(cartridge()).unwrap();
+        let mut bios = Machine::with_bios(cartridge(), vec![7; BIOS_LEN]).unwrap();
+        for (machine, restored) in [(&mut hle, 0x4200), (&mut bios, 0x4000)] {
+            machine.memory.write16(BIAS, 0x4000);
+            let header = Header {
+                magic: MAGIC,
+                version: 1,
+                rom: machine.rom_digest,
+                bios: machine.bios_digest,
+            };
+            let mut bytes = codec()
+                .serialize(&(header, &machine.cpu, machine.bios_wait, &machine.memory))
+                .unwrap();
+            machine.memory.video.append_snapshot_pixels(&mut bytes);
+            bytes.extend_from_slice(&crc32fast::hash(&bytes).to_le_bytes());
+            machine.load_state(&bytes).unwrap();
+            assert_eq!(machine.memory.read16(BIAS), restored);
+        }
+
+        // Audio-aware images record intentional bias changes, including sleep.
+        hle.memory.write16(BIAS, 0x4000);
+        let bytes = hle.save_state().unwrap();
+        hle.reset();
+        hle.load_state(&bytes).unwrap();
+        assert_eq!(hle.memory.read16(BIAS), 0x4000);
+    }
+
+    #[test]
     fn version_two_keeps_clock_and_accepts_new_audio_writes() {
         let mut rom = cartridge();
         rom.extend_from_slice(b"SIIRTC_V001");
         let mut machine = Machine::from_rom(rom).unwrap();
         let clock = machine.rtc_battery().unwrap();
+        machine.memory.write16(0x0400_0088, 0xc180);
         let header = Header {
             magic: MAGIC,
             version: 2,
@@ -309,6 +348,7 @@ mod tests {
         machine.run_frame().unwrap();
         machine.load_state(&image).unwrap();
         assert_eq!(machine.rtc_battery(), Some(clock));
+        assert_eq!(machine.memory.read16(0x0400_0088), 0xc180);
         assert_eq!(machine.take_audio_samples(), [[0; 2]; 0]);
         machine.memory.write16(0x0400_0064, 0x87e0);
         machine.run_frame().unwrap();

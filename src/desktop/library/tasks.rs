@@ -6,7 +6,8 @@ use eidoryn_psx::{
 };
 use gpui::{Context, Div, PathPromptOptions, prelude::*, px, rgb};
 use std::{
-    path::PathBuf,
+    collections::HashSet,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -49,7 +50,42 @@ pub(super) enum CoverRequest {
 pub(super) struct DirectChoice {
     cues: Vec<PathBuf>,
     fast_boot: bool,
-    recent: bool,
+    recent_path: Option<PathBuf>,
+}
+
+fn direct_launch_choices(
+    store: &Library,
+    path: &Path,
+    recent_path: Option<&Path>,
+) -> Result<(Vec<PathBuf>, HashSet<PathBuf>), String> {
+    let mut cues = store.track_choices(path)?;
+    let Some(origin) = recent_path else {
+        return Ok((cues, HashSet::new()));
+    };
+    // The CUE search also returns filesystem discoveries, which can be symlinks.
+    // Match the same canonical keys the library uses for disc ownership.
+    let target = path
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    for cue in &mut cues {
+        *cue = cue
+            .canonicalize()
+            .map_err(|e| format!("{}: {e}", cue.display()))?;
+    }
+    cues.sort();
+    cues.dedup();
+    let had_cues = !cues.is_empty();
+    let mut paths = cues.clone();
+    paths.push(target.clone());
+    if origin != target {
+        paths.push(origin.to_owned());
+    }
+    let mut removed = store.removed_recent_paths(&paths)?;
+    cues.retain(|cue| !removed.contains(cue));
+    if removed.contains(&target) || (had_cues && cues.is_empty()) {
+        removed.insert(path.to_owned());
+    }
+    Ok((cues, removed))
 }
 
 pub(super) struct FolderImport {
@@ -78,6 +114,82 @@ impl Desktop {
         &mut self,
         path: PathBuf,
         fast_boot: bool,
+        recent_path: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if recent_path.is_some() && self.removal_in_progress() {
+            return;
+        }
+        self.library.cancel_pending_launch();
+        let generation = self.library.launch_generation;
+        let track = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("bin"));
+        if (track || recent_path.is_some())
+            && let Some(store) = self.library.store.clone()
+        {
+            cx.spawn(async move |this, cx| {
+                let (path, recent_path, result) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let result = direct_launch_choices(&store, &path, recent_path.as_deref());
+                        (path, recent_path, result)
+                    })
+                    .await;
+                let _ = this.update(cx, |v, cx| {
+                    if v.library.launch_generation != generation || v.closing() {
+                        return;
+                    }
+                    let (cues, removed) = match result {
+                        Ok(choices) => choices,
+                        Err(error) => {
+                            v.notice = Some(error);
+                            cx.notify();
+                            return;
+                        }
+                    };
+                    v.forget_removed_games(&removed);
+                    if recent_path.as_ref().is_some_and(|origin| {
+                        !v.preferences
+                            .recent_discs
+                            .iter()
+                            .any(|disc| &disc.path == origin)
+                    }) || removed.contains(&path)
+                    {
+                        cx.notify();
+                        return;
+                    }
+                    if cues.is_empty() {
+                        v.send_direct_disc(path, fast_boot, recent_path.is_some(), cx);
+                    } else {
+                        v.switch_core(GamePlatform::Ps1, cx);
+                        if !v.is_ps1() {
+                            return;
+                        }
+                        v.library.direct = Some(DirectChoice {
+                            cues,
+                            fast_boot,
+                            recent_path,
+                        });
+                        v.library.details = false;
+                        v.library.settings = false;
+                        v.presentation.windowed_video = false;
+                        v.page = WorkspacePage::Library;
+                        v.reload_library(cx);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        } else {
+            self.send_direct_disc(path, fast_boot, recent_path.is_some(), cx);
+        }
+    }
+
+    fn send_direct_disc(
+        &mut self,
+        path: PathBuf,
+        fast_boot: bool,
         recent: bool,
         cx: &mut Context<Self>,
     ) {
@@ -97,57 +209,6 @@ impl Desktop {
             return;
         }
         self.switch_core(GamePlatform::Ps1, cx);
-        self.library.launch_generation = self.library.launch_generation.wrapping_add(1);
-        let generation = self.library.launch_generation;
-        if path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("bin"))
-            && let Some(store) = self.library.store.clone()
-        {
-            cx.spawn(async move |this, cx| {
-                let (path, result) = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let result = store.track_choices(&path);
-                        (path, result)
-                    })
-                    .await;
-                let _ = this.update(cx, |v, cx| {
-                    if v.library.launch_generation != generation || !v.is_ps1() {
-                        return;
-                    }
-                    match result {
-                        Ok(cues) if !cues.is_empty() => {
-                            v.library.direct = Some(DirectChoice {
-                                cues,
-                                fast_boot,
-                                recent,
-                            });
-                            v.library.details = false;
-                            v.library.settings = false;
-                            v.presentation.windowed_video = false;
-                            v.page = crate::desktop::WorkspacePage::Library;
-                            v.reload_library(cx);
-                        }
-                        Ok(_) => v.send_direct_disc(path, fast_boot, recent, cx),
-                        Err(error) => v.notice = Some(error),
-                    }
-                    cx.notify();
-                });
-            })
-            .detach();
-        } else {
-            self.send_direct_disc(path, fast_boot, recent, cx);
-        }
-    }
-
-    fn send_direct_disc(
-        &mut self,
-        path: PathBuf,
-        fast_boot: bool,
-        recent: bool,
-        cx: &mut Context<Self>,
-    ) {
         if self.validate_disc_bios(fast_boot, cx) {
             let bios = self.bios.clone();
             let command = if recent {
@@ -507,6 +568,15 @@ impl Desktop {
         cx: &mut Context<Self>,
         work: impl FnOnce(&Library) -> Result<(), String> + Send + 'static,
     ) {
+        self.library_write_then(cx, work, |_, ()| {});
+    }
+
+    fn library_write_then<T: Send + 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(&Library) -> Result<T, String> + Send + 'static,
+        committed: impl FnOnce(&mut Self, T) + 'static,
+    ) {
         let Some(store) = self.library.store.clone() else {
             return;
         };
@@ -516,8 +586,9 @@ impl Desktop {
                 .spawn(async move { work(&store) })
                 .await;
             let _ = this.update(cx, |v, cx| {
-                if let Err(error) = result {
-                    v.notice = Some(error);
+                match result {
+                    Ok(value) => committed(v, value),
+                    Err(error) => v.notice = Some(error),
                 }
                 v.reload_library(cx);
                 cx.notify();
@@ -605,7 +676,15 @@ impl Desktop {
                     Picker::Cover(id) => {
                         v.library_write(cx, move |s| covers::set_local(s, id, &first));
                     }
-                    Picker::Relocate(id) => v.library_write(cx, move |s| s.relocate(id, &first)),
+                    Picker::Relocate(id) => v.library_write_then(
+                        cx,
+                        move |s| s.relocate_with_paths(id, &first),
+                        |v, (old, new)| {
+                            if v.preferences.relocate_recent_disc(&old, &new) {
+                                v.save_preferences();
+                            }
+                        },
+                    ),
                     Picker::Bios(..) => {}
                 }
                 cx.notify();
@@ -1135,7 +1214,6 @@ impl Desktop {
             .first()
             .filter(|_| self.library.scan.is_none());
         if let Some(cues) = direct.map(|c| &c.cues).or_else(|| choice.map(|c| &c.cues)) {
-            let direct = direct.map(|c| (c.fast_boot, c.recent));
             let mut body = div().flex().flex_col().gap_3();
             if direct.is_none()
                 && let Some(choice) = choice
@@ -1153,6 +1231,8 @@ impl Desktop {
                         .gap_2()
                         .children(cues.iter().enumerate().map(|(i, path)| {
                             let path = path.clone();
+                            let direct =
+                                direct.map(|choice| (choice.fast_boot, choice.recent_path.clone()));
                             super::button(
                                 &self.fonts,
                                 &p,
@@ -1163,10 +1243,10 @@ impl Desktop {
                             .role(gpui::Role::Button)
                             .debug_selector(move || format!("lib-open-cue-{i}"))
                             .on_click(cx.listener(
-                                move |v, _, _, cx| match direct {
+                                move |v, _, _, cx| match &direct {
                                     Some((fast, recent)) => {
                                         v.library.direct = None;
-                                        v.direct_disc(path.clone(), fast, recent, cx);
+                                        v.direct_disc(path.clone(), *fast, recent.clone(), cx);
                                     }
                                     None => {
                                         if v.library.scan.is_none() {
@@ -1326,4 +1406,62 @@ fn scan(store: &Library, sources: Vec<Source>, cancel: &AtomicBool, tx: &mpsc::S
         Text::LibraryFinished
     });
     let _ = tx.send(Update::Done(report, choices));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Library, direct_launch_choices};
+    use std::{fs, sync::atomic::AtomicBool};
+
+    #[test]
+    fn recent_bin_only_offers_visible_cues_and_never_falls_back_to_a_removed_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let store = Library::open(&root.join("index.sqlite3")).unwrap();
+        let track = root.join("track.bin");
+        let hidden = root.join("hidden.cue");
+        let visible = root.join("visible.cue");
+        let cue =
+            |file: &str| format!("FILE {file} BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n");
+        let mut sector = [0; 2352];
+        sector[1..11].fill(255);
+        sector[15] = 2;
+        fs::write(&track, sector).unwrap();
+        fs::write(&hidden, cue("track.bin")).unwrap();
+        fs::copy(&hidden, &visible).unwrap();
+        store
+            .scan_files(
+                &[hidden.clone(), visible.clone()],
+                &AtomicBool::default(),
+                |_| {},
+            )
+            .unwrap();
+        let game = store
+            .games()
+            .unwrap()
+            .into_iter()
+            .find(|g| g.locations[0].path == hidden)
+            .unwrap();
+        store.remove(game.id).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&hidden, root.join("alias.cue")).unwrap();
+        let (choices, removed) = direct_launch_choices(&store, &track, Some(&track)).unwrap();
+        assert_eq!(choices, [visible]);
+        assert!(!removed.contains(&track));
+
+        // Only the hidden CUE now refers to moved.bin. This new dependency has
+        // not been indexed, so it is discovered solely from the filesystem.
+        let moved = root.join("moved.bin");
+        fs::rename(&track, &moved).unwrap();
+        fs::write(&hidden, cue("moved.bin")).unwrap();
+        assert!(
+            store
+                .removed_recent_paths(std::slice::from_ref(&moved))
+                .unwrap()
+                .is_empty()
+        );
+        let (choices, removed) = direct_launch_choices(&store, &moved, Some(&moved)).unwrap();
+        assert_eq!(choices, [] as [std::path::PathBuf; 0]);
+        assert!(removed.contains(&moved));
+    }
 }

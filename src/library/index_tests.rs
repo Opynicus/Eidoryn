@@ -106,6 +106,9 @@ fn scans_are_incremental_and_an_overwritten_path_does_not_inherit_playtime() {
     assert_eq!(games[1].seconds, 0);
     assert!(games[1].locations[0].available);
     assert!(f.db.relocate(games[0].locations[0].id, &image).is_err());
+    // Removing the superseded revision must leave the new occupant launchable.
+    f.db.remove(games[0].id).unwrap();
+    assert!(f.db.removed_recent_paths(&[image]).unwrap().is_empty());
 }
 
 #[test]
@@ -426,6 +429,88 @@ fn finding_a_cue_after_its_track_hides_the_standalone_card() {
             .iter()
             .any(|g| g.id == track_id && g.locations[0].available)
     );
+}
+
+#[test]
+fn recent_bin_follows_all_current_cue_owners() {
+    let f = Fixture::new();
+    let track = f.media.join("track.bin");
+    let mut sector = [0; 2352];
+    sector[1..11].fill(255);
+    sector[15] = 2;
+    fs::write(&track, sector).unwrap();
+    assert_eq!(f.scan().added, 1);
+    for name in ["first.cue", "second.cue"] {
+        fs::write(
+            f.media.join(name),
+            "FILE track.bin BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+    }
+    assert_eq!(f.scan().added, 2);
+    let games = f.db.games().unwrap();
+    let [first, second] = games.as_slice() else {
+        panic!("expected two visible CUEs");
+    };
+    let first_path = first.locations[0].path.clone();
+    let second_path = second.locations[0].path.clone();
+    let paths = [
+        track.canonicalize().unwrap(),
+        first_path.clone(),
+        second_path,
+    ];
+    f.db.remove(first.id).unwrap();
+    assert_eq!(
+        f.db.removed_recent_paths(&paths).unwrap(),
+        [first_path].into()
+    );
+    f.db.remove(second.id).unwrap();
+    assert_eq!(
+        f.db.removed_recent_paths(&paths).unwrap(),
+        paths.clone().into()
+    );
+    f.db.migrate_recents(&[crate::preferences::RecentDisc {
+        path: paths[0].clone(),
+        fast_boot: true,
+    }])
+    .unwrap();
+    assert!(f.db.games().unwrap().is_empty());
+    assert_eq!(
+        f.db.connect()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM migrated_recent", [], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn removed_recent_paths_follow_grouped_discs_copies_and_explicit_readd() {
+    let f = Fixture::new();
+    let first = f.image("Disc 1.iso", 11);
+    let copy = f.image("Copy.iso", 11);
+    let second = f.image("Disc 2.iso", 12);
+    let unknown = f.image("Unindexed.iso", 13);
+    let mut homes = Vec::new();
+    for path in [&first, &copy, &second] {
+        let identity = DiscImage::open(path).unwrap().identity().to_owned();
+        homes.push(f.db.associate_opened(path, &identity, true).unwrap());
+    }
+    let second_game = f.db.games_by_id(&[homes[2]]).unwrap().remove(0);
+    f.db.group_disc(second_game.locations[0].disc_id, homes[0])
+        .unwrap();
+    let paths = [first, copy, second, unknown];
+    f.db.remove_games_and_clear_metadata(&[homes[0]]).unwrap();
+    let reopened = Library::open(&f.root.path().join("index.sqlite3")).unwrap();
+    assert_eq!(
+        reopened.removed_recent_paths(&paths).unwrap(),
+        paths[..3].iter().cloned().collect()
+    );
+    reopened
+        .scan_files(&paths[..1], &AtomicBool::default(), |_| {})
+        .unwrap();
+    assert!(reopened.removed_recent_paths(&paths).unwrap().is_empty());
 }
 
 #[test]

@@ -79,9 +79,11 @@ impl Memory {
     }
 
     /// Older snapshots stored sound register writes, but had no timed sound engine.
-    pub(super) fn restore_legacy_audio(&mut self) {
-        if half(&self.io, 0x88) == 0 {
-            self.io[0x89] = 2;
+    pub(super) fn restore_legacy_audio(&mut self, live: &Self) {
+        // Direct boot in v1/v2 left the BIOS bias at zero. Games could set the PWM
+        // resolution while keeping that missing midpoint, clipping negative PCM.
+        if !live.has_bios() && half(&self.io, 0x88) & 0x03fe == 0 {
+            self.io[0x89] |= 2;
         }
         for offset in 0x90..0xa0 {
             let byte = self.io[offset];

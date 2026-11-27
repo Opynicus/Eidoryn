@@ -10,11 +10,9 @@ fn cart() -> Machine {
 
 fn sample(machine: &mut Machine) -> [i16; 2] {
     machine.memory.tick(512);
-    machine
-        .take_audio_samples()
-        .try_into()
-        .map(|[pair]: [_; 1]| pair)
-        .unwrap()
+    assert_eq!(machine.take_audio_samples().len(), 2);
+    // Register tests inspect the DAC on this edge, before the output filter delay.
+    machine.memory.audio.pwm.latched_pcm()
 }
 
 #[test]
@@ -62,8 +60,38 @@ fn second_tone_routes_independently_and_bias_preserves_pwm_resolution() {
     machine.memory.tick(511);
     machine.memory.reset_ram(0x40);
     machine.memory.tick(1);
-    assert_eq!(machine.take_audio_samples().len(), 1);
+    assert_eq!(machine.take_audio_samples().len(), 2);
     assert_eq!(machine.memory.read8(IO + 0x84), 0);
+}
+
+#[test]
+fn dac_bias_changes_are_silent_and_still_limit_the_available_headroom() {
+    let mut machine = cart();
+    machine.memory.write8(IO + 0x84, 0x80);
+    for bias in [0x0200, 0, 0xc3fe, 0xc202, 0x0200] {
+        machine.memory.write16(IO + 0x88, bias);
+        assert_eq!(sample(&mut machine), [0; 2]);
+    }
+    for setting in [0, 1] {
+        machine.cpu.regs[0] = setting;
+        machine.bios_call(0x19).unwrap();
+        assert_eq!(sample(&mut machine), [0; 2]);
+    }
+
+    // Two full-volume FIFOs can together exceed the signed host range once
+    // the bias moves away from its midpoint. The DAC still clips at 0 and 1023.
+    machine.memory.write16(IO + 0x82, 0x330c);
+    for offset in [0xa0, 0xa4] {
+        machine.memory.write32(IO + offset, 0x8080_7f7f);
+    }
+    machine.memory.write32(IO + 0x100, 0x0080_fe00);
+    machine.memory.write16(IO + 0x88, 0x03fe);
+    assert_eq!(sample(&mut machine), [0; 2]);
+    machine.memory.write16(IO + 0x88, 0);
+    assert_eq!(sample(&mut machine), [i16::MAX; 2]);
+    assert_eq!(sample(&mut machine), [0; 2]);
+    machine.memory.write16(IO + 0x88, 0x03fe);
+    assert_eq!(sample(&mut machine), [i16::MIN; 2]);
 }
 
 #[test]
@@ -97,6 +125,28 @@ fn wave_bank_order_sweep_overflow_and_noise_envelope_are_audible() {
     }
     assert_eq!(sample(&mut machine), [0; 2]);
     assert_ne!(machine.memory.read8(IO + 0x84) & 8, 0);
+}
+
+#[test]
+fn sixty_five_khz_pwm_keeps_consecutive_fifo_samples_separate() {
+    let mut machine = cart();
+    let memory = &mut machine.memory;
+    memory.write8(IO + 0x84, 0x80);
+    memory.write16(IO + 0x88, 0x4200);
+    memory.write16(IO + 0x82, 0x120c); // A left and B right at full volume.
+    for _ in 0..8 {
+        memory.write32(IO + 0xa0, 0xe020_e020);
+        memory.write32(IO + 0xa4, 0x10f0_10f0);
+    }
+    memory.write32(IO + 0x100, 0x0080_ff00);
+    for _ in 0..48 {
+        memory.tick(256);
+    }
+    let output = machine.take_audio_samples();
+    assert_eq!(output.len(), 48);
+    for pair in output[16..].as_chunks::<2>().0 {
+        assert_eq!(*pair, [[8192, -4096], [-8192, 4096]]);
+    }
 }
 
 #[test]
@@ -134,7 +184,10 @@ fn fifo_dma_ignores_programmed_count_width_and_destination_step_and_replays_afte
     machine.load_state(&state).unwrap();
     assert_eq!(machine.take_audio_samples(), [[0; 2]; 0]);
     assert_eq!(replay(&mut machine), expected);
-    for (n, pair) in expected.into_iter().enumerate() {
+    // The native 32,768 Hz samples fall on every second output frame,
+    // sixteen output frames after their DAC edge. Check their exact levels.
+    assert_eq!(expected.len(), 100);
+    for (n, pair) in expected[17..].iter().step_by(2).enumerate() {
         assert_eq!(pair[0], (n as i16 - 3) * 256);
         assert_eq!(
             pair[1],
@@ -157,4 +210,89 @@ fn undrained_audio_is_bounded_and_guest_reset_discards_it() {
     machine.run_frame().unwrap();
     machine.reset();
     assert_eq!(machine.take_audio_samples(), [[0; 2]; 0]);
+}
+
+#[test]
+fn version_three_restores_partial_audio_clock_and_rejects_invalid_accumulators() {
+    let mut current = cart();
+    let memory = &mut current.memory;
+    memory.write8(IO + 0x84, 0x80);
+    memory.write16(IO + 0x88, 0x4200); // 65,536 Hz PWM.
+    memory.write16(IO + 0x80, 0x2077); // PSG tone on the left.
+    memory.write16(IO + 0x82, 0x0106); // FIFO A on the right.
+    memory.write16(IO + 0x68, 0xe080);
+    memory.write16(IO + 0x6c, 0x87f3);
+    for byte in 1..=32 {
+        memory.write8(IO + 0xa0, byte);
+    }
+    memory.write32(IO + 0x100, 0x0080_fa00);
+    for _ in 0..7 {
+        memory.tick(512);
+    }
+    memory.tick(256);
+    let sum = memory.audio.pwm.latched_pcm().map(|s| i32::from(s) * 256);
+    memory.tick(77);
+    assert_eq!((memory.audio.pending_cycles, memory.audio.phase), (77, 333));
+
+    let image = |integrated: u32, sum: [i32; 2]| {
+        // Fixed-width bincode fields in their v3 order, before PWM history existed.
+        let audio = &current.memory.audio;
+        let mut bytes = bincode::serialize(&(
+            (
+                *b"EIDOGBA\0",
+                3_u32,
+                current.rom_digest,
+                current.bios_digest,
+            ),
+            &current.cpu,
+            current.bios_wait,
+            &current.memory,
+            &current.memory.rtc,
+            (
+                &audio.psg,
+                &audio.fifo,
+                audio.pending_cycles,
+                audio.phase,
+                integrated,
+                sum,
+            ),
+        ))
+        .unwrap();
+        current.memory.video.append_snapshot_pixels(&mut bytes);
+        bytes.extend_from_slice(&crc32fast::hash(&bytes).to_le_bytes());
+        bytes
+    };
+    let saved = image(256, sum);
+    let mut restored = cart();
+    let original = restored.save_state().unwrap();
+    for malformed in [image(334, sum), image(256, [0, i32::MIN])] {
+        assert!(matches!(
+            restored.load_state(&malformed),
+            Err(crate::StateError::Invalid)
+        ));
+        assert!(restored.save_state().unwrap() == original);
+    }
+    restored.load_state(&saved).unwrap();
+    let replay = |machine: &mut Machine| {
+        machine.take_audio_samples();
+        machine.memory.tick(178);
+        assert_eq!(machine.take_audio_samples(), [[0; 2]; 0]);
+        machine.memory.tick(1);
+        assert_eq!(machine.take_audio_samples().len(), 1);
+        for _ in 0..64 {
+            machine.memory.tick(256);
+        }
+        machine.take_audio_samples()
+    };
+    let expected = replay(&mut current);
+    let output = replay(&mut restored);
+    for side in 0..2 {
+        assert!(
+            expected[32..]
+                .windows(2)
+                .any(|pair| pair[0][side] != pair[1][side])
+        );
+    }
+    // The old image has no resampling history. Both channels must match once it fills.
+    assert_eq!(output[32..], expected[32..]);
 }

@@ -455,6 +455,7 @@ impl Desktop {
                         if let Some(warning) = warning {
                             append_notice(&mut view.notice, warning);
                         }
+                        view.reconcile_recent_games(cx);
                         view.poll_library_scrape(cx);
                         if view.page == WorkspacePage::Library {
                             view.reload_library(cx);

@@ -305,6 +305,7 @@ impl Desktop {
         }
         removal.state = RemovalState::Saving;
         let ids = Arc::clone(&removal.ids);
+        self.library.cancel_pending_launch();
         let clear_metadata = self.preferences.library.clear_metadata_on_remove;
         if clear_metadata {
             for id in ids.iter() {
@@ -342,6 +343,7 @@ impl Desktop {
                         for id in ids.iter() {
                             v.library.metadata_lookups.remove(id);
                         }
+                        v.reconcile_recent_games(cx);
                         v.reload_after_library_change(cx);
                     }
                     Err(error) => {

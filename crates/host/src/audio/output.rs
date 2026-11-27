@@ -26,6 +26,7 @@ impl AudioOutput {
             config.buffer_size = cpal::BufferSize::Fixed(512_u32.clamp(*min, *max));
         }
         let error = Arc::new(Mutex::new(None));
+        buffer.prepare_device_rate(config.sample_rate);
         let source = Arc::new(Mutex::new(buffer));
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => build::<f32>(&device, &config, &source, &error),
@@ -55,6 +56,7 @@ impl AudioOutput {
 
     /// Route the open device to a different fixed-rate PCM queue.
     pub fn select_buffer(&self, buffer: AudioBuffer) {
+        buffer.prepare_device_rate(self.sample_rate);
         *self
             .source
             .lock()
@@ -82,7 +84,7 @@ fn build<T: SizedSample + FromSample<f32>>(
             move |samples: &mut [T], _| {
                 let buffer = source.try_lock().ok().map(|current| current.clone());
                 if let Some(buffer) = buffer {
-                    buffer.render(samples, channels, rate, T::from_sample);
+                    buffer.render_device(samples, channels, rate, T::from_sample);
                 } else {
                     samples.fill(T::from_sample(0.0));
                 }

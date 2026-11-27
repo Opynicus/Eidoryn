@@ -189,6 +189,27 @@ fn graphics_requests_keep_the_loaded_cartridge_running_with_or_without_a_gpu() {
 }
 
 #[test]
+fn brief_stalls_preserve_the_audio_clock_and_sleep_discards_frame_debt() {
+    let start = Instant::now();
+    let field = Duration::from_millis(16);
+    let mut deadline = start;
+    // A stalled frame and two short frames still produce the original three
+    // frames of audio by the third deadline.
+    for (frame, finished_ms) in [(1, 42), (2, 45), (3, 48)] {
+        deadline =
+            super::next_frame_deadline(deadline, start + Duration::from_millis(finished_ms), field);
+        assert_eq!(deadline, start + field * frame);
+    }
+    let resume = start + Duration::from_secs(5);
+    deadline = super::next_frame_deadline(deadline, resume, field);
+    assert_eq!(deadline, resume);
+    assert_eq!(
+        super::next_frame_deadline(deadline, resume, field),
+        resume + field
+    );
+}
+
+#[test]
 fn frame_rate_uses_completed_frames_and_elapsed_wall_time() {
     let start = Instant::now();
     let mut meter = super::FrameRate::new(start);

@@ -203,6 +203,26 @@ impl Preferences {
         Ok(())
     }
 
+    /// Retarget a played image after relocation, keeping the newest row and its boot mode.
+    pub fn relocate_recent_disc(&mut self, old: &Path, new: &Path) -> bool {
+        if old == new || !self.recent_discs.iter().any(|disc| disc.path == old) {
+            return false;
+        }
+        let mut seen = false;
+        self.recent_discs.retain_mut(|disc| {
+            if disc.path != old && disc.path != new {
+                return true;
+            }
+            if seen {
+                return false;
+            }
+            seen = true;
+            new.clone_into(&mut disc.path);
+            true
+        });
+        true
+    }
+
     /// Valid defaults become canonical paths; missing defaults are cleared.
     /// Temporary read failures retain the user's choice.
     /// The caller persists the configuration if `bios_path` changed.
