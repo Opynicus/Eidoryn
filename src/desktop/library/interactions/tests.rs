@@ -297,6 +297,116 @@ fn card_menu_removal_in_batch_mode_only_removes_its_target(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn confirmed_library_removals_prune_recent_games_and_preserve_the_other_shortcuts(
+    cx: &mut TestAppContext,
+) {
+    use eidoryn_psx::preferences::Preferences;
+
+    let (dir, view, cx) = collection(cx, 5);
+    let config = dir.path().join("preferences.json");
+    let history = view.update(cx, |v, cx| {
+        v.library.store.as_ref().unwrap().group_disc(5, 2).unwrap();
+        for id in 1..=5 {
+            let path = dir.path().join(format!("Game-{id:03}.iso"));
+            v.preferences.remember_disc(&path, id % 2 == 0).unwrap();
+        }
+        v.save_preferences();
+        v.reload_library(cx);
+        v.preferences.recent_discs.clone()
+    });
+    cx.run_until_parked();
+    right_click(cx, "library-entry-2");
+    click_control(cx, "lib-card-remove");
+    click_control(cx, "lib-cancel-removal");
+    assert_eq!(Preferences::load(&config).unwrap().recent_discs, history);
+
+    right_click(cx, "library-entry-2");
+    click_control(cx, "lib-card-remove");
+    click_control(cx, "lib-confirm-removal");
+    click_control(cx, "nav-console");
+    // The single card owned discs 2 and 5. The other rows retain MRU order and boot mode.
+    let remaining = [history[1].clone(), history[2].clone(), history[4].clone()];
+    view.read_with(cx, |v, _| assert_eq!(v.preferences.recent_discs, remaining));
+    assert_eq!(Preferences::load(&config).unwrap().recent_discs, remaining);
+    assert!(cx.debug_bounds("recent-game-2").is_some());
+    assert!(cx.debug_bounds("recent-game-3").is_none());
+
+    click_control(cx, "nav-library");
+    view.update(cx, |v, _| {
+        v.preferences.library.clear_metadata_on_remove = true;
+    });
+    for selector in [
+        "lib-check-1",
+        "lib-check-3",
+        "lib-remove-checked",
+        "lib-confirm-removal",
+        "nav-console",
+    ] {
+        click_control(cx, selector);
+    }
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.preferences.recent_discs, remaining[..1]);
+    });
+    assert_eq!(
+        Preferences::load(&config).unwrap().recent_discs,
+        remaining[..1]
+    );
+    assert!(cx.debug_bounds("recent-game-0").is_some());
+    assert!(cx.debug_bounds("recent-game-1").is_none());
+    assert!(history.iter().all(|disc| disc.path.is_file()));
+}
+
+#[gpui::test]
+fn relocating_then_removing_a_game_forgets_its_playable_original_and_copy(
+    app: &mut TestAppContext,
+) {
+    use eidoryn_psx::preferences::Preferences;
+
+    let (dir, view, cx) = collection(app, 2);
+    let config = dir.path().join("preferences.json");
+    let original = dir.path().join("Game-001.iso");
+    let other = dir.path().join("Game-002.iso");
+    let copy = dir.path().join("copy.iso");
+    std::fs::copy(&original, &copy).unwrap();
+    view.update(cx, |v, _| {
+        for (path, fast_boot) in [(&copy, false), (&other, false), (&original, true)] {
+            v.preferences.remember_disc(path, fast_boot).unwrap();
+        }
+        v.save_preferences();
+    });
+    let history = Preferences::load(&config).unwrap().recent_discs;
+    cx.simulate_resize(size(px(1400.), px(1600.)));
+    cx.run_until_parked();
+    right_click(cx, "library-entry-1");
+    click_control(cx, "lib-card-details");
+    let relocate = |cx: &mut VisualTestContext, path: PathBuf| {
+        click_control(cx, "lib-relocate-0");
+        cx.simulate_path_prompt_response(|_| Some(vec![path]));
+        cx.run_until_parked();
+    };
+    relocate(cx, other.clone());
+    assert_eq!(Preferences::load(&config).unwrap().recent_discs, history);
+    relocate(cx, copy.clone());
+    let mut relocated = history[0].clone();
+    relocated.path = copy.canonicalize().unwrap();
+    assert_eq!(
+        Preferences::load(&config).unwrap().recent_discs,
+        [relocated, history[1].clone()],
+    );
+    click_control(cx, "lib-back");
+    right_click(cx, "library-entry-1");
+    click_control(cx, "lib-card-remove");
+    click_control(cx, "lib-confirm-removal");
+    click_control(cx, "nav-console");
+    assert_eq!(
+        Preferences::load(&config).unwrap().recent_discs,
+        history[1..2]
+    );
+    assert!(cx.debug_bounds("recent-game-1").is_none());
+    assert!(original.is_file() && copy.is_file());
+}
+
+#[gpui::test]
 fn double_click_launches_only_when_the_first_click_was_browsing(cx: &mut TestAppContext) {
     let (_dir, view, cx) = collection(cx, 3);
     let double_click = |cx: &mut VisualTestContext| {

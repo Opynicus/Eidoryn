@@ -7,7 +7,7 @@ use eidoryn_psx::{
     systems::ps1::runner::{SelectedMedia, Snapshot},
 };
 use gpui::{Context, div, prelude::*, px, rgb};
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 impl Desktop {
     pub(super) fn bios_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -288,6 +288,9 @@ impl Desktop {
     }
 
     fn open_recent_game(&mut self, path: PathBuf, fast_boot: bool, cx: &mut Context<Self>) {
+        if !self.preferences.recent_discs.iter().any(|d| d.path == path) {
+            return;
+        }
         match std::fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => {}
             Ok(_) => {
@@ -304,7 +307,59 @@ impl Desktop {
                 return;
             }
         }
-        self.direct_disc(path, fast_boot, true, cx);
+        self.direct_disc(path.clone(), fast_boot, Some(path), cx);
+    }
+
+    pub(super) fn reconcile_recent_games(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.library.store.clone() else {
+            return;
+        };
+        if self.preferences.recent_discs.is_empty() {
+            return;
+        }
+        let revisions = self.media_revisions();
+        let paths: Vec<_> = self
+            .preferences
+            .recent_discs
+            .iter()
+            .map(|d| d.path.clone())
+            .collect();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { store.removed_recent_paths(&paths) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                match result {
+                    // A successful open can restore a game and record the same path
+                    // again while the background read is in flight.
+                    Ok(removed) if !removed.is_empty() && view.media_revisions() != revisions => {
+                        view.reconcile_recent_games(cx);
+                    }
+                    Ok(removed) => view.forget_removed_games(&removed),
+                    Err(error) => super::append_notice(&mut view.notice, error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn media_revisions(&self) -> [u64; 3] {
+        [
+            self.snapshot.media_revision,
+            self.gba.snapshot.media_revision,
+            self.nds.snapshot.media_revision,
+        ]
+    }
+
+    pub(super) fn forget_removed_games(&mut self, removed: &HashSet<PathBuf>) {
+        let recents = &mut self.preferences.recent_discs;
+        let before = recents.len();
+        recents.retain(|disc| !removed.contains(&disc.path));
+        if recents.len() != before {
+            self.save_preferences();
+        }
     }
 
     fn remove_missing_recent(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
@@ -322,7 +377,7 @@ impl Desktop {
         fast_boot: bool,
         cx: &mut Context<Self>,
     ) {
-        self.direct_disc(path, fast_boot, false, cx);
+        self.direct_disc(path, fast_boot, None, cx);
     }
 
     pub(super) fn validate_disc_bios(&mut self, fast_boot: bool, cx: &mut Context<Self>) -> bool {

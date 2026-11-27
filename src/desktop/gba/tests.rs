@@ -60,6 +60,68 @@ fn wait_for_gba_with_timeout(
 }
 
 #[gpui::test]
+fn stale_recent_games_from_older_removals_cannot_launch_and_are_pruned_on_startup(
+    app: &mut TestAppContext,
+) {
+    use eidoryn_psx::preferences::Preferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("preferences.json");
+    let library = prepare_library(dir.path());
+    library.remove(2).unwrap();
+    let (view, cx) = app.add_window_view(desktop);
+    view.update(cx, |v, cx| {
+        v.library = Workspace::new(Some(library));
+        v.preferences_path = Some(config.clone());
+        v.preferences
+            .remember_disc(&dir.path().join("PS Disc.iso"), true)
+            .unwrap();
+        v.preferences
+            .remember_disc(&dir.path().join("GBA Cart.gba"), false)
+            .unwrap();
+        v.save_preferences();
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    cx.run_until_parked();
+    let original = Preferences::load(&config).unwrap();
+    click_control(cx, "recent-game-0");
+    assert_eq!(
+        Preferences::load(&config).unwrap().recent_discs,
+        original.recent_discs[1..]
+    );
+    assert!(cx.debug_bounds("recent-game-1").is_none());
+    assert!(cx.debug_bounds("launch-card").is_some());
+    view.read_with(cx, |v, _| {
+        assert!(v.is_ps1());
+        assert!(v.gba.runner.is_none());
+    });
+
+    cx.update(|window, _| window.remove_window());
+    drop(view);
+    original.save(&config).unwrap();
+    let (view, cx) = app.add_window_view(desktop);
+    let store = Library::open(&dir.path().join("library.db")).unwrap();
+    view.update(cx, |v, cx| {
+        v.preferences = Preferences::load(&config).unwrap();
+        v.preferences_path = Some(config.clone());
+        v.library = Workspace::new(Some(store.clone()));
+        Desktop::start_library(store.clone(), v.preferences.recent_discs.clone(), cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.preferences.recent_discs, original.recent_discs[1..]);
+    });
+    assert_eq!(
+        Preferences::load(&config).unwrap().recent_discs,
+        original.recent_discs[1..]
+    );
+    assert_eq!(store.games().unwrap().len(), 1);
+    assert!(cx.debug_bounds("recent-game-0").is_some());
+    assert!(cx.debug_bounds("recent-game-1").is_none());
+}
+
+#[gpui::test]
 fn direct_open_starts_a_cartridge_without_bios_in_each_session(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap();
     let rom = temp.path().join("game.gba");

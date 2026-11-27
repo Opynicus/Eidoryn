@@ -5,7 +5,7 @@ use super::{
 use crate::preferences::RecentDisc;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -149,6 +149,27 @@ fn needs_confirmation(db: &Connection, home: i64, game: i64) -> rusqlite::Result
 fn is_ignored(db: &Connection, key: &[u8]) -> rusqlite::Result<bool> {
     db.prepare_cached("SELECT 1 FROM ignored WHERE path=?")?
         .exists([key])
+}
+
+fn recent_path_removed(db: &Connection, key: &[u8]) -> rusqlite::Result<bool> {
+    // A BIN played before its CUE was indexed now launches via the CUE picker.
+    // Multiple CUEs may own a track. Keep it if any current owner is visible.
+    db.prepare_cached(
+        "WITH owners AS (
+             SELECT l.path = ?1 AS direct, l.current, l.available, l.id, g.hidden
+             FROM parts p JOIN locations l ON l.id = p.location_id
+             JOIN discs d ON d.id = l.disc_id JOIN games g ON g.id = d.game_id
+             WHERE p.path = ?1
+         )
+         SELECT COALESCE(
+             (SELECT MIN(hidden) FROM owners WHERE NOT direct AND current AND available),
+             (SELECT hidden FROM owners WHERE direct ORDER BY current DESC, id DESC LIMIT 1),
+             (SELECT 1 FROM ignored WHERE path = ?1),
+             (SELECT MIN(hidden) FROM owners WHERE NOT direct AND current),
+             0
+         )",
+    )?
+    .query_row([key], |r| r.get(0))
 }
 
 fn dependency_paths(stamps: Vec<Stamp>, path: &Path) -> Vec<PathBuf> {
@@ -571,6 +592,22 @@ impl Library {
             .map_err(|e| e.to_string())
     }
 
+    /// Returns the canonical history paths belonging to games removed from this library.
+    /// Unindexed paths remain eligible for direct launch.
+    pub fn removed_recent_paths(&self, paths: &[PathBuf]) -> Result<HashSet<PathBuf>, String> {
+        let mut removed = HashSet::new();
+        if !paths.is_empty() {
+            let mut db = self.connect()?;
+            let tx = db.transaction().map_err(|e| e.to_string())?;
+            for path in paths {
+                if recent_path_removed(&tx, &path_key(path)).map_err(|e| e.to_string())? {
+                    removed.insert(path.clone());
+                }
+            }
+        }
+        Ok(removed)
+    }
+
     pub fn migrate_recents(&self, records: &[RecentDisc]) -> Result<(), String> {
         self.import_recents(records).map_err(|e| e.to_string())
     }
@@ -585,6 +622,7 @@ impl Library {
             if db
                 .prepare_cached("SELECT 1 FROM migrated_recent WHERE path=?")?
                 .exists([&key])?
+                || recent_path_removed(&db, &key)?
             {
                 continue;
             }
@@ -609,11 +647,20 @@ impl Library {
     /// is binding. For a never-booted, missing original only the stored layout
     /// and samples can be compared; the user's explicit choice resolves that case.
     pub fn relocate(&self, location: i64, new_path: &Path) -> Result<(), String> {
+        self.relocate_with_paths(location, new_path).map(drop)
+    }
+
+    /// Returns the old and new canonical paths of the committed relocation.
+    pub fn relocate_with_paths(
+        &self,
+        location: i64,
+        new_path: &Path,
+    ) -> Result<(PathBuf, PathBuf), String> {
         self.relocate_verified(location, new_path)
             .map_err(|e| e.to_string())
     }
 
-    fn relocate_verified(&self, location: i64, new_path: &Path) -> IndexResult<()> {
+    fn relocate_verified(&self, location: i64, new_path: &Path) -> IndexResult<(PathBuf, PathBuf)> {
         let path = new_path.canonicalize()?;
         let mut db = self.connection()?;
         let (disc, prior_path, strong, sample, stored_platform): (
@@ -708,7 +755,7 @@ impl Library {
         )?;
         tx.execute("DELETE FROM ignored WHERE path=?", [&key])?;
         tx.commit()?;
-        Ok(())
+        Ok((old_path, path))
     }
 
     pub fn confirm_copy(&self, location: i64, other_location: i64) -> Result<(), String> {

@@ -134,8 +134,13 @@ fn failed_batch_removal_keeps_checks_and_can_be_retried(cx: &mut TestAppContext)
     let root = tempfile::tempdir().unwrap();
     let (db, view, cx) = open_library(root.path(), cx);
     let connection = db.connect().unwrap();
-    view.update(cx, |v, _| {
+    let recent = view.update(cx, |v, _| {
         v.preferences.library.clear_metadata_on_remove = true;
+        v.preferences
+            .remember_disc(&root.path().join("Alpha A.iso"), false)
+            .unwrap();
+        v.save_preferences();
+        v.preferences.recent_discs.clone()
     });
     connection
         .execute("UPDATE game_metadata SET auto_date='1998'", [])
@@ -165,11 +170,13 @@ fn failed_batch_removal_keeps_checks_and_can_be_retried(cx: &mut TestAppContext)
     assert_eq!(db.games().unwrap().len(), 3);
     assert_eq!(cached(), 3);
     assert_eq!(checked(&view, cx), [1, 2, 3]);
+    view.read_with(cx, |v, _| assert_eq!(v.preferences.recent_discs, recent));
     connection
         .execute_batch("DROP TRIGGER fail_removal")
         .unwrap();
     click_control(cx, "lib-confirm-removal");
     assert!(db.games().unwrap().is_empty());
     assert_eq!(cached(), 0);
+    assert!(view.read_with(cx, |v, _| v.preferences.recent_discs.is_empty()));
     assert!(view.read_with(cx, |v, _| v.library.checked_games.is_empty()));
 }
